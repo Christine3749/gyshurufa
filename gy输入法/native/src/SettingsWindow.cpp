@@ -16,6 +16,7 @@ constexpr COLORREF kBorder = RGB(58, 63, 74);
 constexpr COLORREF kWhite = RGB(250, 250, 251);
 constexpr COLORREF kMuted = RGB(155, 163, 179);
 constexpr COLORREF kBlue = RGB(40, 99, 235);
+constexpr UINT kMaxSettingsDpi = 144;
 
 int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
 UINT DpiFor(HWND hwnd) { return hwnd ? GetDpiForWindow(hwnd) : GetDpiForSystem(); }
@@ -133,7 +134,7 @@ void SettingsWindow::Show(const RECT& anchor) {
   // Use a compact effective scale instead of opening a clipped black popup.
   const UINT native_dpi = DpiFor(nullptr);
   const UINT fitting_dpi = static_cast<UINT>(std::max(80, MulDiv(std::max(1, work_height - 16), 96, 474)));
-  dpi_ = std::min(native_dpi, fitting_dpi);
+  dpi_ = std::min({native_dpi, fitting_dpi, kMaxSettingsDpi});
   width_ = std::min(Scale(dpi_, 520), std::max(Scale(dpi_, 320), work_width - Scale(dpi_, 16)));
   const int width = width_;
   const int height = std::min(Scale(dpi_, 474), std::max(Scale(dpi_, 360), work_height - Scale(dpi_, 16)));
@@ -197,7 +198,7 @@ void SettingsWindow::Layout() {
   RECT window{}; GetWindowRect(hwnd_, &window);
   SetWindowPos(hwnd_, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   const HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, Scale(dpi_, 14), Scale(dpi_, 14));
-  SetWindowRgn(hwnd_, region, TRUE);
+  SetWindowRgn(hwnd_, region, FALSE);
   InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -296,7 +297,16 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
   if (message == WM_NCCREATE) { self = reinterpret_cast<SettingsWindow*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
   if (!self) return DefWindowProcW(hwnd, message, wparam, lparam);
   switch (message) {
-    case WM_PAINT: { PAINTSTRUCT paint{}; HDC dc = BeginPaint(hwnd, &paint); self->Paint(dc); EndPaint(hwnd, &paint); return 0; }
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+      PAINTSTRUCT paint{}; HDC dc = BeginPaint(hwnd, &paint); RECT client{}; GetClientRect(hwnd, &client);
+      HDC buffer = CreateCompatibleDC(dc); HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
+      HGDIOBJ previous = SelectObject(buffer, bitmap);
+      self->Paint(buffer);
+      BitBlt(dc, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
+      SelectObject(buffer, previous); DeleteObject(bitmap); DeleteDC(buffer);
+      EndPaint(hwnd, &paint); return 0;
+    }
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wparam), kWhite); SetBkColor(reinterpret_cast<HDC>(wparam), kSurface); return reinterpret_cast<LRESULT>(self->edit_brush_);
     case WM_MOUSEMOVE: { POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; const bool hand = self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point); SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0; }
     case WM_SETCURSOR: { POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point); if (self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break; }

@@ -30,7 +30,7 @@ std::wstring InstallIconPath(const std::wstring& host_directory) {
   const std::wstring versions_directory = host_directory.substr(0, version_slash);
   const size_t install_slash = versions_directory.find_last_of(L"\\/");
   if (install_slash == std::wstring::npos) return {};
-  return versions_directory.substr(0, install_slash) + L"\\tsf-0.9.13\\gy.ico";
+  return versions_directory.substr(0, install_slash) + L"\\tsf-0.9.14\\gy.ico";
 }
 
 NOTIFYICONDATAW MakeIconData(HWND hwnd, HICON icon) {

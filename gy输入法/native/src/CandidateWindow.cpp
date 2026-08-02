@@ -159,9 +159,9 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   const unsigned visible_count = mode_popup_ || page_start_ >= candidates_.size() ? 0 : std::min<unsigned>(capacity,
       static_cast<unsigned>(candidates_.size()) - page_start_);
   const bool has_pages = !mode_popup_ && candidates_.size() > kCandidatesPerPage;
-  const int pager_width = has_pages ? Scale(dpi, 76) : 0;
-  const int expand_width = has_pages ? Scale(dpi, 24) : 0;
-  const int control_width = mode_popup_ ? 0 : mode_width + gap + pager_width + expand_width;
+  const int pager_width = 0;
+  const int expand_width = has_pages ? Scale(dpi, 28) : 0;
+  const int control_width = mode_popup_ ? 0 : mode_width + gap + expand_width;
   const int non_word_width = Scale(dpi, 24);
   const int total_gap = gap * static_cast<int>(visible_count > 0 ? visible_count - 1 : 0);
   const int word_room = std::max(Scale(dpi, 22),
@@ -194,14 +194,6 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
     mode_rect_ = RECT{mode_left, control_top, mode_left + mode_width, control_top + chip_height};
     right_edge = mode_rect_.right;
     if (has_pages) {
-      const int pager_left = right_edge + gap;
-      const int arrow_width = Scale(dpi, 18);
-      previous_page_rect_ = RECT{pager_left, control_top, pager_left + arrow_width, control_top + chip_height};
-      page_indicator_rect_ = RECT{previous_page_rect_.right, control_top,
-                                  pager_left + pager_width - arrow_width, control_top + chip_height};
-      next_page_rect_ = RECT{page_indicator_rect_.right, control_top,
-                             pager_left + pager_width, control_top + chip_height};
-      right_edge = next_page_rect_.right;
       const int expand_left = right_edge + gap;
       expand_rect_ = RECT{expand_left, control_top, expand_left + expand_width, control_top + chip_height};
       right_edge = expand_rect_.right;
@@ -222,9 +214,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
 void CandidateWindow::Show(const RECT& caret, const std::wstring& pinyin,
                            const std::vector<std::wstring>& candidates, unsigned selected,
                            unsigned page_start) {
+  const bool composition_changed = pinyin_ != pinyin;
   mode_popup_ = false;
   english_mode_ = false;
-  expanded_ = false;
+  if (composition_changed) expanded_ = false;
   ShowInternal(caret, pinyin, candidates, selected, page_start);
 }
 
@@ -369,12 +362,12 @@ LRESULT CALLBACK CandidateWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpa
       self->choose_(kPreviousPageAction);
       return 0;
     }
-    if (!IsRectEmpty(&self->next_page_rect_) && PtInRect(&self->next_page_rect_, point)) {
     if (!IsRectEmpty(&self->expand_rect_) && PtInRect(&self->expand_rect_, point)) {
       self->expanded_ = !self->expanded_;
       self->ShowInternal(self->caret_rect_, self->pinyin_, self->candidates_, self->selected_, self->page_start_);
       return 0;
     }
+    if (!IsRectEmpty(&self->next_page_rect_) && PtInRect(&self->next_page_rect_, point)) {
       self->choose_(kNextPageAction);
       return 0;
     }

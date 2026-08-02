@@ -10,7 +10,7 @@ $tipId = '0804:{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}{5F689D3E-73E3-4C2B-979A-2D
 $packageRoot = $PSScriptRoot
 $payloadRoot = Join-Path $packageRoot 'payload'
 $version = (Get-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Raw).Trim()
-$tsfVersion = '0.9.13'
+$tsfVersion = '0.9.14'
 if ($version -ne $tsfVersion) { throw "Release version mismatch: Host=$version, Core=$tsfVersion. Refusing mixed installation." }
 $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $installRoot = Join-Path $programFiles 'GYInput'
