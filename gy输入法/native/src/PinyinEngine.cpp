@@ -99,6 +99,16 @@ std::vector<std::wstring> ReadIniSection(const std::wstring& path, const wchar_t
   return rows;
 }
 
+std::wstring NormalizeOutputScript(const std::wstring& value, int input_mode) {
+  if (value.empty() || input_mode == 2) return value;
+  const DWORD flags = input_mode == 1 ? LCMAP_TRADITIONAL_CHINESE : LCMAP_SIMPLIFIED_CHINESE;
+  const int length = LCMapStringEx(LOCALE_NAME_USER_DEFAULT, flags, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr, 0);
+  if (length <= 0) return value;
+  std::wstring converted(static_cast<size_t>(length), L'\0');
+  if (LCMapStringEx(LOCALE_NAME_USER_DEFAULT, flags, value.data(), static_cast<int>(value.size()), converted.data(), length, nullptr, nullptr, 0) <= 0) return value;
+  return converted;
+}
+
 struct LocalSettingsCache {
   std::wstring path;
   FILETIME last_write{};
@@ -106,6 +116,7 @@ struct LocalSettingsCache {
   std::unordered_map<std::wstring, std::vector<std::wstring>> phrases;
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, unsigned>> learning;
 
+  int input_mode = 0;
   void Refresh() {
     const std::wstring current_path = SettingsPath();
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
@@ -120,7 +131,9 @@ struct LocalSettingsCache {
     last_write = current_write;
     phrases.clear();
     learning.clear();
+    input_mode = 0;
     if (path.empty()) return;
+    input_mode = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", 0, path.c_str())), 0, 2);
 
     for (const std::wstring& line : ReadIniSection(path, L"Phrases")) {
       const size_t separator = line.find(L'=');
@@ -284,18 +297,23 @@ std::wstring PinyinEngine::Diagnostic() const {
 std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const {
   if (!IsReady() || pinyin.empty()) return {};
   auto& runtime = GetRuntime();
+  auto& settings = SettingsCache();
+  settings.Refresh();
+  const int input_mode = settings.input_mode;
+  if (input_mode == 2) return {};
   std::scoped_lock lock(runtime.mutex);
   runtime.api->clear_composition(impl_->session);
   runtime.api->set_option(impl_->session, "ascii_mode", False);
   const std::string keys = Utf8(pinyin);
   for (const unsigned char key : keys) {
     if (!runtime.api->process_key(impl_->session, key, 0)) return {};
+  runtime.api->set_option(impl_->session, "zh_hans", input_mode == 0 ? True : False);
   }
   RIME_STRUCT(RimeContext, context);
   if (!runtime.api->get_context(impl_->session, &context)) return {};
   std::vector<std::wstring> candidates;
   for (int i = 0; i < context.menu.num_candidates && i < 20; ++i) {
-    const std::wstring candidate = Wide(context.menu.candidates[i].text);
+    const std::wstring candidate = NormalizeOutputScript(Wide(context.menu.candidates[i].text), input_mode);
     if (!candidate.empty()) candidates.push_back(candidate);
   }
   runtime.api->free_context(&context);
@@ -307,11 +325,13 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
   });
   const auto phrases = LocalPhrases(pinyin);
   for (auto it = phrases.rbegin(); it != phrases.rend(); ++it) {
-    candidates.erase(std::remove(candidates.begin(), candidates.end(), *it), candidates.end());
-    candidates.insert(candidates.begin(), *it);
+    const std::wstring phrase = NormalizeOutputScript(*it, input_mode);
+    candidates.erase(std::remove(candidates.begin(), candidates.end(), phrase), candidates.end());
+    candidates.insert(candidates.begin(), phrase);
   }
   if (candidates.size() > 20) candidates.resize(20);
   return candidates;
+  candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
 }
 
 void PinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candidate) const {

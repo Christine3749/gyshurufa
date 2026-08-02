@@ -24,9 +24,12 @@ private:
   HWND account_edit_ = nullptr;
   HWND phrases_edit_ = nullptr;
   HBRUSH edit_brush_ = nullptr;
+  // 0 = simplified Chinese, 1 = traditional Chinese, 2 = English passthrough.
+  int input_mode_ = 0;
   UINT dpi_ = 96;
   int theme_ = 0;
   int size_index_ = 1;
+  RECT input_mode_rects_[3]{};
   bool phrases_expanded_ = false;
   RECT account_rect_{};
   RECT theme_rects_[3]{};

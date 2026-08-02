@@ -1,16 +1,25 @@
+interface R2ObjectLike {
+  size: number;
+  httpEtag: string;
+  body: ReadableStream;
+  writeHttpMetadata(headers: Headers): void;
+}
+interface R2Bucket {
+  get(key: string): Promise<R2ObjectLike | null>;
+}
 interface Env {
   RELEASES: R2Bucket;
 }
 
 const files: Record<string, { key: string; name: string; type: string }> = {
   "/latest.exe": {
-    key: "releases/0.9.14/GYInputSetup-0.9.14.exe",
-    name: "GYInputSetup-0.9.14.exe",
+    key: "releases/0.9.15/GYInputSetup-0.9.15.exe",
+    name: "GYInputSetup-0.9.15.exe",
     type: "application/vnd.microsoft.portable-executable",
   },
   "/latest.zip": {
-    key: "releases/0.9.14/GYInput-0.9.14.zip",
-    name: "GYInput-0.9.14.zip",
+    key: "releases/0.9.15/GYInput-0.9.15.zip",
+    name: "GYInput-0.9.15.zip",
     type: "application/zip",
   },
 };

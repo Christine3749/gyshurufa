@@ -55,9 +55,11 @@ int main() {
   const bool unicode_ini = WriteFile(settings_file, &bom, sizeof(bom), &written, nullptr) && written == sizeof(bom);
   CloseHandle(settings_file);
   if (!unicode_ini || !WritePrivateProfileStringW(L"Phrases", L"dz", L"地址|电子邮箱", settings.c_str()) ||
-      !WritePrivateProfileStringW(L"Phrases", L"dizhi ", L" 地址 ", settings.c_str())) return 4;
+      !WritePrivateProfileStringW(L"Phrases", L"dizhi ", L" 地址 ", settings.c_str()) ||
+      !WritePrivateProfileStringW(L"Phrases", L"zg", L"中国", settings.c_str()) ||
+      !WritePrivateProfileStringW(L"Input", L"Mode", L"1", settings.c_str())) return 4;
   const auto phrase_candidates = engine.Lookup(L"dz");
-  if (phrase_candidates.size() < 2 || phrase_candidates[0] != L"地址" || phrase_candidates[1] != L"电子邮箱") {
+  if (phrase_candidates.size() < 2 || phrase_candidates[0] != L"地址" || phrase_candidates[1] != L"電子郵箱") {
     std::wcerr << L"Multiple custom phrases did not rank first.\n";
     return 5;
   }
@@ -67,7 +69,12 @@ int main() {
     return 7;
   }
 
-  const std::wstring learned_candidate = candidates.back();
+  const auto traditional_candidates = engine.Lookup(L"zg");
+  if (traditional_candidates.empty() || traditional_candidates.front() != L"中國") {
+    std::wcerr << L"Traditional mode did not normalize custom phrase output.\n";
+    return 9;
+  }
+  const std::wstring learned_candidate = L"你好";
   engine.Learn(L"nihao", learned_candidate);
   const auto learned_candidates = engine.Lookup(L"nihao");
   if (learned_candidates.empty() || learned_candidates.front() != learned_candidate) {

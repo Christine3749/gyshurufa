@@ -8,11 +8,11 @@ export const BRAND_INFO = {
   slogan: '让每一次输入，成为更好的开始。',
   subSlogan: 'GY输入法，GSYEN 智能工作生态的一部分。',
   platform: 'Windows 10 / Windows 11',
-  version: 'v0.9.14',
-  releaseDate: '2026年8月2日',
-  fileSize: '9.57 MB',
+  version: 'v0.9.15',
+  releaseDate: '2026年8月3日',
+  fileSize: '9.58 MB',
   architecture: 'x64 / ARM64 原生架构',
-  sha256: '6237EADD15C2B8F551990923CAE59F2759DEB6E705F440454C1E92DBE26DFF5E',
+  sha256: '77DCFF6819A3316C8DB25563F2C24D13554371FF6DF56C5173D4FE37949CBC1E',
   // Keep the public download under the official site; Vercel proxies this path to the R2-backed Worker.
   downloadUrl: '/download/latest.exe'
 };

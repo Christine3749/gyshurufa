@@ -43,6 +43,15 @@ int CandidatePointSize() {
   return std::clamp(size, 13, 17);
 }
 
+int CandidateInputMode() {
+  const std::wstring path = SettingsPath();
+  return std::clamp(path.empty() ? 0 : static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", 0, path.c_str())), 0, 2);
+}
+
+const wchar_t* ModeLabel(int input_mode) {
+  return input_mode == 1 ? L"繁" : input_mode == 2 ? L"EN" : L"中";
+}
+
 ATOM RegisterCandidateClass() {
   static const ATOM atom = [] {
     WNDCLASSEXW wc{sizeof(wc)};
@@ -147,7 +156,7 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   const HFONT status_font = Font(dpi, 12, FW_SEMIBOLD);
   HDC dc = GetDC(nullptr);
 
-  const std::wstring mode_label = english_mode_ ? L"EN" : L"中";
+  const std::wstring mode_label = ModeLabel(input_mode_);
   const int mode_width = Measure(dc, status_font, mode_label) + Scale(dpi, 18);
   // Keep the first candidate directly below the application's preedit text.
   // Mode and paging controls deliberately live after the candidate strip.
@@ -236,6 +245,7 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
     const unsigned last_page = static_cast<unsigned>((candidates_.size() - 1) / kCandidatesPerPage) * kCandidatesPerPage;
     page_start_ = std::min(page_start, last_page);
     selected_ = std::min<unsigned>(selected, static_cast<unsigned>(candidates_.size() - 1));
+  input_mode_ = CandidateInputMode();
     if (selected_ < page_start_ || selected_ >= page_start_ + kCandidatesPerPage) {
       page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
     }
@@ -290,6 +300,7 @@ void CandidateWindow::ShowMode(const RECT& caret, bool english_mode) {
   english_mode_ = english_mode;
   ShowInternal(caret, L"", {}, 0, 0);
   if (hwnd_) SetTimer(hwnd_, 1, 700, nullptr);
+  input_mode_ = english_mode ? 2 : CandidateInputMode();
 }
 void CandidateWindow::OpenSettings() {
   if (!open_settings_ || !hwnd_) return;
@@ -405,7 +416,7 @@ void CandidateWindow::Paint(HDC dc) {
   const HFONT candidate_font = Font(dpi_, candidate_point_size_, FW_SEMIBOLD);
   const HFONT key_font = Font(dpi_, 10, FW_SEMIBOLD);
   const HFONT status_font = Font(dpi_, 12, FW_SEMIBOLD);
-  Text(dc, english_mode_ ? L"EN" : L"中", mode_rect_, kGyBlue, DT_CENTER, status_font);
+  Text(dc, ModeLabel(input_mode_), mode_rect_, kGyBlue, DT_CENTER, status_font);
   if (!mode_popup_) {
     const int divider = mode_rect_.right + Scale(dpi_, 2);
     Fill(dc, RECT{divider, mode_rect_.top + Scale(dpi_, 6), divider + 1,

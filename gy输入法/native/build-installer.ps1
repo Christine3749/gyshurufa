@@ -24,6 +24,6 @@ if (-not (Test-Path -LiteralPath $releaseDll) -or -not (Test-Path -LiteralPath $
   throw "Release payload (DLL, Host, or Health Check) is missing. Run native\package.ps1 for version $Version first."
 }
 
-& $isccCandidates[0] "/DMyAppVersion=$Version" (Join-Path $PSScriptRoot 'installer\GYInput.iss')
+& $isccCandidates[0] "/DMyAppVersion=$Version" "/DMyTsfVersion=$Version" (Join-Path $PSScriptRoot 'installer\GYInput.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 Write-Host "EXE installer created: $(Join-Path $PSScriptRoot "release\GYInputSetup-$Version.exe")"

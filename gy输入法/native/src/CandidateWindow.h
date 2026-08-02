@@ -57,6 +57,7 @@ private:
   int visual_style_ = 0;
   bool mode_popup_ = false;
   bool english_mode_ = false;
+  int input_mode_ = 0;
   std::function<void(unsigned)> choose_;
   bool expanded_ = false;
   std::function<void(const RECT&)> open_settings_;

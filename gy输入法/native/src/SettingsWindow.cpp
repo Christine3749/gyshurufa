@@ -16,7 +16,7 @@ constexpr COLORREF kBorder = RGB(58, 63, 74);
 constexpr COLORREF kWhite = RGB(250, 250, 251);
 constexpr COLORREF kMuted = RGB(155, 163, 179);
 constexpr COLORREF kBlue = RGB(40, 99, 235);
-constexpr UINT kMaxSettingsDpi = 144;
+constexpr UINT kMaxSettingsDpi = 136;
 
 int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
 UINT DpiFor(HWND hwnd) { return hwnd ? GetDpiForWindow(hwnd) : GetDpiForSystem(); }
@@ -133,11 +133,11 @@ void SettingsWindow::Show(const RECT& anchor) {
   // A 13/14 inch notebook at 150–200% cannot fit the old fixed 474-DIP panel.
   // Use a compact effective scale instead of opening a clipped black popup.
   const UINT native_dpi = DpiFor(nullptr);
-  const UINT fitting_dpi = static_cast<UINT>(std::max(80, MulDiv(std::max(1, work_height - 16), 96, 474)));
+  const UINT fitting_dpi = static_cast<UINT>(std::max(80, MulDiv(std::max(1, work_height - 16), 96, 525)));
   dpi_ = std::min({native_dpi, fitting_dpi, kMaxSettingsDpi});
   width_ = std::min(Scale(dpi_, 520), std::max(Scale(dpi_, 320), work_width - Scale(dpi_, 16)));
   const int width = width_;
-  const int height = std::min(Scale(dpi_, 474), std::max(Scale(dpi_, 360), work_height - Scale(dpi_, 16)));
+  const int height = std::min(Scale(dpi_, 525), std::max(Scale(dpi_, 360), work_height - Scale(dpi_, 16)));
   const int x = std::clamp(static_cast<int>(anchor.left), static_cast<int>(work.left) + Scale(dpi_, 8), static_cast<int>(work.right) - width - Scale(dpi_, 8));
   int y = anchor.top - height - Scale(dpi_, 12);
   if (y < work.top + Scale(dpi_, 8)) y = std::min(anchor.bottom + Scale(dpi_, 12), work.bottom - height - Scale(dpi_, 8));
@@ -179,6 +179,8 @@ void SettingsWindow::Layout() {
              std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 153)), Scale(dpi_, 31), TRUE);
   y += row + gap + Scale(dpi_, 20);
   const int option_width = (card_width - Scale(dpi_, 12)) / 3;
+  for (int i = 0; i < 3; ++i) input_mode_rects_[i] = {pad + i * (option_width + Scale(dpi_, 6)), y, pad + i * (option_width + Scale(dpi_, 6)) + option_width, y + Scale(dpi_, 38)};
+  y += Scale(dpi_, 48);
   for (int i = 0; i < 3; ++i) theme_rects_[i] = {pad + i * (option_width + Scale(dpi_, 6)), y, pad + i * (option_width + Scale(dpi_, 6)) + option_width, y + Scale(dpi_, 38)};
   y += Scale(dpi_, 48);
   for (int i = 0; i < 3; ++i) size_rects_[i] = {pad + i * (option_width + Scale(dpi_, 6)), y, pad + i * (option_width + Scale(dpi_, 6)) + option_width, y + Scale(dpi_, 38)};
@@ -221,6 +223,13 @@ void SettingsWindow::Paint(HDC dc) {
   Rounded(dc, account_rect_, kSurface, kBorder, Scale(dpi_, 9));
   Text(dc, L"账号", RECT{account_rect_.left + Scale(dpi_, 15), account_rect_.top, account_rect_.left + Scale(dpi_, 126), account_rect_.bottom}, kWhite, DT_LEFT, medium);
   Text(dc, L"本地标识", RECT{account_rect_.left + Scale(dpi_, 15), account_rect_.top + Scale(dpi_, 22), account_rect_.left + Scale(dpi_, 126), account_rect_.bottom}, kMuted, DT_LEFT, tiny);
+  Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 23), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 2)}, kMuted, DT_LEFT, tiny);
+  const wchar_t* input_modes[] = {L"简体", L"繁体", L"EN"};
+  for (int i = 0; i < 3; ++i) {
+    Rounded(dc, input_mode_rects_[i], input_mode_ == i ? kBlue : kSurface, input_mode_ == i ? kBlue : kBorder, Scale(dpi_, 8));
+    Text(dc, input_modes[i], input_mode_rects_[i], kWhite, DT_CENTER, medium);
+  }
+
 
   Text(dc, L"候选窗样式", RECT{theme_rects_[0].left, theme_rects_[0].top - Scale(dpi_, 23), theme_rects_[2].right, theme_rects_[0].top - Scale(dpi_, 2)}, kMuted, DT_LEFT, tiny);
   const wchar_t* themes[] = {L"GY 蓝夜", L"暖白", L"石墨"};
@@ -241,7 +250,7 @@ void SettingsWindow::Paint(HDC dc) {
 
   auto button = [&](const RECT& rect, const wchar_t* label, bool primary) { Rounded(dc, rect, primary ? kBlue : kSurface, primary ? kBlue : kBorder, Scale(dpi_, 8)); Text(dc, label, rect, kWhite, DT_CENTER, medium); };
   button(clear_rect_, L"清空学习", false); button(export_rect_, L"导出", false); button(import_rect_, L"导入", false); button(done_rect_, L"完成", true);
-  Text(dc, L"Shift 切换中英文 · PageUp / PageDown 翻页", RECT{Scale(dpi_, 24), done_rect_.top, done_rect_.left - Scale(dpi_, 12), done_rect_.bottom}, kMuted, DT_LEFT, tiny);
+  Text(dc, L"Shift 快速切换 EN · 点击上方选择简体或繁体", RECT{Scale(dpi_, 24), done_rect_.top, done_rect_.left - Scale(dpi_, 12), done_rect_.bottom}, kMuted, DT_LEFT, tiny);
   DeleteObject(title); DeleteObject(body); DeleteObject(medium); DeleteObject(tiny);
 }
 
@@ -252,6 +261,7 @@ void SettingsWindow::Load() {
   theme_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"Theme", 0, path.c_str())), 0, 2);
   const int points = GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str());
   size_index_ = points <= 13 ? 0 : points >= 17 ? 2 : 1;
+  input_mode_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", 0, path.c_str())), 0, 2);
   std::vector<wchar_t> phrases(4096, L'\0'); GetPrivateProfileSectionW(L"Phrases", phrases.data(), static_cast<DWORD>(phrases.size()), path.c_str());
   std::wstring text;
   for (const wchar_t* current = phrases.data(); *current; current += wcslen(current) + 1) { if (!text.empty()) text += L"\r\n"; text += current; }
@@ -264,6 +274,7 @@ void SettingsWindow::Save() {
   WritePrivateProfileStringW(L"Account", L"Name", account, path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"Theme", std::to_wstring(theme_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"CandidateSize", std::to_wstring(points[size_index_]).c_str(), path.c_str());
+  WritePrivateProfileStringW(L"Input", L"Mode", std::to_wstring(input_mode_).c_str(), path.c_str());
   const int length = GetWindowTextLengthW(phrases_edit_); std::vector<wchar_t> raw(static_cast<size_t>(length) + 1, L'\0'); GetWindowTextW(phrases_edit_, raw.data(), static_cast<int>(raw.size()));
   std::wstring section; const std::wstring input(raw.data()); size_t begin = 0;
   while (begin <= input.size()) {
@@ -308,11 +319,11 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       EndPaint(hwnd, &paint); return 0;
     }
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wparam), kWhite); SetBkColor(reinterpret_cast<HDC>(wparam), kSurface); return reinterpret_cast<LRESULT>(self->edit_brush_);
-    case WM_MOUSEMOVE: { POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; const bool hand = self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point); SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0; }
-    case WM_SETCURSOR: { POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point); if (self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break; }
-    case WM_LBUTTONUP: { POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; InvalidateRect(hwnd, nullptr, FALSE); return 0; } for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; InvalidateRect(hwnd, nullptr, FALSE); return 0; } if (self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; } if (self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; } if (self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; } if (self->Hit(self->import_rect_, point)) { self->ImportBackup(); return 0; } if (self->Hit(self->done_rect_, point)) { self->Save(); DestroyWindow(hwnd); return 0; } if (self->Hit(self->close_rect_, point)) { DestroyWindow(hwnd); return 0; } return 0; }
+    case WM_MOUSEMOVE: { POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; const bool hand = self->Hit(self->input_mode_rects_[0], point) || self->Hit(self->input_mode_rects_[1], point) || self->Hit(self->input_mode_rects_[2], point) || self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point); SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0; }
+    case WM_SETCURSOR: { POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point); if (self->Hit(self->input_mode_rects_[0], point) || self->Hit(self->input_mode_rects_[1], point) || self->Hit(self->input_mode_rects_[2], point) || self->Hit(self->theme_rects_[0], point) || self->Hit(self->theme_rects_[1], point) || self->Hit(self->theme_rects_[2], point) || self->Hit(self->size_rects_[0], point) || self->Hit(self->size_rects_[1], point) || self->Hit(self->size_rects_[2], point) || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break; }
+    case WM_LBUTTONUP: { POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; } for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; InvalidateRect(hwnd, nullptr, FALSE); return 0; } for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; InvalidateRect(hwnd, nullptr, FALSE); return 0; } if (self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; } if (self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; } if (self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; } if (self->Hit(self->import_rect_, point)) { self->ImportBackup(); return 0; } if (self->Hit(self->done_rect_, point)) { self->Save(); DestroyWindow(hwnd); return 0; } if (self->Hit(self->close_rect_, point)) { DestroyWindow(hwnd); return 0; } return 0; }
     case WM_NCHITTEST: { const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}; POINT client = point; ScreenToClient(hwnd, &client); if (client.y < Scale(self->dpi_, 76)) return HTCAPTION; break; }
-    case WM_DPICHANGED: { self->dpi_ = HIWORD(wparam); const RECT* suggested = reinterpret_cast<const RECT*>(lparam); SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE); self->Layout(); return 0; }
+    case WM_DPICHANGED: { self->dpi_ = std::min<UINT>(HIWORD(wparam), kMaxSettingsDpi); const RECT* suggested = reinterpret_cast<const RECT*>(lparam); SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE); self->Layout(); return 0; }
     case WM_DESTROY: if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; } self->hwnd_ = nullptr; return 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);

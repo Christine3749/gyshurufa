@@ -36,6 +36,24 @@ std::wstring ModuleDirectory() {
   return separator == std::wstring::npos ? std::wstring{} : directory.substr(0, separator);
 }
 
+std::wstring InputSettingsPath() {
+  wchar_t root[MAX_PATH]{};
+  if (!GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH)) return {};
+  const std::wstring directory = std::wstring(root) + L"\\GYInput";
+  CreateDirectoryW(directory.c_str(), nullptr);
+  return directory + L"\\settings.ini";
+}
+
+int ConfiguredInputMode() {
+  const std::wstring path = InputSettingsPath();
+  return std::clamp(path.empty() ? 0 : static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", 0, path.c_str())), 0, 2);
+}
+
+void SaveConfiguredInputMode(int mode) {
+  const std::wstring path = InputSettingsPath();
+  if (!path.empty()) WritePrivateProfileStringW(L"Input", L"Mode", std::to_wstring(std::clamp(mode, 0, 2)).c_str(), path.c_str());
+}
+
 HRESULT SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
   return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
                         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS ? S_OK : E_FAIL;
@@ -130,6 +148,7 @@ public:
     }
     // Non-blocking startup moves the cold Host launch off the first keystroke.
     engine_.Prewarm();
+    SynchronizeInputMode(false);
     return S_OK;
   }  HRESULT STDMETHODCALLTYPE Deactivate() override {
     selection_callback_.Stop();
@@ -140,9 +159,8 @@ public:
     if (context_) { context_->Release(); context_ = nullptr; }
     if (thread_mgr_) { thread_mgr_->Release(); thread_mgr_ = nullptr; }
     shift_down_ = shift_used_ = false;
-    // Each reactivation of GY starts in Chinese. This prevents an English-mode
-    // state from another profile switch leaking into the next GY session.
-    english_mode_ = false;
+    // The selected language survives profile reactivation so it never changes
+    // by surprise between 简体、繁体 and EN.
     control_down_ = alt_down_ = win_down_ = false;
     client_id_ = TF_CLIENTID_NULL; return S_OK;
   }
@@ -151,6 +169,7 @@ public:
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
     if (gy::keys::ShouldMarkShiftUsed(shift_down_, key)) shift_used_ = true;
+    SynchronizeInputMode(false);
     *eaten = IsShiftKey(key) ? gy::keys::ShouldCaptureShift(HasShortcutModifier()) : ShouldEat(key);
     if (key >= 'A' && key <= 'Z') Trace(L"key.test", S_OK, key);
     return S_OK;
@@ -273,10 +292,21 @@ private:
     selected_ = page_start_;
   }
   void ToggleEnglishMode() {
-    CancelComposition();
-    english_mode_ = !english_mode_;
-    engine_.ShowMode(last_caret_, english_mode_);
+    const int next_mode = english_mode_ ? chinese_mode_ : 2;
+    SaveConfiguredInputMode(next_mode);
+    ApplyInputMode(next_mode, true);
   }
+  void ApplyInputMode(int mode, bool announce) {
+    mode = std::clamp(mode, 0, 2);
+    const bool next_english = mode == 2;
+    if (mode == input_mode_ && english_mode_ == next_english) return;
+    if (!composition_text_.empty()) CancelComposition();
+    input_mode_ = mode;
+    if (mode != 2) chinese_mode_ = mode;
+    english_mode_ = next_english;
+    if (announce) engine_.ShowMode(last_caret_, english_mode_);
+  }
+  void SynchronizeInputMode(bool announce) { ApplyInputMode(ConfiguredInputMode(), announce); }
   void HandleHostAction(unsigned action) {
     if (action == kToggleModeAction) {
       ToggleEnglishMode();
@@ -449,7 +479,7 @@ private:
     engine_.ShowCandidates(caret, candidates_, selected_, page_start_, selection_callback_.Endpoint());
   }
   void Select(unsigned index) { if (index < candidates_.size()) RequestEdit({EditActionKind::Commit, 0, index}); }
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool english_mode_ = false; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; int input_mode_ = 0; int chinese_mode_ = 0; bool english_mode_ = false; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 
