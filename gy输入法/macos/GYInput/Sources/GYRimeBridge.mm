@@ -15,6 +15,34 @@ static void GYInitializeRimeOnce(RimeApi *api, RimeTraits *traits) {
   });
 }
 
+static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, NSString **diagnostic) {
+  NSURL *source = [sharedDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
+  NSURL *destination = [userDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
+  NSURL *deployedSchema = [destination URLByAppendingPathComponent:@"luna_pinyin.schema.yaml"];
+  if ([NSFileManager.defaultManager fileExistsAtPath:deployedSchema.path]) return YES;
+
+  NSError *error = nil;
+  if (![NSFileManager.defaultManager createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:&error]) {
+    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot create Rime user workspace: %@", error.localizedDescription];
+    return NO;
+  }
+  NSArray<NSString *> *files = @[@"default.yaml", @"luna_pinyin.prism.bin", @"luna_pinyin.reverse.bin", @"luna_pinyin.schema.yaml", @"luna_pinyin.table.bin"];
+  for (NSString *file in files) {
+    NSURL *from = [source URLByAppendingPathComponent:file];
+    NSURL *to = [destination URLByAppendingPathComponent:file];
+    if (![NSFileManager.defaultManager fileExistsAtPath:from.path]) {
+      if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"bundled Rime workspace is missing %@", file];
+      return NO;
+    }
+    error = nil;
+    if (![NSFileManager.defaultManager copyItemAtURL:from toURL:to error:&error]) {
+      if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot deploy Rime workspace: %@", error.localizedDescription];
+      return NO;
+    }
+  }
+  return YES;
+}
+
 @implementation GYRimeBridge {
   NSURL *_sharedDataURL;
   NSURL *_userDataURL;
@@ -32,6 +60,13 @@ static void GYInitializeRimeOnce(RimeApi *api, RimeTraits *traits) {
   _sharedDataURL = sharedDataURL;
   _userDataURL = userDataURL;
 #if GY_HAS_RIME
+#if GY_HAS_RIME
+  NSString *workspaceError = nil;
+  if (sharedDataURL == nil || !GYEnsureBundledWorkspace(sharedDataURL, userDataURL, &workspaceError)) {
+    _diagnostic = workspaceError ?: @"bundled Rime workspace is unavailable";
+    return self;
+  }
+#endif
   const char *sharedPath = sharedDataURL.path.UTF8String;
   const char *userPath = userDataURL.path.UTF8String;
   RIME_STRUCT(RimeTraits, traits);

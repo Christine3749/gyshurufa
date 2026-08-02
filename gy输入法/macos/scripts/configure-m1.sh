@@ -13,6 +13,14 @@ if [[ "$(uname -m)" != "arm64" && "${GY_ALLOW_UNIVERSAL:-0}" != "1" ]]; then
   echo "This first target is Apple Silicon only. Set GY_ALLOW_UNIVERSAL=1 only after testing both architectures." >&2
   exit 1
 fi
+workspace=(default.yaml luna_pinyin.prism.bin luna_pinyin.reverse.bin luna_pinyin.schema.yaml luna_pinyin.table.bin)
+for file in "${workspace[@]}"; do
+  if [[ ! -f "$root/native/runtime/rime/shared/build/$file" ]]; then
+    echo "Bundled Rime workspace is incomplete: missing $file" >&2
+    exit 1
+  fi
+done
+
 
 command -v xcodebuild >/dev/null || { echo "Install Xcode command-line tools first." >&2; exit 1; }
 command -v xcodegen >/dev/null || { echo "Install XcodeGen, then rerun this script." >&2; exit 1; }
