@@ -188,7 +188,8 @@ end;
 function GyStateJson(const DllPath, HostPath, HostVersion, HealthPath: String): String;
 begin
   Result := '{"dll":"' + JsonEscape(DllPath) + '","host":"' + JsonEscape(HostPath) +
-            '","version":"' + JsonEscape(HostVersion) + '","health":"' + JsonEscape(HealthPath) + '"}';
+            '","version":"' + JsonEscape(HostVersion) + '","hostVersion":"' + JsonEscape(HostVersion) +
+            '","coreVersion":"{#MyTsfVersion}","health":"' + JsonEscape(HealthPath) + '"}';
 end;
 
 procedure CapturePreviousGyState();

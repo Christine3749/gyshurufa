@@ -14,7 +14,8 @@ try {
   $gy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\GYInput' -ErrorAction Stop
   $hostPath = [string]$gy.HostPath
   $hostVersion = [string]$gy.HostVersion
-  $statePath = Join-Path (Split-Path -Parent (Split-Path -Parent $hostPath)) 'install-state.json'
+  # Host lives in <install>\versions\<version>; installation state lives at <install>.
+  $statePath = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $hostPath))) 'install-state.json'
   $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
   $coreVersion = if ($state) { [string]$state.coreVersion } else { '' }
   Check (-not [string]::IsNullOrWhiteSpace($coreVersion)) "当前核心版本：$coreVersion" '没有找到当前核心版本状态。'

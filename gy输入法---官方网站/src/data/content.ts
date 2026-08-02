@@ -12,8 +12,9 @@ export const BRAND_INFO = {
   releaseDate: '2026年8月2日',
   fileSize: '9.57 MB',
   architecture: 'x64 / ARM64 原生架构',
-  sha256: '900A0B01B53A2D9670BECE5B35B84A6C82F777B0CEB490780A364E77C82488A1',
-  downloadUrl: 'https://gy-shurufa-download.lihouyi7586.workers.dev/latest.exe'
+  sha256: '78AE140A52B4D5F6881EBE17276B1E80859BD5F2752DF5C1871ECB4430D66EEF',
+  // Keep the public download under the official site; Vercel proxies this path to the R2-backed Worker.
+  downloadUrl: '/download/latest.exe'
 };
 
 export const TYPING_SCENARIOS: TypingScenario[] = [
