@@ -25,7 +25,7 @@ No text is sent to a network service in the input path. Account, AI, and cross-d
 
 1. Install current Xcode command-line tools, XcodeGen, and the dependencies needed by the bundled librime source.
 2. From this directory, run `./scripts/build-macos.sh`.
-3. Test `.build/DerivedData/Build/Products/Release/GYInput.app` in TextEdit, Safari, Chrome, VS Code, WeChat, Word, Slack, and Terminal.
+3. Run `./scripts/smoke-test-macos.sh`, then test `.build/DerivedData/Build/Products/Release/GYInput.app` in TextEdit, Safari, Chrome, VS Code, WeChat, Word, Slack, and Terminal.
 4. Add it in System Settings > Keyboard > Input Sources for internal testing.
 
 Public release only: set `GY_DEVELOPER_IDENTITY`, `GY_INSTALLER_IDENTITY`, and `GY_NOTARY_PROFILE`, then run `./scripts/package-release.sh`. It produces a notarized PKG for `/Library/Input Methods` and SHA-256 file; only that verified artifact may be uploaded to the official download origin.

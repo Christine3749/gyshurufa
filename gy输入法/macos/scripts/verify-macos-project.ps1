@@ -14,6 +14,7 @@ $required = @(
   'scripts/build-macos.sh',
   'scripts/package-release.sh'
   'scripts/publish-r2.sh'
+  'scripts/smoke-test-macos.sh'
 )
 foreach ($relative in $required) {
   $path = Join-Path $MacRoot $relative
