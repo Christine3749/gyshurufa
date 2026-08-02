@@ -34,6 +34,7 @@ export default {
     // "latest" must never continue serving a previous installer after a release switch.
     headers.set("X-Content-Type-Options", "nosniff");
     object.writeHttpMetadata(headers);
+    headers.set("Cache-Control", "no-store");
     headers.set("ETag", object.httpEtag);
     return new Response(request.method === "HEAD" ? null : object.body, { headers });
   },
