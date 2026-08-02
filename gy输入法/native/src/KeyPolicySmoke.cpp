@@ -26,7 +26,9 @@ int wmain() {
       !gy::keys::ShouldCaptureChinesePunctuation(VK_OEM_PERIOD, false) ||
       !gy::keys::ShouldCaptureChinesePunctuation(VK_OEM_7, false) ||
       gy::keys::ShouldCaptureChinesePunctuation('A', false)) return 7;
-  if (!gy::keys::IsCommitKey(VK_RETURN) || !gy::keys::IsCommitKey(VK_SPACE) ||
+  if (!gy::keys::IsRawTextCommitKey(VK_RETURN) || gy::keys::IsRawTextCommitKey(VK_SPACE) ||
+      !gy::keys::IsCandidateCommitKey(VK_SPACE) || gy::keys::IsCandidateCommitKey(VK_RETURN) ||
+      !gy::keys::IsCommitKey(VK_RETURN) || !gy::keys::IsCommitKey(VK_SPACE) ||
       gy::keys::IsCommitKey(VK_SHIFT)) return 8;
 
   return 0;

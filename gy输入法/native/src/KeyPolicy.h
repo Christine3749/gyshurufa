@@ -30,7 +30,10 @@ constexpr bool ShouldCaptureChinesePunctuation(WPARAM key, bool shift) {
   return gy::punctuation::IsQuoteKey(key) || gy::punctuation::ChineseCharacter(key, shift) != 0;
 }
 
-// Enter and Space confirm the active Chinese candidate. They are never mode
-// switches; only a standalone Shift may switch GY between 中 and EN.
-constexpr bool IsCommitKey(WPARAM key) { return key == VK_SPACE || key == VK_RETURN; }
+// Space confirms the active Chinese candidate. Enter commits the raw pinyin as
+// ASCII text, while leaving GY in Chinese mode; only standalone Shift toggles
+// 中 and EN.
+constexpr bool IsCandidateCommitKey(WPARAM key) { return key == VK_SPACE; }
+constexpr bool IsRawTextCommitKey(WPARAM key) { return key == VK_RETURN; }
+constexpr bool IsCommitKey(WPARAM key) { return IsCandidateCommitKey(key) || IsRawTextCommitKey(key); }
 }  // namespace gy::keys

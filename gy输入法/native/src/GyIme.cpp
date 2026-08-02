@@ -181,7 +181,8 @@ public:
     if (key == VK_OEM_7) return RequestEdit({EditActionKind::Append, L'\''});
     if (key == VK_BACK) return RequestEdit({EditActionKind::Backspace});
     if (key == VK_ESCAPE) return RequestEdit({EditActionKind::Cancel});
-    if (gy::keys::IsCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, selected_});
+    if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, static_cast<unsigned>(candidates_.size())});
+    if (gy::keys::IsCandidateCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, selected_});
     if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::Commit, 0, page_start_ + static_cast<unsigned>(key - '1')});
     if (key == VK_PRIOR) { MovePage(-1); ShowCandidates(context_, nullptr); return S_OK; }
     if (key == VK_NEXT) { MovePage(1); ShowCandidates(context_, nullptr); return S_OK; }

@@ -1,8 +1,8 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.9.12"
+  #define MyAppVersion "0.9.13"
 #endif
 #ifndef MyTsfVersion
-#define MyTsfVersion "0.9.12"
+#define MyTsfVersion "0.9.13"
 #endif
 #define MyAppName "GY 输入法"
 #define MyAppPublisher "GY Input Method"

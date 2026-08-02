@@ -4,13 +4,13 @@ interface Env {
 
 const files: Record<string, { key: string; name: string; type: string }> = {
   "/latest.exe": {
-    key: "releases/0.9.12/GYInputSetup-0.9.12.exe",
-    name: "GYInputSetup-0.9.12.exe",
+    key: "releases/0.9.13/GYInputSetup-0.9.13.exe",
+    name: "GYInputSetup-0.9.13.exe",
     type: "application/vnd.microsoft.portable-executable",
   },
   "/latest.zip": {
-    key: "releases/0.9.12/GYInput-0.9.12.zip",
-    name: "GYInput-0.9.12.zip",
+    key: "releases/0.9.13/GYInput-0.9.13.zip",
+    name: "GYInput-0.9.13.zip",
     type: "application/zip",
   },
 };
@@ -31,7 +31,7 @@ export default {
     headers.set("Content-Type", file.type);
     headers.set("Content-Length", String(object.size));
     headers.set("Content-Disposition", `attachment; filename="${file.name}"`);
-    headers.set("Cache-Control", "public, max-age=300");
+    // "latest" must never continue serving a previous installer after a release switch.
     headers.set("X-Content-Type-Options", "nosniff");
     object.writeHttpMetadata(headers);
     headers.set("ETag", object.httpEtag);
