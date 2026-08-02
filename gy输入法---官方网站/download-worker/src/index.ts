@@ -22,6 +22,16 @@ const files: Record<string, { key: string; name: string; type: string }> = {
     name: "GYInput-0.9.15.zip",
     type: "application/zip",
   },
+  "/latest.pkg": {
+    key: "releases/0.9.15/GYInput-0.9.15-arm64.pkg",
+    name: "GYInput-0.9.15-arm64.pkg",
+    type: "application/octet-stream",
+  },
+  "/latest.pkg.sha256": {
+    key: "releases/0.9.15/GYInput-0.9.15-arm64.pkg.sha256",
+    name: "GYInput-0.9.15-arm64.pkg.sha256",
+    type: "text/plain; charset=utf-8",
+  },
 };
 
 export default {
