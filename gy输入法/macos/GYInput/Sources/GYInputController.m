@@ -2,6 +2,7 @@
 #import "GYRimeBridge.h"
 #import "GYInputMode.h"
 #import "GYSettingsStore.h"
+#import "GYPreferencesController.h"
 #import <Carbon/HIToolbox/Events.h>
 
 @implementation GYInputController {
@@ -55,6 +56,23 @@
 - (void)selectMode:(NSMenuItem *)sender {
   [self applyInputMode:(GYInputMode)sender.tag];
 }
+- (void)showPreferences:(id)sender {
+  (void)sender;
+  [GYPreferencesController.sharedController show];
+}
+
+
+- (nullable NSString *)commitDisplayedCandidateAtIndex:(NSUInteger)index {
+  if (index >= _candidates.count) return nil;
+  NSString *phrase = GYSettingsStore.sharedStore.customPhrases[_composition.lowercaseString];
+  NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
+  BOOL insertedCustomPhrase = phrase.length != 0 &&
+      [_candidates.firstObject isEqualToString:phrase] &&
+      ![rimeCandidates containsObject:phrase];
+  if (insertedCustomPhrase && index == 0) return phrase;
+  NSUInteger rimeIndex = insertedCustomPhrase ? index - 1 : index;
+  return [_engine commitCandidateAtIndex:rimeIndex];
+}
 
 - (NSMenu *)menu {
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"GY 输入法"];
@@ -68,6 +86,10 @@
     [menu addItem:item];
   }
   [menu addItem:NSMenuItem.separatorItem];
+  NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
+  preferences.target = self;
+  preferences.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  [menu addItem:preferences];
   NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(_mode)] action:nil keyEquivalent:@""];
   status.enabled = NO;
   [menu addItem:status];
@@ -80,7 +102,7 @@
   NSString *text = candidateString.string;
   if (text.length == 0) return;
   NSUInteger index = [_candidates indexOfObject:text];
-  NSString *commit = index == NSNotFound ? nil : [_engine commitCandidateAtIndex:index];
+  NSString *commit = index == NSNotFound ? nil : [self commitDisplayedCandidateAtIndex:index];
   [self commitText:commit ?: text];
 }
 
@@ -125,13 +147,13 @@
 
   if (event.keyCode == kVK_Delete && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [_engine candidatesForCode:_composition];
+    _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
     if (_composition.length == 0) [self cancelComposition];
     else [self updateMarkedTextForClient:client];
     return YES;
   }
   if (event.keyCode == kVK_Space && _candidates.count != 0) {
-    NSString *commit = [_engine commitCandidateAtIndex:0];
+    NSString *commit = [self commitDisplayedCandidateAtIndex:0];
     [self commitText:commit ?: _candidates.firstObject];
     return YES;
   }
@@ -149,7 +171,7 @@
   if (event.keyCode >= kVK_ANSI_1 && event.keyCode <= kVK_ANSI_9 && _candidates.count != 0) {
     NSUInteger index = event.keyCode - kVK_ANSI_1;
     if (index < _candidates.count) {
-      NSString *commit = [_engine commitCandidateAtIndex:index];
+      NSString *commit = [self commitDisplayedCandidateAtIndex:index];
       [self commitText:commit ?: _candidates[index]];
       return YES;
     }
@@ -169,7 +191,7 @@
     return NO;
   }
   _composition = [_composition stringByAppendingString:text];
-  _candidates = [_engine candidatesForCode:_composition];
+  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
   [self updateMarkedTextForClient:client];
   return YES;
 }

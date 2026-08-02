@@ -9,6 +9,7 @@ $required = @(
   'GYInput/Sources/GYRimeBridge.mm',
   'GYInput/Sources/GYInputMode.h',
   'GYInput/Sources/GYSettingsStore.m',
+  'GYInput/Sources/GYPreferencesController.m',
   'scripts/bootstrap-rime-arm64.sh',
   'scripts/build-macos.sh',
   'scripts/package-release.sh'
@@ -21,7 +22,9 @@ foreach ($relative in $required) {
 $controller = Get-Content -LiteralPath (Join-Path $MacRoot 'GYInput/Sources/GYInputController.m') -Raw
 $bridge = Get-Content -LiteralPath (Join-Path $MacRoot 'GYInput/Sources/GYRimeBridge.mm') -Raw
 $plist = Get-Content -LiteralPath (Join-Path $MacRoot 'GYInput/Resources/Info.plist') -Raw
-foreach ($needle in @('GYInputModeTraditional', 'GYInputModeEnglish', 'kVK_Return', 'kVK_PageUp', 'kVK_PageDown', 'GYInputModeIsChinese')) {
+foreach ($needle in @('GYInputModeTraditional', 'GYInputModeEnglish', 'kVK_Return', 'kVK_PageUp', 'kVK_PageDown', 'GYInputModeIsChinese', 'commitDisplayedCandidateAtIndex', 'showPreferences:')) {
+if ($controller -notmatch '(?s)- \(NSMenu \*\)menu \{\s+NSMenu \*menu') { throw 'Controller regression: malformed input-method menu.' }
+if ($controller -match '(?s)- \(NSMenu \*\)menu \{\s*- \(') { throw 'Controller regression: a method was nested inside the menu.' }
   if (-not $controller.Contains($needle)) { throw "Controller regression: missing $needle" }
 }
 foreach ($needle in @('staged arm64 librime SDK', 'change_page', 'free_commit', '#error')) {
