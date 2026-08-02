@@ -1,0 +1,15 @@
+**/node_modules/
+**/dist/
+**/build*/
+**/release/
+**/.wrangler/
+**/.vercel/
+**/third_party/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.zip
+*.log
+.env
+.DS_Store

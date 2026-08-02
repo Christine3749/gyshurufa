@@ -1,0 +1,510 @@
+#include <windows.h>
+#include <msctf.h>
+
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "SelectionCallback.h"
+#include "Guids.h"
+#include "HostedPinyinEngine.h"
+#include "KeyPolicy.h"
+#include "PunctuationPolicy.h"
+
+namespace {
+constexpr unsigned kCandidatesPerPage = 5;
+constexpr unsigned kToggleModeAction = std::numeric_limits<unsigned>::max();
+constexpr unsigned kPreviousPageAction = kToggleModeAction - 1;
+constexpr unsigned kNextPageAction = kToggleModeAction - 2;
+HINSTANCE g_module = nullptr;
+
+std::wstring GuidToString(REFGUID guid) {
+  wchar_t value[40]{};
+  StringFromGUID2(guid, value, 40);
+  return value;
+}
+
+std::wstring ModuleDirectory() {
+  wchar_t path[MAX_PATH]{};
+  GetModuleFileNameW(g_module, path, MAX_PATH);
+  std::wstring directory(path);
+  const size_t separator = directory.find_last_of(L"\\/");
+  return separator == std::wstring::npos ? std::wstring{} : directory.substr(0, separator);
+}
+
+HRESULT SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
+  return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                        static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS ? S_OK : E_FAIL;
+}
+
+#ifdef GY_IME_TRACE
+void Trace(const wchar_t* event, HRESULT hr = S_OK, WPARAM key = 0) {
+  wchar_t directory[MAX_PATH]{};
+  if (!GetTempPathW(MAX_PATH, directory)) return;
+  const std::wstring path = std::wstring(directory) + L"GyIme.trace.log";
+  const HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  wchar_t line[256]{};
+  const int length = swprintf_s(line, L"pid=%lu event=%ls hr=0x%08lX key=%llu\r\n",
+                                GetCurrentProcessId(), event, static_cast<unsigned long>(hr),
+                                static_cast<unsigned long long>(key));
+  DWORD written = 0;
+  if (length > 0) WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+  CloseHandle(file);
+}
+#else
+void Trace(const wchar_t*, HRESULT = S_OK, WPARAM = 0) {}
+#endif
+
+enum class EditActionKind { Append, InsertText, Backspace, Commit, Cancel };
+struct EditAction {
+  EditActionKind kind;
+  wchar_t character = 0;
+  unsigned index = 0;
+};
+
+class GyTextService;
+class EditSession final : public ITfEditSession {
+public:
+  EditSession(GyTextService* owner, ITfContext* context, EditAction action)
+      : owner_(owner), context_(context), action_(action) {
+    if (context_) context_->AddRef();
+  }
+  ~EditSession() { if (context_) context_->Release(); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override;
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override { const ULONG refs = --refs_; if (!refs) delete this; return refs; }
+  HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override;
+private:
+  std::atomic<ULONG> refs_{1};
+  GyTextService* owner_;
+  ITfContext* context_;
+  EditAction action_;
+};
+
+class GyTextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink, public ITfThreadMgrEventSink, public ITfCompositionSink {
+public:
+  GyTextService() : engine_(ModuleDirectory()), selection_callback_(g_module, [this](unsigned action) { HandleHostAction(action); }) {}
+  ~GyTextService() { Deactivate(); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (!object) return E_INVALIDARG; *object = nullptr;
+    if (iid == IID_IUnknown || iid == IID_ITfTextInputProcessor || iid == IID_ITfTextInputProcessorEx) *object = static_cast<ITfTextInputProcessorEx*>(this);
+    else if (iid == IID_ITfKeyEventSink) *object = static_cast<ITfKeyEventSink*>(this);
+    else if (iid == IID_ITfThreadMgrEventSink) *object = static_cast<ITfThreadMgrEventSink*>(this);
+    else if (iid == IID_ITfCompositionSink) *object = static_cast<ITfCompositionSink*>(this);
+    else return E_NOINTERFACE;
+    AddRef(); return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override { const ULONG refs = --refs_; if (!refs) delete this; return refs; }
+  HRESULT STDMETHODCALLTYPE Activate(ITfThreadMgr* manager, TfClientId client) override { return ActivateEx(manager, client, 0); }
+  HRESULT STDMETHODCALLTYPE ActivateEx(ITfThreadMgr* manager, TfClientId client, DWORD) override {
+    Trace(L"activate.begin");
+    if (!manager) return E_INVALIDARG;
+    Deactivate();
+    thread_mgr_ = manager;
+    thread_mgr_->AddRef();
+    client_id_ = client;
+    HRESULT hr = thread_mgr_->QueryInterface(IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&keystroke_mgr_));
+    Trace(L"activate.keystroke-manager", hr);
+    if (FAILED(hr)) return hr;
+    hr = keystroke_mgr_->AdviseKeyEventSink(client_id_, static_cast<ITfKeyEventSink*>(this), TRUE);
+    Trace(L"activate.advise-key-sink", hr);
+    if (FAILED(hr)) return hr;
+    ITfSource* source = nullptr;
+    if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) {
+      const HRESULT sink_hr = source->AdviseSink(IID_ITfThreadMgrEventSink,
+          static_cast<ITfThreadMgrEventSink*>(this), &thread_mgr_sink_);
+      Trace(L"activate.advise-focus-sink", sink_hr);
+      source->Release();
+    }
+    if (!selection_callback_.Start()) {
+      Trace(L"activate.selection-callback", E_FAIL);
+      Deactivate();
+      return E_FAIL;
+    }
+    // Non-blocking startup moves the cold Host launch off the first keystroke.
+    engine_.Prewarm();
+    return S_OK;
+  }  HRESULT STDMETHODCALLTYPE Deactivate() override {
+    selection_callback_.Stop();
+    CancelComposition();
+    if (keystroke_mgr_) { keystroke_mgr_->UnadviseKeyEventSink(client_id_); keystroke_mgr_->Release(); keystroke_mgr_ = nullptr; }
+    if (thread_mgr_ && thread_mgr_sink_ != TF_INVALID_COOKIE) { ITfSource* source = nullptr; if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) { source->UnadviseSink(thread_mgr_sink_); source->Release(); } }
+    thread_mgr_sink_ = TF_INVALID_COOKIE;
+    if (context_) { context_->Release(); context_ = nullptr; }
+    if (thread_mgr_) { thread_mgr_->Release(); thread_mgr_ = nullptr; }
+    shift_down_ = shift_used_ = false;
+    // Each reactivation of GY starts in Chinese. This prevents an English-mode
+    // state from another profile switch leaking into the next GY session.
+    english_mode_ = false;
+    control_down_ = alt_down_ = win_down_ = false;
+    client_id_ = TF_CLIENTID_NULL; return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
+    if (!eaten) return E_INVALIDARG;
+    if (gy::keys::ShouldMarkShiftUsed(shift_down_, key)) shift_used_ = true;
+    *eaten = IsShiftKey(key) ? gy::keys::ShouldCaptureShift(HasShortcutModifier()) : ShouldEat(key);
+    if (key >= 'A' && key <= 'Z') Trace(L"key.test", S_OK, key);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
+    if (!eaten) return E_INVALIDARG;
+    *eaten = IsShiftKey(key) && gy::keys::ShouldCaptureShift(HasShortcutModifier());
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) override {
+    if (!eaten) return E_INVALIDARG;
+    *eaten = FALSE;
+    if (IsShiftKey(key)) { shift_down_ = true; shift_used_ = HasShortcutModifier(); return S_OK; }
+    if (shift_down_) shift_used_ = true;
+    UpdateModifierState(key, true);
+    Trace(L"key.down", S_OK, key);
+
+    // Shift alone changes the GY conversion mode. Ctrl+Space and other
+    // application shortcuts are deliberately passed through untouched.
+    if (!ShouldEat(key)) return S_OK;
+    SetContext(context);
+    *eaten = TRUE;
+    if (const wchar_t punctuation = ChinesePunctuation(key); punctuation != 0) {
+      Trace(L"key.punctuation", S_OK, key);
+      return RequestEdit({EditActionKind::InsertText, punctuation});
+    }
+    if (key >= 'A' && key <= 'Z') return RequestEdit({EditActionKind::Append, static_cast<wchar_t>(key - 'A' + L'a')});
+    if (key == VK_OEM_7) return RequestEdit({EditActionKind::Append, L'\''});
+    if (key == VK_BACK) return RequestEdit({EditActionKind::Backspace});
+    if (key == VK_ESCAPE) return RequestEdit({EditActionKind::Cancel});
+    if (gy::keys::IsCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, selected_});
+    if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::Commit, 0, page_start_ + static_cast<unsigned>(key - '1')});
+    if (key == VK_PRIOR) { MovePage(-1); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_NEXT) { MovePage(1); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_UP || key == VK_LEFT) { MoveSelection(-1); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_DOWN || key == VK_RIGHT) { MoveSelection(1); ShowCandidates(context_, nullptr); return S_OK; }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
+    if (!eaten) return E_INVALIDARG;
+    *eaten = FALSE;
+    const bool should_toggle = IsShiftKey(key) && gy::keys::ShouldToggleMode(shift_down_, shift_used_, HasShortcutModifier());
+    if (IsShiftKey(key)) shift_down_ = false;
+    UpdateModifierState(key, false);
+    if (should_toggle) { ToggleEnglishMode(); *eaten = TRUE; }
+    return S_OK;
+  }  HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) override { if (!eaten) return E_INVALIDARG; *eaten = FALSE; return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnCompositionTerminated(TfEditCookie, ITfComposition* composition) override {
+    Trace(L"composition.terminated");
+    if (composition && composition == composition_) ResetCompositionState();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr*, ITfDocumentMgr* focus) override { CancelComposition(); if (!focus) { SetContext(nullptr); return S_OK; } ITfContext* context = nullptr; if (SUCCEEDED(focus->GetTop(&context))) SetContext(context); if (context) context->Release(); return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext*) override { return S_OK; }
+  HRESULT ApplyEdit(ITfContext* edit_context, const EditAction& action, TfEditCookie cookie) {
+    // A request posted by a window that has already lost focus must not edit the new window.
+    if (!edit_context || edit_context != context_) return S_OK;
+    if (action.kind == EditActionKind::InsertText) {
+      HRESULT hr = S_OK;
+      if (composition_) hr = CommitComposition(cookie, selected_);
+      return FAILED(hr) ? hr : InsertText(edit_context, cookie, action.character);
+    }
+    if (action.kind == EditActionKind::Append) {
+      composition_text_ += action.character;
+      candidates_ = engine_.Lookup(composition_text_);
+      selected_ = 0;
+      page_start_ = 0;
+      return UpdateComposition(edit_context, cookie);
+    }
+    if (action.kind == EditActionKind::Backspace) {
+      if (!composition_text_.empty()) composition_text_.pop_back();
+      candidates_ = engine_.Lookup(composition_text_);
+      selected_ = 0;
+      page_start_ = 0;
+      return composition_text_.empty() ? ClearComposition(cookie) : UpdateComposition(edit_context, cookie);
+    }
+    if (action.kind == EditActionKind::Commit) return CommitComposition(cookie, action.index);
+    return ClearComposition(cookie);
+  }
+private:
+  static bool IsDown(int virtual_key) { return (GetKeyState(virtual_key) & 0x8000) != 0; }
+  static bool IsPhysicallyDown(int virtual_key) { return (GetAsyncKeyState(virtual_key) & 0x8000) != 0; }
+  void UpdateModifierState(WPARAM key, bool down) {
+    switch (key) {
+      case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: control_down_ = down; break;
+      case VK_MENU: case VK_LMENU: case VK_RMENU: alt_down_ = down; break;
+      case VK_LWIN: case VK_RWIN: win_down_ = down; break;
+      default: break;
+    }
+  }
+  static bool IsShiftKey(WPARAM key) { return gy::keys::IsShiftKey(key); }
+  bool IsControlDown() const {
+    return control_down_ || IsDown(VK_CONTROL) || IsDown(VK_LCONTROL) || IsDown(VK_RCONTROL) ||
+        IsPhysicallyDown(VK_CONTROL) || IsPhysicallyDown(VK_LCONTROL) || IsPhysicallyDown(VK_RCONTROL);
+  }
+  bool HasShortcutModifier() const {
+    return IsControlDown() || alt_down_ || win_down_ || IsDown(VK_MENU) || IsDown(VK_LWIN) || IsDown(VK_RWIN) ||
+        IsPhysicallyDown(VK_MENU) || IsPhysicallyDown(VK_LWIN) || IsPhysicallyDown(VK_RWIN);
+  }  unsigned CurrentPageCandidateCount() const {
+    if (page_start_ >= candidates_.size()) return 0;
+    return std::min<unsigned>(kCandidatesPerPage,
+                              static_cast<unsigned>(candidates_.size()) - page_start_);
+  }
+  void MoveSelection(int delta) {
+    if (candidates_.empty()) return;
+    const int count = static_cast<int>(candidates_.size());
+    selected_ = static_cast<unsigned>((static_cast<int>(selected_) + delta + count) % count);
+    page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
+  }
+  void MovePage(int delta) {
+    if (candidates_.empty()) return;
+    const int last_page = static_cast<int>((candidates_.size() - 1) / kCandidatesPerPage);
+    const int current_page = static_cast<int>(page_start_ / kCandidatesPerPage);
+    const int target_page = std::clamp(current_page + delta, 0, last_page);
+    page_start_ = static_cast<unsigned>(target_page) * kCandidatesPerPage;
+    selected_ = page_start_;
+  }
+  void ToggleEnglishMode() {
+    CancelComposition();
+    english_mode_ = !english_mode_;
+    engine_.ShowMode(last_caret_, english_mode_);
+  }
+  void HandleHostAction(unsigned action) {
+    if (action == kToggleModeAction) {
+      ToggleEnglishMode();
+    } else if (action == kPreviousPageAction) {
+      MovePage(-1);
+      ShowCandidates(context_, nullptr);
+    } else if (action == kNextPageAction) {
+      MovePage(1);
+      ShowCandidates(context_, nullptr);
+    } else {
+      Select(action);
+    }
+  }
+  wchar_t ChinesePunctuation(WPARAM key) {
+    if (english_mode_ || HasShortcutModifier()) return 0;
+    const bool shift = IsDown(VK_SHIFT) || shift_down_;
+    if (gy::punctuation::IsQuoteKey(key)) {
+      const bool double_quote = shift;
+      bool& opening = double_quote ? double_quote_open_ : single_quote_open_;
+      const wchar_t value = gy::punctuation::QuoteCharacter(double_quote, opening);
+      opening = !opening;
+      return value;
+    }
+    return gy::punctuation::ChineseCharacter(key, shift);
+  }
+  bool ShouldEat(WPARAM key) const {
+    // TSF sees every key. Command modifiers must remain with the application so
+    // Ctrl+C/V/F, Alt shortcuts and Win shortcuts work. Shift+punctuation is
+    // still ordinary typing in Chinese mode, not a shortcut or mode toggle.
+    if (HasShortcutModifier() || english_mode_) return false;
+    if (gy::keys::ShouldCaptureChinesePunctuation(key, IsDown(VK_SHIFT) || shift_down_)) return true;
+    if (IsDown(VK_SHIFT)) return false;
+    if (key >= 'A' && key <= 'Z') return true;
+    if (composition_text_.empty()) return false;
+    if (key == VK_OEM_7 || key == VK_BACK || key == VK_ESCAPE || gy::keys::IsCommitKey(key) ||
+        key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT || key == VK_PRIOR || key == VK_NEXT) return true;
+    if (key >= '1' && key <= '5') return static_cast<unsigned>(key - '1') < CurrentPageCandidateCount();
+    return false;
+  }
+  void SetContext(ITfContext* context) {
+    if (context == context_) return;
+    CancelComposition();
+    if (context_) context_->Release();
+    context_ = context;
+    if (context_) context_->AddRef();
+  }
+  HRESULT RequestEdit(EditAction action) { if (!context_) { Trace(L"edit.no-context", E_FAIL); return E_FAIL; } auto* edit = new EditSession(this, context_, action); HRESULT session_hr = E_FAIL; const HRESULT hr = context_->RequestEditSession(client_id_, edit, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &session_hr); Trace(L"edit.request", FAILED(hr) ? hr : session_hr); edit->Release(); return FAILED(hr) ? hr : session_hr; }
+  HRESULT UpdateComposition(ITfContext* edit_context, TfEditCookie cookie) {
+    if (!edit_context) return E_FAIL;
+    if (!composition_) {
+      TF_SELECTION selection{};
+      ULONG fetched = 0;
+      HRESULT hr = edit_context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+      Trace(L"composition.get-selection", hr);
+      if (FAILED(hr) || fetched != 1) return FAILED(hr) ? hr : E_FAIL;
+
+      ITfRange* composition_range = nullptr;
+      hr = selection.range->Clone(&composition_range);
+      Trace(L"composition.clone-selection", hr);
+      if (SUCCEEDED(hr)) hr = composition_range->Collapse(cookie, TF_ANCHOR_END);
+      Trace(L"composition.collapse", hr);
+
+      ITfContextComposition* composer = nullptr;
+      if (SUCCEEDED(hr)) hr = edit_context->QueryInterface(IID_ITfContextComposition, reinterpret_cast<void**>(&composer));
+      Trace(L"composition.get-manager", hr);
+      if (SUCCEEDED(hr)) {
+        hr = composer->StartComposition(cookie, composition_range,
+                                        static_cast<ITfCompositionSink*>(this), &composition_);
+      }
+      Trace(L"composition.start", hr);
+      if (composer) composer->Release();
+      if (composition_range) composition_range->Release();
+      selection.range->Release();
+      if (FAILED(hr)) return hr;
+      if (!composition_) { Trace(L"composition.rejected", E_FAIL); return E_FAIL; }
+    }
+    ITfRange* range = nullptr;
+    HRESULT hr = composition_->GetRange(&range);
+    Trace(L"composition.get-range", hr);
+    if (SUCCEEDED(hr)) {
+      hr = range->SetText(cookie, 0, composition_text_.c_str(), static_cast<LONG>(composition_text_.size()));
+      Trace(L"composition.set-text", hr);
+      if (SUCCEEDED(hr)) ShowCandidates(edit_context, range, cookie);
+      range->Release();
+    }
+    return hr;
+  }
+  HRESULT InsertText(ITfContext* edit_context, TfEditCookie cookie, wchar_t character) {
+    if (!edit_context || character == 0) return E_INVALIDARG;
+    TF_SELECTION selection{};
+    ULONG fetched = 0;
+    HRESULT hr = edit_context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched != 1 || !selection.range) return FAILED(hr) ? hr : E_FAIL;
+    hr = selection.range->SetText(cookie, 0, &character, 1);
+    if (SUCCEEDED(hr)) {
+      selection.range->Collapse(cookie, TF_ANCHOR_END);
+      hr = edit_context->SetSelection(cookie, 1, &selection);
+    }
+    selection.range->Release();
+    return hr;
+  }
+  HRESULT CommitComposition(TfEditCookie cookie, unsigned index) {
+    if (!composition_) return S_OK;
+    const bool selected_candidate = index < candidates_.size();
+    const std::wstring pinyin = composition_text_;
+    const std::wstring text = selected_candidate ? candidates_[index] : composition_text_;
+    ITfRange* range = nullptr;
+    HRESULT hr = composition_->GetRange(&range);
+    if (SUCCEEDED(hr)) {
+      hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
+      range->Release();
+    }
+    if (SUCCEEDED(hr)) hr = composition_->EndComposition(cookie);
+    composition_->Release();
+    composition_ = nullptr;
+    if (SUCCEEDED(hr) && selected_candidate) engine_.Learn(pinyin, text);
+    composition_text_.clear();
+    candidates_.clear();
+    selected_ = 0;
+    page_start_ = 0;
+    engine_.HideCandidates();
+    return hr;
+  }
+  HRESULT ClearComposition(TfEditCookie cookie) {
+    if (!composition_) { ResetCompositionState(); return S_OK; }
+    ITfRange* range = nullptr;
+    HRESULT hr = composition_->GetRange(&range);
+    if (SUCCEEDED(hr)) {
+      hr = range->SetText(cookie, 0, L"", 0);
+      range->Release();
+    }
+    const HRESULT end_hr = composition_->EndComposition(cookie);
+    ResetCompositionState();
+    return FAILED(hr) ? hr : end_hr;
+  }
+  void ResetCompositionState() {
+    if (composition_) { composition_->Release(); composition_ = nullptr; }
+    composition_text_.clear();
+    candidates_.clear();
+    selected_ = 0;
+    page_start_ = 0;
+    engine_.HideCandidates();
+  }
+  void CancelComposition() {
+    if (composition_ && context_ && client_id_ != TF_CLIENTID_NULL) {
+      const HRESULT hr = RequestEdit({EditActionKind::Cancel});
+      if (hr == S_OK) return;
+    }
+    ResetCompositionState();
+  }
+  void ShowCandidates(ITfContext* edit_context, ITfRange* known_range, TfEditCookie cookie = TF_INVALID_EDIT_COOKIE) {
+    if (candidates_.empty()) { engine_.HideCandidates(); return; }
+    RECT caret = last_caret_;
+    ITfRange* range = known_range;
+    bool release_range = false;
+    if (!range && composition_ && SUCCEEDED(composition_->GetRange(&range))) release_range = range != nullptr;
+    if (range && edit_context && cookie != TF_INVALID_EDIT_COOKIE) {
+      ITfContextView* view = nullptr;
+      BOOL clipped = FALSE;
+      if (SUCCEEDED(edit_context->GetActiveView(&view))) {
+        RECT measured{};
+        if (SUCCEEDED(view->GetTextExt(cookie, range, &measured, &clipped)) && !clipped) {
+          caret = measured;
+          last_caret_ = measured;
+        }
+        view->Release();
+      }
+    }
+    if (release_range) range->Release();
+    engine_.ShowCandidates(caret, candidates_, selected_, page_start_, selection_callback_.Endpoint());
+  }
+  void Select(unsigned index) { if (index < candidates_.size()) RequestEdit({EditActionKind::Commit, 0, index}); }
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool english_mode_ = false; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  friend class EditSession;
+};
+
+HRESULT EditSession::QueryInterface(REFIID iid, void** object) { if (!object) return E_INVALIDARG; *object = nullptr; if (iid == IID_IUnknown || iid == IID_ITfEditSession) { *object = static_cast<ITfEditSession*>(this); AddRef(); return S_OK; } return E_NOINTERFACE; }
+HRESULT EditSession::DoEditSession(TfEditCookie cookie) { return owner_->ApplyEdit(context_, action_, cookie); }
+class ClassFactory final : public IClassFactory {
+public:
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override { if (!object) return E_INVALIDARG; *object = nullptr; if (iid == IID_IUnknown || iid == IID_IClassFactory) { *object = static_cast<IClassFactory*>(this); AddRef(); return S_OK; } return E_NOINTERFACE; }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; } ULONG STDMETHODCALLTYPE Release() override { const ULONG refs = --refs_; if (!refs) delete this; return refs; }
+  HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown* outer, REFIID iid, void** object) override { if (outer) return CLASS_E_NOAGGREGATION; auto* service = new GyTextService(); const HRESULT hr = service->QueryInterface(iid, object); service->Release(); return hr; }
+  HRESULT STDMETHODCALLTYPE LockServer(BOOL) override { return S_OK; }
+private: std::atomic<ULONG> refs_{1};
+};
+HRESULT RegisterComServer(bool remove) {
+  const std::wstring key_name = L"Software\\Classes\\CLSID\\" + GuidToString(CLSID_GyTextService);
+  if (remove) { const LSTATUS result = RegDeleteTreeW(HKEY_LOCAL_MACHINE, key_name.c_str()); return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND ? S_OK : E_FAIL; }
+  HKEY key = nullptr; if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, key_name.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) != ERROR_SUCCESS) return E_FAIL; const HRESULT title_hr = SetRegString(key, nullptr, L"GY 输入法文本服务"); RegCloseKey(key); if (FAILED(title_hr)) return title_hr;
+  HKEY server = nullptr; if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, (key_name + L"\\InprocServer32").c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &server, nullptr) != ERROR_SUCCESS) return E_FAIL; wchar_t path[MAX_PATH]{}; GetModuleFileNameW(g_module, path, MAX_PATH); const HRESULT path_hr = SetRegString(server, nullptr, path); const HRESULT model_hr = SetRegString(server, L"ThreadingModel", L"Apartment"); RegCloseKey(server); return FAILED(path_hr) ? path_hr : model_hr;
+}
+HRESULT RegisterProfile(bool remove) {
+  constexpr LANGID kChinese = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
+  ITfInputProcessorProfileMgr* profiles = nullptr;
+  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfileMgr, reinterpret_cast<void**>(&profiles));
+  if (FAILED(hr)) return hr;
+  if (remove) {
+    hr = profiles->UnregisterProfile(CLSID_GyTextService, kChinese, GUID_PROFILE_GY_PINYIN,
+                                     TF_URP_ALLPROFILES);
+    if (hr == E_INVALIDARG) hr = S_OK;
+  } else {
+    // Refresh profile metadata so Windows drops any previously cached default icon.
+    profiles->UnregisterProfile(CLSID_GyTextService, kChinese, GUID_PROFILE_GY_PINYIN, TF_URP_ALLPROFILES);
+    wchar_t path[MAX_PATH]{}; GetModuleFileNameW(g_module, path, MAX_PATH);
+    const std::wstring name = L"GY 输入法（拼音）";
+    std::wstring icon_path = ModuleDirectory() + L"\\gy.ico";
+    if (GetFileAttributesW(icon_path.c_str()) == INVALID_FILE_ATTRIBUTES) icon_path = path;
+    hr = profiles->RegisterProfile(CLSID_GyTextService, kChinese, GUID_PROFILE_GY_PINYIN,
+                                   name.c_str(), static_cast<ULONG>(name.size()), icon_path.c_str(),
+                                   static_cast<ULONG>(icon_path.size()), 0, nullptr, 0, TRUE, 0);
+  }
+  profiles->Release();
+  return hr;
+}HRESULT RegisterCategory(bool remove) {
+  ITfCategoryMgr* categories = nullptr;
+  HRESULT hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_ITfCategoryMgr, reinterpret_cast<void**>(&categories));
+  if (FAILED(hr)) return hr;
+  if (remove) hr = categories->UnregisterCategory(CLSID_GyTextService, GUID_TFCAT_TIP_KEYBOARD, CLSID_GyTextService);
+  else hr = categories->RegisterCategory(CLSID_GyTextService, GUID_TFCAT_TIP_KEYBOARD, CLSID_GyTextService);
+  categories->Release(); return hr;
+}
+}  // namespace
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) { if (reason == DLL_PROCESS_ATTACH) { g_module = instance; DisableThreadLibraryCalls(instance); } return TRUE; }
+extern "C" HRESULT WINAPI DllCanUnloadNow() { return S_FALSE; }
+extern "C" HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) { if (clsid != CLSID_GyTextService) return CLASS_E_CLASSNOTAVAILABLE; auto* factory = new ClassFactory(); const HRESULT hr = factory->QueryInterface(iid, object); factory->Release(); return hr; }
+extern "C" HRESULT WINAPI DllRegisterServer() { const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); const HRESULT com_hr = RegisterComServer(false); const HRESULT profile_hr = SUCCEEDED(com_hr) ? RegisterProfile(false) : com_hr; const HRESULT category_hr = SUCCEEDED(profile_hr) ? RegisterCategory(false) : profile_hr; if (SUCCEEDED(init)) CoUninitialize(); return FAILED(com_hr) ? com_hr : (FAILED(profile_hr) ? profile_hr : category_hr); }
+extern "C" HRESULT WINAPI DllUnregisterServer() { const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); const HRESULT profile_hr = RegisterProfile(true); const HRESULT category_hr = RegisterCategory(true); const HRESULT com_hr = RegisterComServer(true); if (SUCCEEDED(init)) CoUninitialize(); return FAILED(profile_hr) ? profile_hr : (FAILED(category_hr) ? category_hr : com_hr); }
+
+

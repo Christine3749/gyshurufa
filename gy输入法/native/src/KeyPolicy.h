@@ -1,0 +1,36 @@
+#pragma once
+
+#include <windows.h>
+
+#include "PunctuationPolicy.h"
+
+namespace gy::keys {
+constexpr bool IsShiftKey(WPARAM key) {
+  return key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT;
+}
+
+// A lone Shift is the explicit GY mode shortcut. Shift used with Ctrl, Alt or
+// Win belongs to Windows or the focused application and must never be claimed.
+constexpr bool ShouldCaptureShift(bool has_shortcut_modifier) {
+  return !has_shortcut_modifier;
+}
+
+constexpr bool ShouldToggleMode(bool shift_down, bool shift_used, bool has_shortcut_modifier) {
+  return shift_down && !shift_used && !has_shortcut_modifier;
+}
+
+// TSF may not call OnKeyDown for a key that we deliberately pass to the app.
+// Mark the pending Shift as used during the Test phase, so Shift+Tab,
+// Shift+letter and Shift+Ctrl cannot become a mode toggle when Shift is released.
+constexpr bool ShouldMarkShiftUsed(bool shift_down, WPARAM key) {
+  return shift_down && !IsShiftKey(key);
+}
+
+constexpr bool ShouldCaptureChinesePunctuation(WPARAM key, bool shift) {
+  return gy::punctuation::IsQuoteKey(key) || gy::punctuation::ChineseCharacter(key, shift) != 0;
+}
+
+// Enter and Space confirm the active Chinese candidate. They are never mode
+// switches; only a standalone Shift may switch GY between 中 and EN.
+constexpr bool IsCommitKey(WPARAM key) { return key == VK_SPACE || key == VK_RETURN; }
+}  // namespace gy::keys
