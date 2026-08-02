@@ -29,5 +29,7 @@ No text is sent to a network service in the input path. Account, AI, and cross-d
 4. Add it in System Settings > Keyboard > Input Sources for internal testing.
 
 Public release only: set `GY_DEVELOPER_IDENTITY`, `GY_INSTALLER_IDENTITY`, and `GY_NOTARY_PROFILE`, then run `./scripts/package-release.sh`. It produces a notarized PKG for `/Library/Input Methods` and SHA-256 file; only that verified artifact may be uploaded to the official download origin.
+After all package checks pass, run `./scripts/publish-r2.sh`. It revalidates the SHA-256, installer signature, Gatekeeper assessment, and notarization staple before uploading; the public paths are `/download/latest.pkg` and `/download/latest.pkg.sha256`.
+
 
 Read [M1_ROADMAP.md](M1_ROADMAP.md) before implementing the next milestone.

@@ -13,6 +13,7 @@ $required = @(
   'scripts/bootstrap-rime-arm64.sh',
   'scripts/build-macos.sh',
   'scripts/package-release.sh'
+  'scripts/publish-r2.sh'
 )
 foreach ($relative in $required) {
   $path = Join-Path $MacRoot $relative
