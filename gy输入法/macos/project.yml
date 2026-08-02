@@ -1,0 +1,35 @@
+name: GYInputMac
+options:
+  bundleIdPrefix: wang.shurufa
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++20"
+    HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/rime/include"
+    LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/rime/lib"
+    LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+    SWIFT_VERSION: "5.0"
+targets:
+  GYInput:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: GYInput/Sources
+      - path: GYInput/Resources
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.GYInput
+        PRODUCT_NAME: GYInput
+        INFOPLIST_FILE: GYInput/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: GYInput/Resources/GYInput.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime"
+    scheme:
+      testTargets: []
