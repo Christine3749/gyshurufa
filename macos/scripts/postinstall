@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+app_path="${2%/}/GYInput.app"
+[[ -x "$app_path/Contents/MacOS/GYInput" ]] || app_path="/Library/Input Methods/GYInput.app"
+login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
+
+if [[ "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
+  # The package build rejects identity changes. Registering here refreshes the
+  # normal install path; it is not a substitute for an identity migration.
+  /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source
+  /usr/bin/sudo -u "$login_user" /usr/bin/pkill -x GYInput || true
+  for _ in 1 2 3; do
+    /usr/bin/pgrep -x GYInput >/dev/null || break
+    /bin/sleep 1
+  done
+  /usr/bin/sudo -u "$login_user" /usr/bin/open "$app_path"
+fi
