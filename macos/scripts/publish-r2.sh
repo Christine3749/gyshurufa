@@ -35,9 +35,9 @@ fs.writeFileSync(output, JSON.stringify({ version, build: Number(build), release
 NODE
 
 cd "$worker_root"
-npx wrangler r2 object put "gy-shurufa-releases/$key" --file "$pkg" --content-type application/octet-stream
-npx wrangler r2 object put "gy-shurufa-releases/$key.sha256" --file "$checksum" --content-type 'text/plain; charset=utf-8'
-npx wrangler r2 object put 'gy-shurufa-releases/releases/macos/latest.json' --file "$manifest" --content-type 'application/json; charset=utf-8'
+npx wrangler r2 object put "gy-shurufa-releases/$key" --file "$pkg" --content-type application/octet-stream --remote
+npx wrangler r2 object put "gy-shurufa-releases/$key.sha256" --file "$checksum" --content-type 'text/plain; charset=utf-8' --remote
+npx wrangler r2 object put 'gy-shurufa-releases/releases/macos/latest.json' --file "$manifest" --content-type 'application/json; charset=utf-8' --remote
 npx wrangler deploy
 
 echo "Published verified macOS package: https://shurufa.wang/download/latest-macos.pkg"

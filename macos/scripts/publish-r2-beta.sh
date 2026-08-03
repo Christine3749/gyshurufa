@@ -34,8 +34,8 @@ fs.writeFileSync(output, JSON.stringify({
 NODE
 
 cd "$worker_root"
-npx wrangler r2 object put "gy-shurufa-releases/$key" --file "$archive" --content-type application/zip
-npx wrangler r2 object put 'gy-shurufa-releases/releases/macos/beta/latest.json' --file "$manifest" --content-type 'application/json; charset=utf-8'
+npx wrangler r2 object put "gy-shurufa-releases/$key" --file "$archive" --content-type application/zip --remote
+npx wrangler r2 object put 'gy-shurufa-releases/releases/macos/beta/latest.json' --file "$manifest" --content-type 'application/json; charset=utf-8' --remote
 npx wrangler deploy
 
 echo "Published macOS beta through R2: https://www.shurufa.wang/download/$name"
