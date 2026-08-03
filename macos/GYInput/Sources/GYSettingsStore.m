@@ -2,8 +2,6 @@
 
 static NSString *const kMode = @"inputMode";
 static NSString *const kLastChineseMode = @"lastChineseMode";
-static NSString *const kCandidatePageSize = @"candidatePageSize";
-static NSString *const kShowExpandedCandidates = @"showExpandedCandidates";
 static NSString *const kCandidateTheme = @"candidateTheme";
 static NSString *const kCandidateFontSize = @"candidateFontSize";
 static NSString *const kAutomaticUpdateChecks = @"automaticUpdateChecks";
@@ -57,8 +55,6 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   _document = [saved isKindOfClass:NSDictionary.class] ? [saved mutableCopy] : [NSMutableDictionary dictionary];
   if (_document[kMode] == nil) _document[kMode] = @(GYInputModeSimplified);
   if (_document[kLastChineseMode] == nil) _document[kLastChineseMode] = @(GYInputModeSimplified);
-  if (_document[kCandidatePageSize] == nil) _document[kCandidatePageSize] = @5;
-  if (_document[kShowExpandedCandidates] == nil) _document[kShowExpandedCandidates] = @NO;
   if (_document[kCandidateTheme] == nil) _document[kCandidateTheme] = @0;
   if (_document[kCandidateFontSize] == nil) _document[kCandidateFontSize] = @16;
   if (_document[kAutomaticUpdateChecks] == nil) _document[kAutomaticUpdateChecks] = @YES;
@@ -84,10 +80,6 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   _document[kLastChineseMode] = @(mode == GYInputModeTraditional ? mode : GYInputModeSimplified);
   [self save];
 }
-- (NSInteger)candidatePageSize { return MAX(5, MIN(9, [_document[kCandidatePageSize] integerValue])); }
-- (void)setCandidatePageSize:(NSInteger)value { _document[kCandidatePageSize] = @(MAX(5, MIN(9, value))); [self save]; }
-- (BOOL)showExpandedCandidates { return [_document[kShowExpandedCandidates] boolValue]; }
-- (void)setShowExpandedCandidates:(BOOL)value { _document[kShowExpandedCandidates] = @(value); [self save]; }
 - (NSInteger)candidateTheme { return MAX(0, MIN(2, [_document[kCandidateTheme] integerValue])); }
 - (void)setCandidateTheme:(NSInteger)value { _document[kCandidateTheme] = @(MAX(0, MIN(2, value))); [self save]; }
 - (NSInteger)candidateFontSize { return MAX(15, MIN(17, [_document[kCandidateFontSize] integerValue])); }

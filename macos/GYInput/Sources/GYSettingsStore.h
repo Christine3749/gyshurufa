@@ -9,8 +9,6 @@
 
 @property(nonatomic) GYInputMode inputMode;
 @property(nonatomic) GYInputMode lastChineseMode;
-@property(nonatomic) NSInteger candidatePageSize;
-@property(nonatomic) BOOL showExpandedCandidates;
 /// Candidate strip appearance shared with the Windows build:
 /// 0 = GY 蓝夜, 1 = 暖白, 2 = 石墨.
 @property(nonatomic) NSInteger candidateTheme;
