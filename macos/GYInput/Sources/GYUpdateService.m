@@ -2,8 +2,13 @@
 #import "GYSettingsStore.h"
 
 static NSTimeInterval const GYUpdateCheckInterval = 24.0 * 60.0 * 60.0;
+static NSString *GYUpdateChannel(void) {
+  NSString *channel = [NSBundle.mainBundle objectForInfoDictionaryKey:@"GYUpdateChannel"];
+  return [channel isEqualToString:@"release"] ? @"release" : @"beta";
+}
 static NSURL *GYUpdateManifestURL(void) {
-  return [NSURL URLWithString:@"https://www.shurufa.wang/download/latest-macos.json"];
+  NSString *path = [GYUpdateChannel() isEqualToString:@"release"] ? @"latest-macos.json" : @"macos-beta.json";
+  return [NSURL URLWithString:[@"https://www.shurufa.wang/download/" stringByAppendingString:path]];
 }
 
 @implementation GYUpdateService

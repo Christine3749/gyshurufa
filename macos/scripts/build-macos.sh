@@ -7,6 +7,12 @@ derived_data="$macos_root/.build/DerivedData"
 configuration="${GY_CONFIGURATION:-Release}"
 identity="${GY_DEVELOPER_IDENTITY:-}"
 team="${GY_DEVELOPMENT_TEAM:-}"
+update_channel="${GY_UPDATE_CHANNEL:-beta}"
+
+case "$update_channel" in
+  beta|release) ;;
+  *) echo "GY_UPDATE_CHANNEL must be beta or release, got: $update_channel" >&2; exit 1 ;;
+esac
 
 "$macos_root/scripts/configure-m1.sh"
 "$macos_root/scripts/bootstrap-rime-arm64.sh"
@@ -17,7 +23,8 @@ xcodebuild_args=(
   -scheme GYInput \
   -configuration "$configuration" \
   -arch arm64 \
-  -derivedDataPath "$derived_data"
+  -derivedDataPath "$derived_data" \
+  GY_UPDATE_CHANNEL="$update_channel"
 )
 if [[ -n "$team" ]]; then
   xcodebuild_args+=(

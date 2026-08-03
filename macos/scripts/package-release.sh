@@ -9,7 +9,7 @@ installer_identity="${GY_INSTALLER_IDENTITY:?Set GY_INSTALLER_IDENTITY to a Deve
 notary_profile="${GY_NOTARY_PROFILE:?Set GY_NOTARY_PROFILE to an xcrun notarytool keychain profile.}"
 release_dir="$macos_root/release/$version"
 
-GY_DEVELOPER_IDENTITY="$identity" "$macos_root/scripts/build-macos.sh"
+GY_UPDATE_CHANNEL=release GY_DEVELOPER_IDENTITY="$identity" "$macos_root/scripts/build-macos.sh"
 app="$macos_root/.build/DerivedData/Build/Products/Release/GYInput.app"
 [[ -d "$app" ]] || { echo "Release app missing: $app" >&2; exit 1; }
 

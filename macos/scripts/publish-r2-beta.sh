@@ -9,6 +9,7 @@ macos_root="$root/macos"
 site_root="$root/../gy输入法---官方网站"
 worker_root="$site_root/download-worker"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$macos_root/GYInput/Resources/Info.plist")"
+build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$macos_root/GYInput/Resources/Info.plist")"
 archive="${1:-$macos_root/release/beta/GYInput-$version-arm64-beta.pkg}"
 name="$(basename "$archive")"
 key="releases/macos/beta/$version/$name"
@@ -27,11 +28,12 @@ case "$name" in
 esac
 
 sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
-node --input-type=commonjs - "$manifest" "$version" "$key" "$name" "$sha256" "$content_type" <<'NODE'
+node --input-type=commonjs - "$manifest" "$version" "$build" "$key" "$name" "$sha256" "$content_type" <<'NODE'
 const fs = require('node:fs');
-const [output, version, key, name, sha256, type] = process.argv.slice(2);
+const [output, version, build, key, name, sha256, type] = process.argv.slice(2);
 fs.writeFileSync(output, JSON.stringify({
   version: `${version} 内测版`,
+  build: Number(build),
   releaseNotes: 'Apple Silicon 内测包；未使用 Developer ID 公证。',
   artifacts: {
     '/macos-beta': { key, name, type, sha256 },
