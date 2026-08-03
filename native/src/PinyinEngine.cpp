@@ -1,5 +1,6 @@
 #include "PinyinEngine.h"
 #include "InputMode.h"
+#include "SettingsFile.h"
 
 #include <windows.h>
 
@@ -51,23 +52,10 @@ std::wstring SettingsPath() {
 bool EnsureBundledWorkspace(const std::wstring& shared, const std::wstring& user) {
   const std::wstring source = JoinPath(shared, L"build");
   const std::wstring destination = JoinPath(user, L"build");
-  const std::wstring source_schema = JoinPath(source, L"luna_pinyin.schema.yaml");
-  const std::wstring deployed_schema = JoinPath(destination, L"luna_pinyin.schema.yaml");
-  const std::wstring source_default = JoinPath(source, L"default.yaml");
-  const std::wstring deployed_default = JoinPath(destination, L"default.yaml");
-  if (GetFileAttributesW(deployed_schema.c_str()) != INVALID_FILE_ATTRIBUTES) {
-    // Keep the user database and custom YAML intact, but refresh generated
-    // configuration artifacts. Older releases left the compiled schema at
-    // page_size: 5 even after default.yaml had been upgraded to 20.
-    return GetFileAttributesW(source_default.c_str()) != INVALID_FILE_ATTRIBUTES &&
-           GetFileAttributesW(source_schema.c_str()) != INVALID_FILE_ATTRIBUTES &&
-           CopyFileW(source_default.c_str(), deployed_default.c_str(), FALSE) == TRUE &&
-           CopyFileW(source_schema.c_str(), deployed_schema.c_str(), FALSE) == TRUE;
-  }
-
   if (!CreateDirectoryW(destination.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
-  // The runtime ships an already compiled, tested luna_pinyin workspace. Copy it
-  // on a new Windows profile before starting Rime so first use is deterministic.
+  // This directory is generated data, not the user's dictionary or custom YAML.
+  // Always replace every generated artifact before Rime initializes. The old
+  // early-return preserved stale generated schemas indefinitely.
   constexpr std::array<const wchar_t*, 5> kWorkspaceFiles{
       L"default.yaml", L"luna_pinyin.prism.bin", L"luna_pinyin.reverse.bin", L"luna_pinyin.schema.yaml", L"luna_pinyin.table.bin"};
   for (const wchar_t* file : kWorkspaceFiles) {
@@ -81,15 +69,7 @@ bool EnsureBundledWorkspace(const std::wstring& shared, const std::wstring& user
   return true;
 }
 bool EnsureUnicodeSettingsFile(const std::wstring& path) {
-  if (path.empty()) return false;
-  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return true;
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  const wchar_t bom = 0xFEFF;
-  DWORD written = 0;
-  const bool ok = WriteFile(file, &bom, sizeof(bom), &written, nullptr) && written == sizeof(bom);
-  CloseHandle(file);
-  return ok;
+  return gy::settings_file::EnsureUnicodeIniFile(path);
 }
 
 std::wstring Trim(std::wstring value) {
@@ -137,6 +117,23 @@ bool IsCandidateAcceptable(const std::wstring& candidate) {
   if (candidate.empty() || candidate.size() > 12) return false;
   return std::all_of(candidate.begin(), candidate.end(), IsCjkIdeograph);
 }
+
+bool IsDeepCandidateAcceptable(const std::wstring& candidate) {
+  // Candidates after the first visible page are intentionally held to a higher
+  // bar. Rime's tail normally contains isolated rare characters before it
+  // contains useful phrases. Do not pad extra pages with those fragments:
+  // keep only real, comfortably readable words/phrases and let the menu end
+  // early when there are not enough of them.
+  return IsCandidateAcceptable(candidate) && candidate.size() >= 2 && candidate.size() <= 8;
+}
+
+// The candidate window remains a 5 × 5 page. The first page uses the IME
+// engine's normal ranking; pages two and three only use qualified phrases.
+// There is no minimum: a query with six good results returns six, not 75
+// padded slots. The larger raw scan leaves room for filtering the tail.
+constexpr int kRawCandidateScanLimit = 96;
+constexpr size_t kPrimaryCandidateLimit = 25;
+constexpr size_t kCandidatePoolLimit = 75;
 
 struct LocalSettingsCache {
   std::wstring path;
@@ -348,20 +345,23 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
   RIME_STRUCT(RimeContext, context);
   if (!runtime.api->get_context(impl_->session, &context)) return {};
   std::vector<std::wstring> candidates;
-  unsigned single_character_candidates = 0;
-  for (int i = 0; i < context.menu.num_candidates && i < 20; ++i) {
+  std::vector<std::wstring> deep_candidates;
+  const int raw_candidate_count = std::min(context.menu.num_candidates, kRawCandidateScanLimit);
+  for (int i = 0; i < raw_candidate_count && candidates.size() + deep_candidates.size() < kCandidatePoolLimit; ++i) {
     const std::wstring candidate = NormalizeOutputScript(Wide(context.menu.candidates[i].text), input_mode);
     if (!IsCandidateAcceptable(candidate) ||
-        std::find(candidates.begin(), candidates.end(), candidate) != candidates.end()) {
+        std::find(candidates.begin(), candidates.end(), candidate) != candidates.end() ||
+        std::find(deep_candidates.begin(), deep_candidates.end(), candidate) != deep_candidates.end()) {
       continue;
     }
-    // The long tail of old dictionaries is dominated by rare single characters.
-    // Keep useful alternatives, but reserve the expanded panel for real words.
-    if (candidate.size() == 1 && single_character_candidates >= 8) continue;
-    if (candidate.size() == 1) ++single_character_candidates;
-    candidates.push_back(candidate);
+    if (candidates.size() < kPrimaryCandidateLimit) {
+      candidates.push_back(candidate);
+    } else if (IsDeepCandidateAcceptable(candidate)) {
+      deep_candidates.push_back(candidate);
+    }
   }
   runtime.api->free_context(&context);
+  candidates.insert(candidates.end(), deep_candidates.begin(), deep_candidates.end());
   const auto scores = LearningScores(pinyin);
   std::stable_sort(candidates.begin(), candidates.end(), [&scores](const std::wstring& left, const std::wstring& right) {
     const auto left_score = scores.contains(left) ? scores.at(left) : 0u;
@@ -376,7 +376,7 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
     candidates.insert(candidates.begin(), phrase);
   }
   candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-  if (candidates.size() > 20) candidates.resize(20);
+  if (candidates.size() > kCandidatePoolLimit) candidates.resize(kCandidatePoolLimit);
   return candidates;
 }
 
@@ -390,11 +390,3 @@ void PinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candida
   WritePrivateProfileStringW(L"Learning", key.c_str(), std::to_wstring(next).c_str(), path.c_str());
   SettingsCache().Invalidate();
 }
-
-
-
-
-
-
-
-

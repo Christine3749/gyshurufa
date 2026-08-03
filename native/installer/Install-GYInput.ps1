@@ -1,4 +1,4 @@
-﻿param(
+param(
   [switch]$Uninstall,
   [switch]$Rollback,
   [switch]$Elevated
@@ -249,11 +249,14 @@ if (-not (Test-SameTree $payloadData (Join-Path $versionRoot 'rime-data'))) {
 $health = Start-Process -FilePath $installedHealth -WorkingDirectory $versionRoot -Wait -PassThru
 if ($health.ExitCode -ne 0) { throw "GY 输入法离线引擎自检失败；退出码：$($health.ExitCode)。旧版本保持不变。" }
 $previousState = Get-ActiveGyState
+$previousCoreVersion = ''
+if ([string]$previousState.dll -match '\\tsf-(\d+\.\d+\.\d+)\\GyIme\.dll$') { $previousCoreVersion = $matches[1] }
+$coreActivationPending = -not [string]::IsNullOrWhiteSpace($previousCoreVersion) -and $previousCoreVersion -ne $tsfVersion
 $process = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $installedDll) -Wait -PassThru
 if ($process.ExitCode -ne 0) { throw "GY 输入法注册失败；regsvr32 返回 $($process.ExitCode)。" }
 try {
   Set-ActiveGyHost
-  @{ version = $version; hostVersion = $version; coreVersion = $tsfVersion; installedAtUtc = [DateTime]::UtcNow.ToString('o'); dll = $installedDll; host = $installedHost; health = $installedHealth; updateModel = 'versioned-tsf-host' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installRoot 'install-state.json') -Encoding utf8
+  @{ version = $version; hostVersion = $version; coreVersion = $tsfVersion; installedAtUtc = [DateTime]::UtcNow.ToString('o'); dll = $installedDll; host = $installedHost; health = $installedHealth; updateModel = 'versioned-tsf-host'; coreActivation = if ($coreActivationPending) { 'close-apps-or-restart-required' } else { 'active' }; previousCoreVersion = $previousCoreVersion } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installRoot 'install-state.json') -Encoding utf8
   Save-PreviousGyState $previousState
 } catch {
   if ((Test-ManagedGyPath ([string]$previousState.dll)) -and (Test-ManagedGyPath ([string]$previousState.host)) -and $previousState.version) {

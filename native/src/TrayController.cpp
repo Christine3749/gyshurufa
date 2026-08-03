@@ -82,7 +82,7 @@ void TrayController::ShowMenu() {
   HMENU menu = CreatePopupMenu();
   if (!menu) return;
   AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"GY 输入法");
-  AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"简 / 繁 / EN：单独 Shift 切换 EN");
+  AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"中 / EN：使用系统“简体”或 Ctrl + Space");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kSettingsCommand, L"输入法设置…");
   POINT point{};

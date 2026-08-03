@@ -1,5 +1,6 @@
 #include "SettingsWindow.h"
 #include "InputMode.h"
+#include "SettingsFile.h"
 
 #include <algorithm>
 #include <commdlg.h>
@@ -80,13 +81,7 @@ std::wstring SettingsPath() {
   return directory + L"\\settings.ini";
 }
 bool EnsureUnicodeSettingsFile(const std::wstring& path) {
-  if (path.empty()) return false;
-  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return true;
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  const wchar_t bom = 0xFEFF; DWORD written = 0;
-  const bool ok = WriteFile(file, &bom, sizeof(bom), &written, nullptr) && written == sizeof(bom);
-  CloseHandle(file); return ok;
+  return gy::settings_file::EnsureUnicodeIniFile(path);
 }
 bool IsPortableSettingsFile(const std::wstring& path) {
   WIN32_FILE_ATTRIBUTE_DATA data{};

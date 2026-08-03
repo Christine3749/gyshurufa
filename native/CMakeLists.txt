@@ -85,6 +85,7 @@ endif()
 add_custom_command(TARGET GyImeHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyImeHost>/rime.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyImeHost>/rime-data/shared"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyImeHost>/rime-data/shared/build/luna_pinyin.schema.yaml"
 )
 
 
@@ -102,6 +103,7 @@ set_target_properties(GyImeHealth PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_B
 add_custom_command(TARGET GyImeHealth POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyImeHealth>/rime.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyImeHealth>/rime-data/shared"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyImeHealth>/rime-data/shared/build/luna_pinyin.schema.yaml"
 )
 
 # Development-only protocol verification. It starts a private Host instance,
@@ -171,6 +173,25 @@ if(GY_BUILD_HOST_SMOKE)
   set_target_properties(GyHostProtocolSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_test(NAME GyHostProtocolSmoke COMMAND $<TARGET_FILE:GyHostProtocolSmoke>)
   set_tests_properties(GyHostProtocolSmoke PROPERTIES TIMEOUT 10 LABELS "native;ipc;protocol")
+  add_executable(GyCandidateLayoutSmoke src/CandidateLayoutSmoke.cpp)
+  target_compile_features(GyCandidateLayoutSmoke PRIVATE cxx_std_20)
+  target_include_directories(GyCandidateLayoutSmoke PRIVATE src)
+  if(MSVC)
+    target_compile_options(GyCandidateLayoutSmoke PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyCandidateLayoutSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  add_test(NAME GyCandidateLayoutSmoke COMMAND $<TARGET_FILE:GyCandidateLayoutSmoke>)
+  set_tests_properties(GyCandidateLayoutSmoke PROPERTIES TIMEOUT 10 LABELS "native;candidate-layout;regression")
+  add_executable(GyCandidateContractSmoke src/CandidateContractSmoke.cpp)
+  target_compile_features(GyCandidateContractSmoke PRIVATE cxx_std_20)
+  target_compile_definitions(GyCandidateContractSmoke PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_include_directories(GyCandidateContractSmoke PRIVATE src)
+  if(MSVC)
+    target_compile_options(GyCandidateContractSmoke PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyCandidateContractSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  add_test(NAME GyCandidateContractSmoke COMMAND $<TARGET_FILE:GyCandidateContractSmoke>)
+  set_tests_properties(GyCandidateContractSmoke PROPERTIES TIMEOUT 10 LABELS "native;candidate-layout;contract;regression")
   find_program(GY_POWERSHELL_EXECUTABLE NAMES powershell.exe pwsh.exe)
   if(GY_POWERSHELL_EXECUTABLE)
     add_test(NAME GyInstallerSmoke
@@ -200,6 +221,7 @@ if(GY_BUILD_RIME_SMOKE)
   add_custom_command(TARGET GyPinyinEngineSmoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime-data/shared"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime-data/shared/build/luna_pinyin.schema.yaml"
   )
 endif()
 if(GY_BUILD_RIME_SMOKE)

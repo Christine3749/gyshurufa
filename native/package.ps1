@@ -68,5 +68,6 @@ ZIP 是离线/高级用户备用包
 本发行包完全离线运行，不上传输入内容。
 "@
 Set-Content -LiteralPath (Join-Path $packageRoot 'README.txt') -Value $readme -Encoding utf8
-Compress-Archive -LiteralPath $packageRoot -DestinationPath (Join-Path $OutputRoot "GYInput-$Version.zip") -CompressionLevel Optimal
-Write-Host "Release package created: $(Join-Path $OutputRoot "GYInput-$Version.zip")"
+# Do not create the ZIP here. At this stage the installer/Mac hashes may still
+# be pending. Finalize-GYRelease.ps1 is the sole owner of immutable ZIP output.
+Write-Host "Release payload prepared: $packageRoot. Run Finalize-GYRelease.ps1 after both platform artifacts are verified."

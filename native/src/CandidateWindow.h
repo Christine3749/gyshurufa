@@ -1,5 +1,7 @@
 #pragma once
 
+#include "CandidateLayout.h"
+
 #include <functional>
 #include <limits>
 #include <string>
@@ -17,8 +19,8 @@ public:
   static constexpr unsigned kNextExpandedPageAction = kToggleModeAction - 5;
   // Expanded candidates are deliberately invariant across displays: five
   // columns by five rows. This is a product rule, not a responsive hint.
-  static constexpr unsigned kExpandedColumns = 5;
-  static constexpr unsigned kExpandedMaxRows = 5;
+  static constexpr unsigned kExpandedColumns = gy::candidate_layout::ExpandedColumns();
+  static constexpr unsigned kExpandedMaxRows = gy::candidate_layout::ExpandedRows(25);
 
   CandidateWindow(std::function<void(unsigned)> choose, std::function<void(const RECT&)> open_settings);
   ~CandidateWindow();

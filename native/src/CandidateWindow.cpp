@@ -1,4 +1,5 @@
 #include "CandidateWindow.h"
+#include "CandidateLayout.h"
 
 #include <algorithm>
 #include <iterator>
@@ -52,7 +53,7 @@ int CandidateInputMode() {
 }
 
 const wchar_t* ModeLabel(int input_mode) {
-  return input_mode == 1 ? L"繁" : input_mode == 2 ? L"EN" : L"简";
+  return input_mode == 1 ? L"繁" : input_mode == 2 ? L"EN" : L"中";
 }
 
 ATOM RegisterCandidateClass() {
@@ -215,10 +216,17 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   } else {
     grid_columns_ = kCandidatesPerPage;
   }
-  const unsigned grid_columns = std::min<unsigned>(grid_columns_, std::max(1u, visible_count));
+  // Expanded mode is a fixed five-column matrix. Do not shrink it to the
+  // visible candidate count: six candidates must render as 5 + 1, never 3 x 2.
+  const unsigned grid_columns = expanded_grid ? kExpandedColumns
+                                              : std::min<unsigned>(grid_columns_, std::max(1u, visible_count));
   const int fitted_grid_cell_width = std::max(Scale(dpi, 54),
       (max_width - 2 * padding - gap * static_cast<int>(grid_columns - 1)) / static_cast<int>(grid_columns));
-  const int comfortable_grid_cell_width = Scale(dpi, grid_columns >= 6 ? 118 : grid_columns == 4 ? 102 : 120);
+  // Keep the approved five-column geometry, but make the expanded matrix a
+  // little denser on 13/14-inch screens. This only reduces horizontal air:
+  // row rhythm, footer placement, disclosure-arrow geometry and VI colors
+  // intentionally remain untouched.
+  const int comfortable_grid_cell_width = Scale(dpi, grid_columns >= 6 ? 118 : grid_columns == 4 ? 102 : 110);
   const int grid_cell_width = expanded_grid
       ? std::min(comfortable_grid_cell_width, fitted_grid_cell_width)
       : fitted_grid_cell_width;
@@ -234,7 +242,14 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
     if (!expanded_grid) x += chip_width + gap;
     right_edge = expanded_grid ? left + chip_width : std::max(right_edge, x - gap);
   }
-  const int grid_right = right_edge;
+  // A five-column grid owns all five columns even when the current page only
+  // has one, six, or twenty candidates. Deriving the window width from the
+  // final visible candidate clipped columns 4–5 whenever that candidate was
+  // in an earlier column (for example 6 candidates used to look like 3 × 2).
+  // Keep the fixed grid boundary independent from the candidate count.
+  const int grid_right = expanded_grid
+      ? gy::candidate_layout::GridRight(padding, grid_cell_width, gap, grid_columns)
+      : right_edge;
   mode_rect_ = RECT{};
   previous_page_rect_ = RECT{};
   next_page_rect_ = RECT{};
@@ -257,7 +272,7 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
         previous_page_rect_ = RECT{previous_left, control_top, previous_left + page_button_width, control_top + chip_height};
       }
     } else {
-      // Locked order: candidates → disclosure → divider → 简 / 繁 / EN.
+      // Locked order: candidates → disclosure → divider → 中 / 繁 / EN.
       if (can_expand) {
         const int expand_left = right_edge + gap;
         expand_rect_ = RECT{expand_left, control_top, expand_left + expand_width, control_top + chip_height};
@@ -338,13 +353,14 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   const int monitor_width = static_cast<int>(work_area.right - work_area.left);
   // Product rule: expanded candidates always use a fixed 5 × 5 grid. Screen
   // size may constrain total width, never the number of columns.
-  const int logical_monitor_width = MulDiv(monitor_width, 96, static_cast<int>(dpi));
   expanded_column_target_ = kExpandedColumns;
-  const int preferred_width_dips = 620;
-  const int width_cap_pixels = logical_monitor_width <= 1600 ? 620 : 720;
-  const int desired_width = std::min(Scale(dpi, preferred_width_dips), width_cap_pixels);
-  const int available_width = std::clamp(desired_width, Scale(dpi, 180),
-                                         std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20)));
+  // Expanded mode must stay visually compact. The previous monitor-wide cap
+  // made a 5 × 5 grid stretch across a large display after high-DPI scaling.
+  // Keep five columns, but cap the panel at a comfortable physical width so
+  // the confirmed GY layout is the same on laptop and desktop screens.
+  const int monitor_available = std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20));
+  const int compact_panel_cap = expanded_ ? 820 : 720;
+  const int available_width = std::min(monitor_available, compact_panel_cap);
   Layout(dpi, available_width);
   const int width = content_width_;
   const int height = content_height_;
@@ -514,9 +530,11 @@ void CandidateWindow::Paint(HDC dc) {
     const bool has_shortcut = !expanded_ || i < kCandidatesPerPage;
     Text(dc, has_shortcut ? std::to_wstring(i + 1) : L"", key, selected ? selected_text : muted, DT_CENTER, key_font);
     RECT word{chip_rect.left + Scale(dpi_, 21), chip_rect.top, chip_rect.right - Scale(dpi_, 5), chip_rect.bottom};
-    const bool normal_word = candidates_[candidate_index].size() <= 4;
-    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font,
-         !normal_word);
+    // Candidate text is an input decision, not decorative copy. Never turn
+    // it into “…”: Layout reserves enough room for the engine's bounded
+    // phrases, and users can see exactly what Enter or its numeric shortcut
+    // will commit.
+    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, false);
   }
 
   if (!mode_popup_ && !IsRectEmpty(&next_page_rect_)) {

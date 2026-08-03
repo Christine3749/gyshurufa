@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "channel": "candidate",
+  "version": "0.9.34",
+  "coreVersion": "0.9.34",
+  "hostVersion": "0.9.34",
+  "windows": {
+    "setupFile": "GYInputSetup-0.9.34.exe",
+    "zipFile": "GYInput-0.9.34.zip",
+    "sha256": "PENDING-PACKAGE-VERIFICATION",
+    "bytes": 0,
+    "state": "draft"
+  },
+  "macos": {
+    "state": "verification-required"
+  }
+}

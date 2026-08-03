@@ -5,6 +5,8 @@
 
 #include <windows.h>
 
+#include "SettingsFile.h"
+
 namespace gy::input_mode {
 
 constexpr int kSimplified = 0;
@@ -51,7 +53,7 @@ inline void Write(int mode) {
   }
 
   const std::wstring path = SettingsPath();
-  if (!path.empty()) {
+  if (!path.empty() && gy::settings_file::EnsureUnicodeIniFile(path)) {
     WritePrivateProfileStringW(L"Input", L"Mode", std::to_wstring(mode).c_str(), path.c_str());
   }
 }

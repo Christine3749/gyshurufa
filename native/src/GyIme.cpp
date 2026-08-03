@@ -10,8 +10,10 @@
 #include <vector>
 
 #include "SelectionCallback.h"
+#include "CandidateLayout.h"
 #include "Guids.h"
 #include "HostedPinyinEngine.h"
+#include "InputCapturePolicy.h"
 #include "InputMode.h"
 #include "KeyPolicy.h"
 #include "PunctuationPolicy.h"
@@ -206,20 +208,58 @@ public:
     if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::CommitRaw});
     if (gy::keys::IsCandidateCommitKey(key)) return RequestEdit({EditActionKind::CommitCandidate, 0, selected_});
     if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::CommitCandidate, 0, page_start_ + static_cast<unsigned>(key - '1')});
-    if (key == VK_PRIOR || key == VK_UP) { MovePage(-1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_PRIOR) { MovePage(-1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_UP) {
+      if (expanded_candidates_) {
+        // The first ↑ on page one is the deliberate exit gesture. On later
+        // pages, ↑ continues to the prior 5 × 5 page in the same column.
+        if (page_start_ == 0 && selected_ < kCandidatesPerPage) {
+          expanded_candidates_ = false;
+          page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
+        } else {
+          selected_ = gy::candidate_layout::MoveExpandedUp(
+              selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+          page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
+        }
+      } else {
+        MovePage(-1, kCandidatesPerPage);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
     if (key == VK_NEXT) { MovePage(1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
     if (key == VK_DOWN) {
       if (!expanded_candidates_) {
         expanded_candidates_ = true;
         page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
       } else {
-        MovePage(1, kExpandedCandidatesPerPage);
+        selected_ = gy::candidate_layout::MoveExpandedDown(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+        page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
       }
       ShowCandidates(context_, nullptr);
       return S_OK;
     }
-    if (key == VK_LEFT) { MoveSelection(-1); ShowCandidates(context_, nullptr); return S_OK; }
-    if (key == VK_RIGHT) { MoveSelection(1); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_LEFT) {
+      if (expanded_candidates_) {
+        selected_ = gy::candidate_layout::MoveExpandedLeft(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+      } else {
+        MoveSelection(-1);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
+    if (key == VK_RIGHT) {
+      if (expanded_candidates_) {
+        selected_ = gy::candidate_layout::MoveExpandedRight(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+      } else {
+        MoveSelection(1);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
@@ -401,18 +441,10 @@ private:
     return gy::punctuation::ChineseCharacter(key, shift);
   }
   bool ShouldEat(WPARAM key) const {
-    // TSF sees every key. Command modifiers must remain with the application so
-    // Ctrl+C/V/F, Alt shortcuts and Win shortcuts work. Shift+punctuation is
-    // still ordinary typing in Chinese mode, not a shortcut or mode toggle.
-    if (HasShortcutModifier() || gy::input_mode::IsEnglish(input_mode_)) return false;
-    if (gy::keys::ShouldCaptureChinesePunctuation(key, IsDown(VK_SHIFT) || shift_down_)) return true;
-    if (IsDown(VK_SHIFT)) return false;
-    if (key >= 'A' && key <= 'Z') return true;
-    if (composition_text_.empty()) return false;
-    if (key == VK_OEM_7 || key == VK_BACK || key == VK_ESCAPE || gy::keys::IsCommitKey(key) ||
-        key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT || key == VK_PRIOR || key == VK_NEXT) return true;
-    if (key >= '1' && key <= '5') return static_cast<unsigned>(key - '1') < CurrentPageCandidateCount();
-    return false;
+    return gy::input_capture::ShouldCapture(
+        gy::input_mode::IsEnglish(input_mode_), HasShortcutModifier(),
+        IsDown(VK_SHIFT) || shift_down_, !composition_text_.empty(),
+        CurrentPageCandidateCount(), key);
   }
   void SetContext(ITfContext* context) {
     if (context == context_) return;

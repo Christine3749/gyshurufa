@@ -1,13 +1,16 @@
-﻿[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding(SupportsShouldProcess)]
 param(
-  [string]$Version = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\VERSION') -Raw).Trim(),
+  [string]$Version,
   [Parameter(Mandatory)][string]$CertificateThumbprint,
   [Parameter(Mandatory)][string]$TimestampServer,
   [string]$ReleaseRoot = (Join-Path $PSScriptRoot '..\release')
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must use major.minor.patch format.' }
+Import-Module (Join-Path $PSScriptRoot '..\ReleaseManifest.psm1') -Force
+$manifestPath = Get-GYReleaseManifestPath
+$manifest = Get-GYReleaseManifest
+$Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
 if ($TimestampServer -notmatch '^https://') { throw 'A public-Beta signature requires an HTTPS RFC 3161 timestamp server.' }
 $thumbprint = ($CertificateThumbprint -replace '\s', '').ToUpperInvariant()
 $certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$thumbprint" -ErrorAction SilentlyContinue
@@ -19,6 +22,7 @@ $packageRoot = Join-Path $ReleaseRoot "GYInput-$Version"
 $payloadRoot = Join-Path $packageRoot 'payload'
 $setup = Join-Path $ReleaseRoot "GYInputSetup-$Version.exe"
 $zip = Join-Path $ReleaseRoot "GYInput-$Version.zip"
+if (Test-Path -LiteralPath $zip -PathType Leaf) { throw "Refusing to sign or overwrite an existing ZIP: $zip. Bump the version." }
 $targets = @(
   (Join-Path $payloadRoot "GyIme-$Version.dll"),
   (Join-Path $payloadRoot "GyImeHost-$Version.exe"),
@@ -43,15 +47,23 @@ $hashLines = Get-ChildItem -LiteralPath $payloadRoot -File -Recurse | Where-Obje
   "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $relative
 }
 Set-Content -LiteralPath (Join-Path $payloadRoot 'SHA256SUMS.txt') -Value $hashLines -Encoding utf8
-Compress-Archive -LiteralPath $packageRoot -DestinationPath $zip -CompressionLevel Optimal -Force
 
 & (Join-Path $PSScriptRoot '..\build-installer.ps1') -Version $Version
 if ($LASTEXITCODE -ne 0) { throw 'Installer rebuild failed after signing the payload.' }
 Sign-Target $setup
-$setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
-$zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-Set-Content -LiteralPath "$setup.sha256" -Value "$setupHash  $(Split-Path -Leaf $setup)" -NoNewline -Encoding ascii
-Set-Content -LiteralPath "$zip.sha256" -Value "$zipHash  $(Split-Path -Leaf $zip)" -NoNewline -Encoding ascii
+
+$manifest.windows.sha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+$manifest.windows.bytes = (Get-Item -LiteralPath $setup).Length
+$manifest.windows.signed = $true
+if ([string]$manifest.windows.state -eq 'draft') {
+  $manifest.windows.state = if ([string]$manifest.channel -eq 'stable') { 'signed' } else { 'candidate' }
+}
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $packageRoot 'release.json') -Force
+
+# Finalize builds the ZIP once, only after the Mac asset has updated the same manifest.
+& (Join-Path $PSScriptRoot '..\Finalize-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot
+if ($LASTEXITCODE -ne 0) { throw 'Final cross-platform release finalization failed.' }
 & (Join-Path $PSScriptRoot 'Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature
-if ($LASTEXITCODE -ne 0) { throw 'Public-Beta signature verification failed.' }
-Write-Host "Signed public-Beta release created: $setup" -ForegroundColor Green
+if ($LASTEXITCODE -ne 0) { throw 'Public release signature verification failed.' }
+Write-Host "Signed immutable cross-platform release created: $setup" -ForegroundColor Green

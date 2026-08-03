@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GY unified release manifest",
+  "type": "object",
+  "required": ["schemaVersion", "channel", "version", "coreVersion", "hostVersion", "windows", "macos"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "channel": { "enum": ["candidate", "beta", "stable"] },
+    "version": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+$" },
+    "coreVersion": { "type": "string" },
+    "hostVersion": { "type": "string" },
+    "publishedAtUtc": { "type": "string", "format": "date-time" },
+    "windows": {
+      "type": "object",
+      "required": ["setupFile", "sha256", "bytes", "state"],
+      "properties": {
+        "setupFile": { "type": "string", "pattern": "^GYInputSetup-[0-9]+\\.[0-9]+\\.[0-9]+\\.exe$" },
+        "zipFile": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[A-F0-9]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["candidate", "verified", "stable"] }
+      }
+    },
+    "macos": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "packageFile": { "type": "string", "pattern": "^GYInput-[0-9]+\\.[0-9]+\\.[0-9]+-arm64\\.pkg$" },
+        "sha256": { "type": "string", "pattern": "^[A-F0-9]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "architecture": { "const": "arm64" },
+        "signed": { "type": "boolean" },
+        "notarized": { "type": "boolean" },
+        "state": { "enum": ["verification-required", "candidate", "verified", "notarized", "stable"] }
+      }
+    }
+  },
+  "additionalProperties": false
+}

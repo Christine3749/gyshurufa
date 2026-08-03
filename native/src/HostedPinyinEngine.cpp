@@ -222,7 +222,7 @@ void HostedPinyinEngine::ShowMode(const RECT& caret, int input_mode) {
   state.caret = caret;
   state.input_mode = static_cast<unsigned>(input_mode < 0 ? 0 : input_mode > 2 ? 2 : input_mode);
   state.selected = state.input_mode;
-  state.candidates = {state.input_mode == 2 ? L"EN" : (state.input_mode == 1 ? L"繁" : L"简")};
+  state.candidates = {state.input_mode == 2 ? L"EN" : (state.input_mode == 1 ? L"繁" : L"中")};
   if (!impl_->SendUi(gy::host::MessageType::ShowMode, gy::host::EncodeCandidateUi(state), true)) {
     impl_->diagnostic = L"GY Host mode UI is unavailable";
   }

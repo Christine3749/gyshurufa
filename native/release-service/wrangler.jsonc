@@ -1,9 +1,27 @@
 {
   "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
   "name": "gy-shurufa-download",
-  "main": "src/index.js",
+  "main": "src/release-worker-v2.js",
   "compatibility_date": "2026-08-02",
   "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "shurufa.wang/api/releases/*",
+      "zone_name": "shurufa.wang"
+    },
+    {
+      "pattern": "www.shurufa.wang/api/releases/*",
+      "zone_name": "shurufa.wang"
+    },
+    {
+      "pattern": "shurufa.wang/download/*",
+      "zone_name": "shurufa.wang"
+    },
+    {
+      "pattern": "www.shurufa.wang/download/*",
+      "zone_name": "shurufa.wang"
+    }
+  ],
   "vars": {
     "RELEASE_STATUS": "pre-signing"
   },
