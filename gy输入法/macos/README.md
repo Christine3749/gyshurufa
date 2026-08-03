@@ -1,6 +1,9 @@
 # GY Input Method for macOS (Apple Silicon)
 
 This directory is the Apple-Silicon-native product line for GY Input Method. It is intentionally separate from `native/`, which is the Windows TSF implementation.
+## Mandatory product contract
+
+Before changing any Mac input, candidate, mode, visual, account, or release behavior, read the repository-wide [GY Input Method Product Standard](../../GY_INPUT_METHOD_PRODUCT_STANDARD.md) and [GY Visual Identity](../GY_VISUAL_IDENTITY.md). They are the binding cross-platform product baseline. macOS must reproduce the confirmed GY behavior and visual hierarchy, but must use native InputMethodKit APIs rather than porting Windows TSF implementation details.
 
 ## Current status
 
