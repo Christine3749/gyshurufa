@@ -18,8 +18,12 @@
 @property(nonatomic) BOOL automaticUpdateChecks;
 @property(nonatomic) NSTimeInterval lastUpdateCheckTimestamp;
 
-- (NSDictionary<NSString *, NSString *> *)customPhrases;
+/// Per-code local phrase lists.  Multiple phrases for one code are kept in
+/// their saved order, matching the Windows settings format (`code=a|b`).
+- (NSDictionary<NSString *, NSArray<NSString *> *> *)customPhrases;
+- (NSArray<NSString *> *)customPhrasesForCode:(NSString *)code;
 - (void)setCustomPhrase:(NSString *)phrase forCode:(NSString *)code;
+- (void)setCustomPhrases:(NSArray<NSString *> *)phrases forCode:(NSString *)code;
 - (void)clearCustomPhrases;
 - (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)rimeCandidates
                                                   forCode:(NSString *)code;

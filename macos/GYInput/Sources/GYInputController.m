@@ -232,14 +232,15 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 - (nullable NSString *)commitDisplayedCandidateAtIndex:(NSUInteger)index {
   NSUInteger candidateIndex = _candidateOffset + index;
   if (candidateIndex >= _candidates.count) return nil;
-  NSString *phrase = GYSettingsStore.sharedStore.customPhrases[_composition.lowercaseString];
+  NSString *candidate = _candidates[candidateIndex];
   NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
-  BOOL insertedCustomPhrase = phrase.length != 0 &&
-      [_candidates.firstObject isEqualToString:phrase] &&
-      ![rimeCandidates containsObject:phrase];
-  if (insertedCustomPhrase && candidateIndex == 0) return phrase;
-  NSUInteger rimeIndex = insertedCustomPhrase ? candidateIndex - 1 : candidateIndex;
-  return [_engine commitCandidateAtIndex:rimeIndex];
+  // Local phrase lists can contain several entries for one code.  If a phrase
+  // already exists in Rime, commit through Rime so it participates in local
+  // learning; otherwise commit the purely local phrase directly.  Looking up
+  // by displayed text also keeps the index correct after de-duplication.
+  NSUInteger rimeIndex = [rimeCandidates indexOfObject:candidate];
+  if (rimeIndex != NSNotFound) return [_engine commitCandidateAtIndex:rimeIndex];
+  return candidate;
 }
 
 - (void)selectDisplayedCandidateAtIndex:(NSUInteger)index {

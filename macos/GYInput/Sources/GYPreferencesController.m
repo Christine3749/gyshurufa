@@ -64,7 +64,7 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
     NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
     NSForegroundColorAttributeName: GYSettingsMuted(),
   }];
-  [@"本地短语" drawInRect:NSMakeRect(24, 400, 200, 18) withAttributes:@{
+  [@"本地短语与词库" drawInRect:NSMakeRect(24, 400, 200, 18) withAttributes:@{
     NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
     NSForegroundColorAttributeName: GYSettingsMuted(),
   }];
@@ -210,12 +210,12 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   localData.layer.cornerRadius = 9.0;
   localData.layer.borderWidth = 1.0;
   localData.layer.borderColor = GYSettingsBorder().CGColor;
-  NSTextField *localDataTitle = [NSTextField labelWithString:@"本地数据"];
+  NSTextField *localDataTitle = [NSTextField labelWithString:@"本地词库与学习"];
   localDataTitle.frame = NSMakeRect(15, 26, 120, 18);
   localDataTitle.textColor = GYSettingsText();
   localDataTitle.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
-  NSTextField *localDataDetail = [NSTextField labelWithString:@"词库与学习记录只保存在此 Mac"];
-  localDataDetail.frame = NSMakeRect(15, 8, 260, 16);
+  NSTextField *localDataDetail = [NSTextField labelWithString:@"内置词库、短语与学习记录只保存在此 Mac"];
+  localDataDetail.frame = NSMakeRect(15, 8, 300, 16);
   localDataDetail.textColor = GYSettingsMuted();
   localDataDetail.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular];
   GYSettingsButton *resetLearning = [self buttonWithTitle:@"清除学习" frame:NSMakeRect(360, 12, 96, 30) action:@selector(resetLearning:)];
@@ -261,7 +261,7 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   phrases.layer.borderWidth = 1.0;
   phrases.layer.borderColor = GYSettingsBorder().CGColor;
   self.codeField = [self fieldWithFrame:NSMakeRect(12, 39, 124, 30) placeholder:@"编码，如 dz"];
-  self.phraseField = [self fieldWithFrame:NSMakeRect(145, 39, 315, 30) placeholder:@"短语，如 我的电子邮箱"];
+  self.phraseField = [self fieldWithFrame:NSMakeRect(145, 39, 315, 30) placeholder:@"词条，如 地址 | 我的电子邮箱"];
   self.phraseSummary = [NSTextField labelWithString:@""];
   self.phraseSummary.frame = NSMakeRect(13, 12, 448, 17);
   self.phraseSummary.textColor = GYSettingsMuted();
@@ -275,7 +275,7 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 524, 96, 28) action:@selector(clearPhrases:)];
   GYSettingsButton *export = [self buttonWithTitle:@"导出设置" frame:NSMakeRect(130, 524, 96, 28) action:@selector(exportSettings:)];
   GYSettingsButton *import = [self buttonWithTitle:@"导入设置" frame:NSMakeRect(236, 524, 96, 28) action:@selector(importSettings:)];
-  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(342, 524, 154, 28) action:@selector(savePhrase:)];
+  GYSettingsButton *save = [self buttonWithTitle:@"保存词条" frame:NSMakeRect(342, 524, 154, 28) action:@selector(savePhrase:)];
   save.gyPrimary = YES;
   [content addSubview:clear];
   [content addSubview:export];
@@ -294,14 +294,16 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   self.compactFontButton.gySelected = store.candidateFontSize == 15;
   self.standardFontButton.gySelected = store.candidateFontSize == 16;
   self.largeFontButton.gySelected = store.candidateFontSize == 17;
-  NSDictionary<NSString *, NSString *> *phrases = store.customPhrases;
+  NSDictionary<NSString *, NSArray<NSString *> *> *phrases = store.customPhrases;
   if (phrases.count == 0) {
-    self.phraseSummary.stringValue = @"尚无本地短语。输入编码和内容后保存。";
+    self.phraseSummary.stringValue = @"尚无本地词条。一个编码可用 | 保存多个短语。";
   } else {
     NSArray<NSString *> *codes = [[phrases.allKeys sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)] subarrayWithRange:NSMakeRange(0, MIN(3, phrases.count))];
     NSMutableArray<NSString *> *samples = [NSMutableArray array];
-    for (NSString *code in codes) [samples addObject:[NSString stringWithFormat:@"%@=%@", code, phrases[code]]];
-    self.phraseSummary.stringValue = [NSString stringWithFormat:@"已保存 %lu 条：%@", (unsigned long)phrases.count, [samples componentsJoinedByString:@"  ·  "]];
+    NSUInteger entryCount = 0;
+    for (NSArray<NSString *> *entries in phrases.allValues) entryCount += entries.count;
+    for (NSString *code in codes) [samples addObject:[NSString stringWithFormat:@"%@=%@", code, [phrases[code] componentsJoinedByString:@" | "]]];
+    self.phraseSummary.stringValue = [NSString stringWithFormat:@"已保存 %lu 个编码、%lu 条词条：%@", (unsigned long)phrases.count, (unsigned long)entryCount, [samples componentsJoinedByString:@"  ·  "]];
   }
 }
 
@@ -512,7 +514,7 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
       [weakSelf showSettingsAlertWithTitle:@"无法导出设置" message:error.localizedDescription ?: @"请检查保存位置后重试。"];
       return;
     }
-    [weakSelf showSettingsAlertWithTitle:@"已导出设置" message:@"已保存输入模式、候选窗样式、字体、更新偏好和本地短语。学习记录与输入内容不会导出。"];
+    [weakSelf showSettingsAlertWithTitle:@"已导出设置" message:@"已保存输入模式、候选窗样式、字体、更新偏好和本地短语词库。学习记录与输入内容不会导出。"];
   }];
 }
 
@@ -540,16 +542,22 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
       return;
     }
     [weakSelf reload];
-    [weakSelf showSettingsAlertWithTitle:@"已导入设置" message:@"本地短语、输入模式和候选窗外观已更新。请在当前输入完成后，再切换或按 Shift 使用新模式。"];
+    [weakSelf showSettingsAlertWithTitle:@"已导入设置" message:@"本地短语词库、输入模式和候选窗外观已更新。请在当前输入完成后，再切换或按 Shift 使用新模式。"];
   }];
 }
 
 - (void)savePhrase:(id)sender {
   (void)sender;
   NSString *code = self.codeField.stringValue.lowercaseString;
-  NSString *phrase = self.phraseField.stringValue;
-  if (code.length == 0 || phrase.length == 0) { NSBeep(); return; }
-  [GYSettingsStore.sharedStore setCustomPhrase:phrase forCode:code];
+  NSString *phraseText = self.phraseField.stringValue;
+  if (code.length == 0 || phraseText.length == 0) { NSBeep(); return; }
+  NSMutableArray<NSString *> *phrases = [NSMutableArray array];
+  for (NSString *part in [phraseText componentsSeparatedByString:@"|"]) {
+    NSString *phrase = [part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (phrase.length != 0) [phrases addObject:phrase];
+  }
+  if (phrases.count == 0) { NSBeep(); return; }
+  [GYSettingsStore.sharedStore setCustomPhrases:phrases forCode:code];
   self.codeField.stringValue = @"";
   self.phraseField.stringValue = @"";
   [self reload];

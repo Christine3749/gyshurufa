@@ -8,7 +8,7 @@ static NSString *const kAutomaticUpdateChecks = @"automaticUpdateChecks";
 static NSString *const kLastUpdateCheckTimestamp = @"lastUpdateCheckTimestamp";
 static NSString *const kCustomPhrases = @"customPhrases";
 static NSString *const kBackupFormat = @"gyinput-macos-settings";
-static NSInteger const kBackupVersion = 1;
+static NSInteger const kBackupVersion = 2;
 static NSString *const kBackupErrorDomain = @"wang.shurufa.GYInput.Settings";
 
 static NSError *GYSettingsBackupError(NSString *description) {
@@ -23,6 +23,62 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   if (integer < minimum || integer > maximum) return NO;
   if (result != NULL) *result = integer;
   return YES;
+}
+
+// Keep local phrases entirely in settings.json, but use the same `code=a|b`
+// model as the Windows build: every code can surface several phrases in a
+// stable, user-defined order. Version 1 backups stored one string per code;
+// accepting that shape here makes the migration lossless.
+static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases(id value,
+                                                                                   NSString **message) {
+  if (![value isKindOfClass:NSDictionary.class]) {
+    if (message != NULL) *message = @"本地短语格式不正确。";
+    return nil;
+  }
+  NSDictionary *incoming = value;
+  if (incoming.count > 512) {
+    if (message != NULL) *message = @"本地短语编码过多。";
+    return nil;
+  }
+  NSMutableDictionary<NSString *, NSArray<NSString *> *> *result = [NSMutableDictionary dictionaryWithCapacity:incoming.count];
+  NSUInteger totalPhraseCount = 0;
+  for (id key in incoming) {
+    id rawPhrases = incoming[key];
+    if (![key isKindOfClass:NSString.class]) {
+      if (message != NULL) *message = @"本地短语编码格式不正确。";
+      return nil;
+    }
+    NSString *code = [(NSString *)key lowercaseString];
+    if (code.length == 0 || code.length > 64) {
+      if (message != NULL) *message = @"本地短语编码长度无效。";
+      return nil;
+    }
+    NSArray *rawList = [rawPhrases isKindOfClass:NSString.class] ? @[rawPhrases] : rawPhrases;
+    if (![rawList isKindOfClass:NSArray.class] || rawList.count == 0 || rawList.count > 64) {
+      if (message != NULL) *message = @"本地短语内容格式不正确。";
+      return nil;
+    }
+    NSMutableOrderedSet<NSString *> *phrases = [NSMutableOrderedSet orderedSetWithCapacity:rawList.count];
+    for (id rawPhrase in rawList) {
+      if (![rawPhrase isKindOfClass:NSString.class]) {
+        if (message != NULL) *message = @"本地短语内容格式不正确。";
+        return nil;
+      }
+      NSString *phrase = [(NSString *)rawPhrase stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+      if (phrase.length == 0 || phrase.length > 512) {
+        if (message != NULL) *message = @"本地短语长度无效。";
+        return nil;
+      }
+      [phrases addObject:phrase];
+    }
+    totalPhraseCount += phrases.count;
+    if (totalPhraseCount > 2048) {
+      if (message != NULL) *message = @"本地词条过多。";
+      return nil;
+    }
+    result[code] = phrases.array;
+  }
+  return result;
 }
 
 @implementation GYSettingsStore {
@@ -59,7 +115,9 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   if (_document[kCandidateFontSize] == nil) _document[kCandidateFontSize] = @16;
   if (_document[kAutomaticUpdateChecks] == nil) _document[kAutomaticUpdateChecks] = @YES;
   if (_document[kLastUpdateCheckTimestamp] == nil) _document[kLastUpdateCheckTimestamp] = @0;
-  if (![_document[kCustomPhrases] isKindOfClass:NSDictionary.class]) _document[kCustomPhrases] = @{};
+  NSString *phraseMigrationError = nil;
+  NSDictionary<NSString *, NSArray<NSString *> *> *phrases = GYValidatedCustomPhrases(_document[kCustomPhrases], &phraseMigrationError);
+  _document[kCustomPhrases] = phrases ?: @{};
   return self;
 }
 
@@ -88,12 +146,28 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
 - (void)setAutomaticUpdateChecks:(BOOL)value { _document[kAutomaticUpdateChecks] = @(value); [self save]; }
 - (NSTimeInterval)lastUpdateCheckTimestamp { return MAX(0, [_document[kLastUpdateCheckTimestamp] doubleValue]); }
 - (void)setLastUpdateCheckTimestamp:(NSTimeInterval)value { _document[kLastUpdateCheckTimestamp] = @(MAX(0, value)); [self save]; }
-- (NSDictionary<NSString *,NSString *> *)customPhrases { return [_document[kCustomPhrases] copy]; }
+- (NSDictionary<NSString *,NSArray<NSString *> *> *)customPhrases { return [_document[kCustomPhrases] copy]; }
+- (NSArray<NSString *> *)customPhrasesForCode:(NSString *)code {
+  id phrases = self.customPhrases[code.lowercaseString];
+  return [phrases isKindOfClass:NSArray.class] ? phrases : @[];
+}
 - (void)setCustomPhrase:(NSString *)phrase forCode:(NSString *)code {
-  if (code.length == 0 || phrase.length == 0) return;
-  NSMutableDictionary *phrases = [_document[kCustomPhrases] mutableCopy];
-  phrases[code.lowercaseString] = phrase;
-  _document[kCustomPhrases] = phrases;
+  [self setCustomPhrases:(phrase.length == 0 ? @[] : @[phrase]) forCode:code];
+}
+- (void)setCustomPhrases:(NSArray<NSString *> *)phrases forCode:(NSString *)code {
+  NSString *normalizedCode = code.lowercaseString;
+  if (normalizedCode.length == 0 || normalizedCode.length > 64) return;
+  NSMutableOrderedSet<NSString *> *normalizedPhrases = [NSMutableOrderedSet orderedSet];
+  for (id rawPhrase in phrases) {
+    if (![rawPhrase isKindOfClass:NSString.class]) continue;
+    NSString *phrase = [(NSString *)rawPhrase stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (phrase.length != 0 && phrase.length <= 512) [normalizedPhrases addObject:phrase];
+    if (normalizedPhrases.count == 64) break;
+  }
+  NSMutableDictionary *documentPhrases = [_document[kCustomPhrases] mutableCopy];
+  if (normalizedPhrases.count == 0) [documentPhrases removeObjectForKey:normalizedCode];
+  else documentPhrases[normalizedCode] = normalizedPhrases.array;
+  _document[kCustomPhrases] = [documentPhrases copy];
   [self save];
 }
 - (void)clearCustomPhrases {
@@ -101,9 +175,9 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   [self save];
 }
 - (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)rimeCandidates forCode:(NSString *)code {
-  NSString *phrase = self.customPhrases[code.lowercaseString];
-  if (phrase.length == 0) return rimeCandidates;
-  NSMutableOrderedSet *result = [NSMutableOrderedSet orderedSetWithObject:phrase];
+  NSArray<NSString *> *phrases = [self customPhrasesForCode:code];
+  if (phrases.count == 0) return rimeCandidates;
+  NSMutableOrderedSet *result = [NSMutableOrderedSet orderedSetWithArray:phrases];
   [result addObjectsFromArray:rimeCandidates];
   return result.array;
 }
@@ -126,7 +200,8 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
   if (![backup[@"format"] isKindOfClass:NSString.class] ||
       ![backup[@"format"] isEqualToString:kBackupFormat] ||
       ![backup[@"version"] isKindOfClass:NSNumber.class] ||
-      [backup[@"version"] integerValue] != kBackupVersion) {
+      [backup[@"version"] integerValue] < 1 ||
+      [backup[@"version"] integerValue] > kBackupVersion) {
     if (error != NULL) *error = GYSettingsBackupError(@"这不是有效的 GY 输入法设置备份。");
     return NO;
   }
@@ -135,30 +210,15 @@ static BOOL GYBackupInteger(NSDictionary<NSString *, id> *backup, NSString *key,
       !GYBackupInteger(backup, kLastChineseMode, GYInputModeSimplified, GYInputModeTraditional, &lastChineseMode) ||
       !GYBackupInteger(backup, kCandidateTheme, 0, 2, &theme) ||
       !GYBackupInteger(backup, kCandidateFontSize, 15, 17, &fontSize) ||
-      ![backup[kAutomaticUpdateChecks] isKindOfClass:NSNumber.class] ||
-      ![backup[kCustomPhrases] isKindOfClass:NSDictionary.class]) {
+      ![backup[kAutomaticUpdateChecks] isKindOfClass:NSNumber.class]) {
     if (error != NULL) *error = GYSettingsBackupError(@"备份中的设置格式不正确。");
     return NO;
   }
-  NSDictionary *incomingPhrases = backup[kCustomPhrases];
-  if (incomingPhrases.count > 512) {
-    if (error != NULL) *error = GYSettingsBackupError(@"备份中的本地短语过多。");
+  NSString *phraseError = nil;
+  NSDictionary<NSString *, NSArray<NSString *> *> *phrases = GYValidatedCustomPhrases(backup[kCustomPhrases], &phraseError);
+  if (phrases == nil) {
+    if (error != NULL) *error = GYSettingsBackupError(phraseError ?: @"备份中的本地短语格式不正确。");
     return NO;
-  }
-  NSMutableDictionary<NSString *, NSString *> *phrases = [NSMutableDictionary dictionaryWithCapacity:incomingPhrases.count];
-  for (id key in incomingPhrases) {
-    id value = incomingPhrases[key];
-    if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSString.class]) {
-      if (error != NULL) *error = GYSettingsBackupError(@"备份中的本地短语格式不正确。");
-      return NO;
-    }
-    NSString *code = [(NSString *)key lowercaseString];
-    NSString *phrase = (NSString *)value;
-    if (code.length == 0 || code.length > 64 || phrase.length == 0 || phrase.length > 512) {
-      if (error != NULL) *error = GYSettingsBackupError(@"备份中的本地短语长度无效。");
-      return NO;
-    }
-    phrases[code] = phrase;
   }
   _document[kMode] = @(mode);
   _document[kLastChineseMode] = @(lastChineseMode);
