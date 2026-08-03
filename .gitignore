@@ -1,0 +1,20 @@
+node_modules/
+build/
+build-*/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+.wrangler/
+
+# Generated Windows and macOS artifacts. Source, scripts and runtime data are
+# versioned; locally built binaries and vendor checkouts are reproducible.
+native/release/
+native/third_party/
+macos/.build/
+macos/Vendor/
+macos/GYInputMac.xcodeproj/
+macos/release/
+macos/GYInput/Resources/rime-data/

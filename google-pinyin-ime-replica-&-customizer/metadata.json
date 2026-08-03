@@ -1,0 +1,6 @@
+{
+  "name": "Google Pinyin IME Replica & Customizer",
+  "description": "Pixel-perfect Google Pinyin Input Method candidate bar replica, live desktop typing playground, spec customizer, and design asset generator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

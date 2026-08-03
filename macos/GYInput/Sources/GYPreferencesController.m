@@ -1,0 +1,408 @@
+#import "GYPreferencesController.h"
+#import "GYInputMode.h"
+#import "GYSettingsStore.h"
+#import "GYUpdateService.h"
+
+static NSColor *GYSettingsColor(CGFloat red, CGFloat green, CGFloat blue) {
+  return [NSColor colorWithSRGBRed:red / 255.0 green:green / 255.0 blue:blue / 255.0 alpha:1.0];
+}
+static NSColor *GYSettingsInk(void) { return GYSettingsColor(17, 19, 24); }
+static NSColor *GYSettingsSurface(void) { return GYSettingsColor(25, 28, 35); }
+static NSColor *GYSettingsBorder(void) { return GYSettingsColor(49, 53, 61); }
+static NSColor *GYSettingsText(void) { return GYSettingsColor(246, 248, 252); }
+static NSColor *GYSettingsMuted(void) { return GYSettingsColor(151, 157, 169); }
+static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
+
+@interface GYSettingsPanel : NSPanel
+@end
+
+@implementation GYSettingsPanel
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
+@interface GYSettingsBackgroundView : NSView
+@end
+
+@implementation GYSettingsBackgroundView
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  [GYSettingsInk() setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:14.0 yRadius:14.0] fill];
+  [GYSettingsBorder() setStroke];
+  [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:14.0 yRadius:14.0] stroke];
+
+  NSDictionary *wordmark = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:24.0 weight:NSFontWeightHeavy],
+    NSForegroundColorAttributeName: NSColor.whiteColor,
+  };
+  [@"GY" drawInRect:NSMakeRect(24, 22, 54, 31) withAttributes:wordmark];
+  [@"输入法设置" drawInRect:NSMakeRect(90, 21, 220, 27) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: GYSettingsText(),
+  }];
+  [@"所有内容仅保存在本机" drawInRect:NSMakeRect(90, 50, 240, 18) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: GYSettingsMuted(),
+  }];
+  [@"输入语言" drawInRect:NSMakeRect(24, 166, 200, 18) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: GYSettingsMuted(),
+  }];
+  [@"候选窗样式" drawInRect:NSMakeRect(24, 244, 200, 18) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: GYSettingsMuted(),
+  }];
+  [@"本地短语" drawInRect:NSMakeRect(24, 322, 200, 18) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: GYSettingsMuted(),
+  }];
+}
+@end
+
+@interface GYAboutBackgroundView : NSView
+@end
+
+@implementation GYAboutBackgroundView
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  [GYSettingsInk() setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:14.0 yRadius:14.0] fill];
+  [GYSettingsBorder() setStroke];
+  [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:14.0 yRadius:14.0] stroke];
+}
+@end
+
+@interface GYSettingsButton : NSButton
+@property(nonatomic) BOOL gySelected;
+@property(nonatomic) BOOL gyPrimary;
+@end
+
+@implementation GYSettingsButton
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  if (self) {
+    self.bordered = NO;
+    self.wantsLayer = YES;
+    self.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
+  }
+  return self;
+}
+- (void)setGySelected:(BOOL)gySelected { _gySelected = gySelected; [self setNeedsDisplay:YES]; }
+- (void)setGyPrimary:(BOOL)gyPrimary { _gyPrimary = gyPrimary; [self setNeedsDisplay:YES]; }
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  NSColor *fill = (self.gySelected || self.gyPrimary) ? GYSettingsBlue() : GYSettingsSurface();
+  NSColor *stroke = (self.gySelected || self.gyPrimary) ? GYSettingsBlue() : GYSettingsBorder();
+  [fill setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:8.0 yRadius:8.0] fill];
+  [stroke setStroke];
+  [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:8.0 yRadius:8.0] stroke];
+  NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+  style.alignment = NSTextAlignmentCenter;
+  style.lineBreakMode = NSLineBreakByTruncatingTail;
+  [self.title drawInRect:NSInsetRect(self.bounds, 4.0, 8.0) withAttributes:@{
+    NSFontAttributeName: self.font,
+    NSForegroundColorAttributeName: GYSettingsText(),
+    NSParagraphStyleAttributeName: style,
+  }];
+}
+@end
+
+@interface GYPreferencesController ()
+@property(nonatomic, strong) GYSettingsPanel *window;
+@property(nonatomic, strong) GYSettingsButton *simplifiedButton;
+@property(nonatomic, strong) GYSettingsButton *traditionalButton;
+@property(nonatomic, strong) GYSettingsButton *englishButton;
+@property(nonatomic, strong) GYSettingsButton *blueNightThemeButton;
+@property(nonatomic, strong) GYSettingsButton *warmWhiteThemeButton;
+@property(nonatomic, strong) GYSettingsButton *graphiteThemeButton;
+@property(nonatomic, strong) NSTextField *codeField;
+@property(nonatomic, strong) NSTextField *phraseField;
+@property(nonatomic, strong) NSTextField *phraseSummary;
+@property(nonatomic, strong) GYSettingsPanel *aboutWindow;
+@property(nonatomic, strong) NSButton *automaticUpdateCheckBox;
+@property(nonatomic, strong) NSTextField *aboutUpdateStatus;
+@end
+
+@implementation GYPreferencesController
+
++ (instancetype)sharedController {
+  static GYPreferencesController *controller;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ controller = [[self alloc] init]; });
+  return controller;
+}
+
+- (GYSettingsButton *)buttonWithTitle:(NSString *)title frame:(NSRect)frame action:(SEL)action {
+  GYSettingsButton *button = [[GYSettingsButton alloc] initWithFrame:frame];
+  button.title = title;
+  button.target = self;
+  button.action = action;
+  return button;
+}
+
+- (NSTextField *)fieldWithFrame:(NSRect)frame placeholder:(NSString *)placeholder {
+  NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
+  field.placeholderString = placeholder;
+  field.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular];
+  field.textColor = GYSettingsText();
+  field.backgroundColor = GYSettingsSurface();
+  field.drawsBackground = YES;
+  field.bordered = YES;
+  field.bezelStyle = NSTextFieldRoundedBezel;
+  field.focusRingType = NSFocusRingTypeNone;
+  return field;
+}
+
+- (NSTextField *)labelWithString:(NSString *)text frame:(NSRect)frame font:(NSFont *)font color:(NSColor *)color alignment:(NSTextAlignment)alignment {
+  NSTextField *label = [NSTextField labelWithString:text];
+  label.frame = frame;
+  label.font = font;
+  label.textColor = color;
+  label.alignment = alignment;
+  label.lineBreakMode = NSLineBreakByTruncatingTail;
+  return label;
+}
+
+- (void)ensureWindow {
+  if (self.window != nil) return;
+  NSRect frame = NSMakeRect(0, 0, 520, 486);
+  self.window = [[GYSettingsPanel alloc] initWithContentRect:frame
+                                                    styleMask:NSWindowStyleMaskBorderless
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+  self.window.title = @"GY 输入法设置";
+  self.window.opaque = NO;
+  self.window.backgroundColor = NSColor.clearColor;
+  self.window.hasShadow = YES;
+  self.window.movableByWindowBackground = YES;
+  self.window.level = NSFloatingWindowLevel;
+  self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+  self.window.animationBehavior = NSWindowAnimationBehaviorNone;
+
+  GYSettingsBackgroundView *content = [[GYSettingsBackgroundView alloc] initWithFrame:frame];
+  self.window.contentView = content;
+
+  GYSettingsButton *close = [self buttonWithTitle:@"×" frame:NSMakeRect(475, 19, 24, 26) action:@selector(close:)];
+  close.font = [NSFont systemFontOfSize:18.0 weight:NSFontWeightRegular];
+  close.gyPrimary = NO;
+  [content addSubview:close];
+
+  NSView *account = [[NSView alloc] initWithFrame:NSMakeRect(24, 90, 472, 54)];
+  account.wantsLayer = YES;
+  account.layer.backgroundColor = GYSettingsSurface().CGColor;
+  account.layer.cornerRadius = 9.0;
+  account.layer.borderWidth = 1.0;
+  account.layer.borderColor = GYSettingsBorder().CGColor;
+  NSTextField *accountTitle = [NSTextField labelWithString:@"账号"];
+  accountTitle.frame = NSMakeRect(15, 26, 90, 18);
+  accountTitle.textColor = GYSettingsText();
+  accountTitle.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
+  NSTextField *accountDetail = [NSTextField labelWithString:@"本地标识 · 未连接云端"];
+  accountDetail.frame = NSMakeRect(15, 8, 240, 16);
+  accountDetail.textColor = GYSettingsMuted();
+  accountDetail.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular];
+  [account addSubview:accountTitle];
+  [account addSubview:accountDetail];
+  [content addSubview:account];
+
+  self.simplifiedButton = [self buttonWithTitle:@"简体" frame:NSMakeRect(24, 192, 150, 34) action:@selector(selectMode:)];
+  self.simplifiedButton.tag = GYInputModeSimplified;
+  self.traditionalButton = [self buttonWithTitle:@"繁体" frame:NSMakeRect(185, 192, 150, 34) action:@selector(selectMode:)];
+  self.traditionalButton.tag = GYInputModeTraditional;
+  self.englishButton = [self buttonWithTitle:@"EN" frame:NSMakeRect(346, 192, 150, 34) action:@selector(selectMode:)];
+  self.englishButton.tag = GYInputModeEnglish;
+  [content addSubview:self.simplifiedButton];
+  [content addSubview:self.traditionalButton];
+  [content addSubview:self.englishButton];
+
+  self.blueNightThemeButton = [self buttonWithTitle:@"GY 蓝夜" frame:NSMakeRect(24, 270, 150, 34) action:@selector(selectTheme:)];
+  self.blueNightThemeButton.tag = 0;
+  self.warmWhiteThemeButton = [self buttonWithTitle:@"暖白" frame:NSMakeRect(185, 270, 150, 34) action:@selector(selectTheme:)];
+  self.warmWhiteThemeButton.tag = 1;
+  self.graphiteThemeButton = [self buttonWithTitle:@"石墨" frame:NSMakeRect(346, 270, 150, 34) action:@selector(selectTheme:)];
+  self.graphiteThemeButton.tag = 2;
+  [content addSubview:self.blueNightThemeButton];
+  [content addSubview:self.warmWhiteThemeButton];
+  [content addSubview:self.graphiteThemeButton];
+
+  NSView *phrases = [[NSView alloc] initWithFrame:NSMakeRect(24, 348, 472, 82)];
+  phrases.wantsLayer = YES;
+  phrases.layer.backgroundColor = GYSettingsSurface().CGColor;
+  phrases.layer.cornerRadius = 9.0;
+  phrases.layer.borderWidth = 1.0;
+  phrases.layer.borderColor = GYSettingsBorder().CGColor;
+  self.codeField = [self fieldWithFrame:NSMakeRect(12, 39, 124, 30) placeholder:@"编码，如 dz"];
+  self.phraseField = [self fieldWithFrame:NSMakeRect(145, 39, 315, 30) placeholder:@"短语，如 我的电子邮箱"];
+  self.phraseSummary = [NSTextField labelWithString:@""];
+  self.phraseSummary.frame = NSMakeRect(13, 12, 448, 17);
+  self.phraseSummary.textColor = GYSettingsMuted();
+  self.phraseSummary.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular];
+  self.phraseSummary.lineBreakMode = NSLineBreakByTruncatingTail;
+  [phrases addSubview:self.codeField];
+  [phrases addSubview:self.phraseField];
+  [phrases addSubview:self.phraseSummary];
+  [content addSubview:phrases];
+
+  GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 446, 104, 28) action:@selector(clearPhrases:)];
+  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(386, 446, 110, 28) action:@selector(savePhrase:)];
+  save.gyPrimary = YES;
+  [content addSubview:clear];
+  [content addSubview:save];
+}
+
+- (void)reload {
+  GYSettingsStore *store = GYSettingsStore.sharedStore;
+  self.simplifiedButton.gySelected = store.inputMode == GYInputModeSimplified;
+  self.traditionalButton.gySelected = store.inputMode == GYInputModeTraditional;
+  self.englishButton.gySelected = store.inputMode == GYInputModeEnglish;
+  self.blueNightThemeButton.gySelected = store.candidateTheme == 0;
+  self.warmWhiteThemeButton.gySelected = store.candidateTheme == 1;
+  self.graphiteThemeButton.gySelected = store.candidateTheme == 2;
+  NSDictionary<NSString *, NSString *> *phrases = store.customPhrases;
+  if (phrases.count == 0) {
+    self.phraseSummary.stringValue = @"尚无本地短语。输入编码和内容后保存。";
+  } else {
+    NSArray<NSString *> *codes = [[phrases.allKeys sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)] subarrayWithRange:NSMakeRange(0, MIN(3, phrases.count))];
+    NSMutableArray<NSString *> *samples = [NSMutableArray array];
+    for (NSString *code in codes) [samples addObject:[NSString stringWithFormat:@"%@=%@", code, phrases[code]]];
+    self.phraseSummary.stringValue = [NSString stringWithFormat:@"已保存 %lu 条：%@", (unsigned long)phrases.count, [samples componentsJoinedByString:@"  ·  "]];
+  }
+}
+
+- (void)show {
+  [self ensureWindow];
+  [self reload];
+  [self.window center];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.window makeKeyAndOrderFront:nil];
+}
+
+- (void)ensureAboutWindow {
+  if (self.aboutWindow != nil) return;
+  NSRect frame = NSMakeRect(0, 0, 460, 456);
+  self.aboutWindow = [[GYSettingsPanel alloc] initWithContentRect:frame
+                                                         styleMask:NSWindowStyleMaskBorderless
+                                                           backing:NSBackingStoreBuffered
+                                                             defer:NO];
+  self.aboutWindow.title = @"关于 GY 输入法";
+  self.aboutWindow.opaque = NO;
+  self.aboutWindow.backgroundColor = NSColor.clearColor;
+  self.aboutWindow.hasShadow = YES;
+  self.aboutWindow.movableByWindowBackground = YES;
+  self.aboutWindow.level = NSFloatingWindowLevel;
+  self.aboutWindow.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+  self.aboutWindow.animationBehavior = NSWindowAnimationBehaviorNone;
+
+  GYAboutBackgroundView *content = [[GYAboutBackgroundView alloc] initWithFrame:frame];
+  self.aboutWindow.contentView = content;
+  GYSettingsButton *close = [self buttonWithTitle:@"×" frame:NSMakeRect(414, 17, 24, 26) action:@selector(closeAbout:)];
+  close.font = [NSFont systemFontOfSize:18.0 weight:NSFontWeightRegular];
+  [content addSubview:close];
+
+  NSURL *iconURL = [NSBundle.mainBundle URLForResource:@"GYInputMenuIcon" withExtension:@"png"];
+  NSImageView *icon = [[NSImageView alloc] initWithFrame:NSMakeRect(164, 42, 132, 132)];
+  icon.image = iconURL == nil ? nil : [[NSImage alloc] initWithContentsOfURL:iconURL];
+  icon.imageScaling = NSImageScaleProportionallyUpOrDown;
+  [content addSubview:icon];
+
+  NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版";
+  NSString *build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"—";
+  [content addSubview:[self labelWithString:@"GY 输入法" frame:NSMakeRect(30, 191, 400, 34)
+                                      font:[NSFont systemFontOfSize:25.0 weight:NSFontWeightBold]
+                                     color:GYSettingsText() alignment:NSTextAlignmentCenter]];
+  [content addSubview:[self labelWithString:[NSString stringWithFormat:@"%@（%@）", version, build]
+                                       frame:NSMakeRect(30, 232, 400, 21)
+                                        font:[NSFont systemFontOfSize:13.0 weight:NSFontWeightRegular]
+                                       color:GYSettingsMuted() alignment:NSTextAlignmentCenter]];
+  [content addSubview:[self labelWithString:@"离线拼音 · 本地学习 · 简 / 繁 / EN"
+                                       frame:NSMakeRect(30, 276, 400, 19)
+                                        font:[NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular]
+                                       color:GYSettingsText() alignment:NSTextAlignmentCenter]];
+
+  self.automaticUpdateCheckBox = [NSButton checkboxWithTitle:@"有新版本时自动检查更新" target:self action:@selector(toggleAutomaticUpdateChecks:)];
+  self.automaticUpdateCheckBox.frame = NSMakeRect(130, 319, 220, 24);
+  self.automaticUpdateCheckBox.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular];
+  self.automaticUpdateCheckBox.contentTintColor = GYSettingsBlue();
+  [content addSubview:self.automaticUpdateCheckBox];
+  self.aboutUpdateStatus = [self labelWithString:@""
+                                             frame:NSMakeRect(34, 351, 392, 20)
+                                              font:[NSFont systemFontOfSize:11.0 weight:NSFontWeightRegular]
+                                             color:GYSettingsMuted() alignment:NSTextAlignmentCenter];
+  [content addSubview:self.aboutUpdateStatus];
+  GYSettingsButton *check = [self buttonWithTitle:@"检查更新" frame:NSMakeRect(240, 394, 120, 31) action:@selector(checkForUpdates:)];
+  check.gyPrimary = YES;
+  GYSettingsButton *done = [self buttonWithTitle:@"完成" frame:NSMakeRect(100, 394, 120, 31) action:@selector(closeAbout:)];
+  [content addSubview:done];
+  [content addSubview:check];
+}
+
+- (void)showAbout {
+  [self ensureAboutWindow];
+  self.automaticUpdateCheckBox.state = GYSettingsStore.sharedStore.automaticUpdateChecks ? NSControlStateValueOn : NSControlStateValueOff;
+  self.aboutUpdateStatus.stringValue = @"更新只从 shurufa.wang 的正式发布源获取。";
+  [self.aboutWindow center];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.aboutWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)closeAbout:(id)sender { (void)sender; [self.aboutWindow orderOut:nil]; }
+
+- (void)toggleAutomaticUpdateChecks:(NSButton *)sender {
+  GYSettingsStore.sharedStore.automaticUpdateChecks = sender.state == NSControlStateValueOn;
+  self.aboutUpdateStatus.stringValue = sender.state == NSControlStateValueOn ? @"已开启自动检查更新。" : @"已关闭自动检查更新。";
+}
+
+- (void)checkForUpdates:(id)sender {
+  (void)sender;
+  self.aboutUpdateStatus.stringValue = @"正在检查更新…";
+  __weak typeof(self) weakSelf = self;
+  [GYUpdateService.sharedService checkForUpdatesWithCompletion:^(NSString *status, NSURL *packageURL) {
+    GYPreferencesController *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    strongSelf.aboutUpdateStatus.stringValue = status;
+    if (packageURL == nil) return;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"发现 GY 输入法新版本";
+    alert.informativeText = @"下载更新包后，macOS 会要求管理员授权，以安全替换系统输入法。";
+    [alert addButtonWithTitle:@"前往下载"];
+    [alert addButtonWithTitle:@"稍后"];
+    [alert beginSheetModalForWindow:strongSelf.aboutWindow completionHandler:^(NSModalResponse response) {
+      if (response == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:packageURL];
+    }];
+  }];
+}
+
+- (void)close:(id)sender { (void)sender; [self.window orderOut:nil]; }
+
+- (void)selectMode:(GYSettingsButton *)sender {
+  GYSettingsStore.sharedStore.inputMode = (GYInputMode)sender.tag;
+  [self reload];
+}
+
+- (void)selectTheme:(GYSettingsButton *)sender {
+  GYSettingsStore.sharedStore.candidateTheme = sender.tag;
+  [self reload];
+}
+
+- (void)savePhrase:(id)sender {
+  (void)sender;
+  NSString *code = self.codeField.stringValue.lowercaseString;
+  NSString *phrase = self.phraseField.stringValue;
+  if (code.length == 0 || phrase.length == 0) { NSBeep(); return; }
+  [GYSettingsStore.sharedStore setCustomPhrase:phrase forCode:code];
+  self.codeField.stringValue = @"";
+  self.phraseField.stringValue = @"";
+  [self reload];
+}
+
+- (void)clearPhrases:(id)sender {
+  (void)sender;
+  [GYSettingsStore.sharedStore clearCustomPhrases];
+  [self reload];
+}
+
+@end

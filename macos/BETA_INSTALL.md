@@ -1,0 +1,17 @@
+# GY 输入法 macOS Apple Silicon 内测安装
+
+此内测包仅支持 Apple Silicon（M1、M2、M3、M4）Mac。它是本地测试构建，不是已公证的正式发行版；请只从 `shurufa.wang` 下载，并在安装前核对官网提供的 SHA-256。
+
+1. 解压下载的 ZIP。
+2. 在终端进入解压后的目录并运行：
+
+   ```bash
+   sudo ditto "GYInput.app" "/Library/Input Methods/GYInput.app"
+   ```
+
+3. 打开“系统设置 → 键盘 → 输入法 → 编辑 → 添加”，选择 **GY 输入法**。
+4. 若系统暂未列出 GY 输入法，请注销并重新登录一次。
+
+macOS 可能因该内测包尚未完成 Developer ID 公证而显示安全提示。请仅在确认下载来源为 `shurufa.wang` 且 SHA-256 一致时，按系统“隐私与安全性”中的提示继续；不要对未知来源的输入法关闭安全保护。
+
+内测反馈请附上：macOS 版本、芯片型号、使用 App、复现步骤和截图。不要发送输入内容、密码或个人词库。

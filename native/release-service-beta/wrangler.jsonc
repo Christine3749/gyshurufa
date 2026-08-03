@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
+  "name": "gy-shurufa-download",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-02",
+  "workers_dev": true,
+  "vars": { "RELEASE_STATUS": "beta" },
+  "r2_buckets": [
+    { "binding": "RELEASES", "bucket_name": "gy-shurufa-releases" }
+  ]
+}

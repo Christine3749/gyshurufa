@@ -1,0 +1,7 @@
+# GY local runtime: Simplified Chinese pinyin only.
+# encoding: utf-8
+config_version: '2.1'
+schema_list:
+  - schema: luna_pinyin
+menu:
+  page_size: 20
