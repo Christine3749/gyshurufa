@@ -19,6 +19,10 @@ cleanup() { rm -f "$manifest"; }
 trap cleanup EXIT
 
 [[ -f "$archive" ]] || { echo "Missing beta archive: $archive" >&2; exit 1; }
+# Wrangler runs from the Worker directory below.  Resolve an explicitly passed
+# relative archive while we are still in the caller's directory so publishing
+# a freshly built beta never accidentally looks for it under download-worker.
+archive="$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")"
 command -v npx >/dev/null || { echo "Node.js/npx is required to upload through Wrangler." >&2; exit 1; }
 
 case "$name" in

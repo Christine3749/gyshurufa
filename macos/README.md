@@ -4,7 +4,7 @@ This directory is the Apple-Silicon-native product line for GY Input Method. It 
 
 ## Current status
 
-The project now has a native InputMethodKit controller, real arm64 librime build chain, persistent 简体／繁体／EN mode, candidate paging, local learning data, and a Developer ID notarized-release pipeline. The current 0.9.37 beta has been built and smoke-tested on Apple Silicon, but is deliberately **not** a Developer ID-signed or notarized public release. Windows cannot validate macOS signing or client compatibility.
+The project now has a native InputMethodKit controller, real arm64 librime build chain, persistent 简体／繁体／EN mode, candidate paging, local learning data, and a Developer ID notarized-release pipeline. The current 0.9.38 beta has been built and smoke-tested on Apple Silicon, and resolves Rime resources from the input-method bundle rather than an IMK host process. It is deliberately **not** a Developer ID-signed or notarized public release. Windows cannot validate macOS signing or client compatibility.
 
 The internal target is offline full pinyin, marked text, a custom Windows-aligned candidate panel (five candidates per collapsed row; a fixed 5 × 5 expanded grid), Space/1–5/Escape/Backspace, PageUp/PageDown, direct keyboard ↓ expansion and arrow navigation, standalone Shift Chinese/EN switching, Chinese punctuation, and an input-source menu for 简体／繁体／EN.
 

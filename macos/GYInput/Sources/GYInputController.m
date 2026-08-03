@@ -39,6 +39,17 @@ static NSString *GYCompactModeTitle(GYInputMode mode) {
   }
 }
 
+// InputMethodKit can host a controller from a process other than the input
+// method's executable.  In that case `mainBundle` may describe the host, not
+// GYInput.app, and its Resources directory naturally has no bundled Rime
+// workspace.  Resolve resources from the class image first so the same arm64
+// package starts the local engine on every supported Apple Silicon Mac.
+static NSBundle *GYInputMethodBundle(void) {
+  NSBundle *classBundle = [NSBundle bundleForClass:GYInputController.class];
+  if ([classBundle URLForResource:@"rime-data" withExtension:nil] != nil) return classBundle;
+  return NSBundle.mainBundle;
+}
+
 // Some AppKit clients forward NSEvents to handleEvent:, while WebKit clients
 // can use either of InputMethodKit's text callbacks.  Map the latter back to
 // the same key-code path so every client has identical composition behavior.
@@ -133,7 +144,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   self = [super initWithServer:server delegate:delegate client:client];
   if (!self) return nil;
 
-  NSURL *shared = [NSBundle.mainBundle URLForResource:@"rime-data" withExtension:nil];
+  NSURL *shared = [GYInputMethodBundle() URLForResource:@"rime-data" withExtension:nil];
   NSURL *support = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                           inDomains:NSUserDomainMask] firstObject];
   NSURL *user = [[support URLByAppendingPathComponent:@"GYInput" isDirectory:YES]
