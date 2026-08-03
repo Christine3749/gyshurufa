@@ -167,6 +167,19 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   }
 }
 
+// InputMethodKit creates an input controller per text client.  Settings are
+// shared, so a mode change made in one application's menu or Settings window
+// can otherwise leave another idle controller with an old in-memory mode.
+// Synchronize before interpreting a bare Shift; never interrupt an active
+// composition merely because another client changed the saved preference.
+- (void)synchronizeIdleModeFromSettings {
+  if (_composition.length != 0) return;
+  GYInputMode storedMode = GYSettingsStore.sharedStore.inputMode;
+  if (_mode == storedMode) return;
+  _mode = storedMode;
+  [_engine setInputMode:storedMode];
+}
+
 - (void)selectMode:(NSMenuItem *)sender {
   [self applyInputMode:(GYInputMode)sender.tag];
 }
@@ -528,6 +541,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
       NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagFunction;
   if (event.type == NSEventTypeFlagsChanged &&
       (event.keyCode == kVK_Shift || event.keyCode == kVK_RightShift)) {
+    [self synchronizeIdleModeFromSettings];
     if ((event.modifierFlags & NSEventModifierFlagShift) != 0) {
       _shiftPending = YES;
       _shiftUsed = NO;
@@ -539,10 +553,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
     return YES;
   }
   if (event.type != NSEventTypeKeyDown) return NO;
-  if (_composition.length == 0 && _mode != GYSettingsStore.sharedStore.inputMode) {
-    _mode = GYSettingsStore.sharedStore.inputMode;
-    [_engine setInputMode:_mode];
-  }
+  [self synchronizeIdleModeFromSettings];
   // A missing/corrupt Rime workspace must never turn the selected input source
   // into a keyboard black hole. Clear any stale marked text and let the client
   // receive the key unchanged until the engine is healthy again.
