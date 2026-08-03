@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setInputMode:(GYInputMode)mode;
 - (NSArray<NSString *> *)candidatesForCode:(NSString *)code;
 - (NSArray<NSString *> *)currentCandidates;
+/// Applies the same bundled OpenCC tables as the active Rime schema so a
+/// local phrase follows 简 / 繁 mode instead of bypassing conversion.
+- (NSString *)localCandidateForPhrase:(NSString *)phrase inputMode:(GYInputMode)mode;
 - (NSUInteger)currentPageNumber;
 - (BOOL)canPageUp;
 - (BOOL)canPageDown;

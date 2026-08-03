@@ -31,7 +31,7 @@ rsync -a --delete "$root/native/runtime/rime/shared/" "$macos_root/GYInput/Resou
 # Windows GY uses five candidate cells per collapsed row and a fixed 5 × 5
 # expanded grid. Ask Rime for one expanded grid at a time; the IMK controller
 # slices that page into five-cell rows for normal paging, while preserving
-# 1–9 selection for the first nine visible cells in the expanded panel. These
+# 1–5 selection for the current row. These
 # are staged copies only; Windows' shared runtime is never modified.
 for config in \
   "$macos_root/GYInput/Resources/rime-data/default.yaml" \
@@ -44,7 +44,7 @@ for config in \
   # only; Windows continues to use its own shared Rime runtime unchanged.
   perl -0pi -e 's/(^translator:\R[ \t]+dictionary:[^\R]*\R)/$1  enable_sentence: true\n/mg' "$config"
 done
-printf '%s\n' 'candidate-grid-5x5-v1' > "$macos_root/GYInput/Resources/rime-data/workspace.version"
+printf '%s\n' 'candidate-grid-5x5-v2-opencc' > "$macos_root/GYInput/Resources/rime-data/workspace.version"
 
 cd "$macos_root"
 xcodegen generate

@@ -34,7 +34,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: GYInput/Resources/GYInput.entitlements
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
-        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime"
+        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime -lopencc"
     postCompileScripts:
       - name: Embed and sign librime
         script: |

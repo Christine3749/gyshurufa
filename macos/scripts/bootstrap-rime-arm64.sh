@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 macos_root="$root/macos"
 source_root="$root/native/third_party/librime"
 vendor_root="$macos_root/Vendor/rime"
+workspace_root="$macos_root/GYInput/Resources/rime-data"
 boost_root="$source_root/deps/boost-1.89.0"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -77,6 +78,21 @@ rm -rf "$vendor_root"
 mkdir -p "$vendor_root/include" "$vendor_root/lib"
 cp "$source_root/src/rime_api.h" "$vendor_root/include/rime_api.h"
 cp "$dylib" "$vendor_root/lib/librime.dylib"
+ditto "$source_root/include/opencc" "$vendor_root/include/opencc"
+cp "$source_root/lib/libopencc.a" "$vendor_root/lib/libopencc.a"
 install_name_tool -id '@rpath/librime.dylib' "$vendor_root/lib/librime.dylib"
 otool -L "$vendor_root/lib/librime.dylib"
+
+# Rime's simplifier and GY's local phrase conversion resolve these OpenCC
+# tables from the shared-data directory. They are not part of the Windows
+# runtime copy, so stage a self-contained Apple-Silicon workspace here.
+[[ -d "$source_root/share/opencc" ]] || { echo "OpenCC data was not built." >&2; exit 1; }
+rm -rf "$workspace_root/opencc"
+mkdir -p "$workspace_root/opencc"
+ditto "$source_root/share/opencc" "$workspace_root/opencc"
+cp "$source_root/deps/opencc/LICENSE" "$workspace_root/opencc/LICENSE"
+[[ -f "$workspace_root/opencc/s2t.json" && -f "$workspace_root/opencc/t2s.json" ]] || {
+  echo "OpenCC conversion tables were not staged." >&2
+  exit 1
+}
 echo "Staged arm64 librime: $vendor_root/lib/librime.dylib"

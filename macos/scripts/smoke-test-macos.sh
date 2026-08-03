@@ -9,7 +9,12 @@ release_mode="${GY_RELEASE_VERIFY:-0}"
 binary="$app/Contents/MacOS/GYInput"
 rime="$app/Contents/Frameworks/librime.dylib"
 data="$app/Contents/Resources/rime-data/build"
+opencc="$app/Contents/Resources/rime-data/opencc"
 [[ -x "$binary" && -f "$rime" && -d "$data" ]] || { echo "App bundle is incomplete." >&2; exit 1; }
+[[ -f "$opencc/s2t.json" && -f "$opencc/t2s.json" && -f "$opencc/STCharacters.ocd2" ]] || {
+  echo "App bundle is missing OpenCC conversion tables." >&2
+  exit 1
+}
 
 plutil -lint "$app/Contents/Info.plist"
 codesign --verify --strict --verbose=2 "$app"

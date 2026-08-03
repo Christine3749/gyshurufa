@@ -3,6 +3,7 @@
 #if __has_include(<rime_api.h>)
 #define GY_HAS_RIME 1
 #include <rime_api.h>
+#include <opencc/opencc.h>
 #else
 #error "GY Input requires the staged arm64 librime SDK. Run scripts/bootstrap-rime-arm64.sh first."
 #endif
@@ -66,6 +67,12 @@ static NSURL *GYDefaultUserDataURL(void) {
                    URLByAppendingPathComponent:@"rime" isDirectory:YES];
 }
 
+#if GY_HAS_RIME
+static BOOL GYOpenCCIsValid(opencc_t converter) {
+  return converter != NULL && converter != (opencc_t)-1;
+}
+#endif
+
 @implementation GYRimeBridge {
   NSURL *_sharedDataURL;
   NSURL *_userDataURL;
@@ -77,6 +84,8 @@ static NSURL *GYDefaultUserDataURL(void) {
   BOOL _canPageUp;
   BOOL _canPageDown;
   NSString *_compositionCode;
+  opencc_t _simplifiedConverter;
+  opencc_t _traditionalConverter;
 #endif
 }
 
@@ -125,6 +134,8 @@ static NSURL *GYDefaultUserDataURL(void) {
 
 - (void)dealloc {
 #if GY_HAS_RIME
+  if (GYOpenCCIsValid(_simplifiedConverter)) opencc_close(_simplifiedConverter);
+  if (GYOpenCCIsValid(_traditionalConverter)) opencc_close(_traditionalConverter);
   if (_api != nullptr && _session != 0) _api->destroy_session(_session);
 #endif
 }
@@ -188,6 +199,32 @@ static NSURL *GYDefaultUserDataURL(void) {
   return result;
 #else
   return @[];
+#endif
+}
+
+- (NSString *)localCandidateForPhrase:(NSString *)phrase inputMode:(GYInputMode)mode {
+#if GY_HAS_RIME
+  if (phrase.length == 0 || mode == GYInputModeEnglish || _sharedDataURL == nil) return phrase;
+  // `t2s` accepts a source phrase in either script and makes the simplified
+  // mode deterministic; `s2t` does the inverse for the traditional mode.
+  NSString *configName = mode == GYInputModeTraditional ? @"s2t.json" : @"t2s.json";
+  opencc_t *converter = mode == GYInputModeTraditional ? &_traditionalConverter : &_simplifiedConverter;
+  if (!GYOpenCCIsValid(*converter)) {
+    NSURL *config = [_sharedDataURL URLByAppendingPathComponent:[@"opencc" stringByAppendingPathComponent:configName]];
+    *converter = opencc_open(config.path.UTF8String);
+    if (!GYOpenCCIsValid(*converter)) {
+      *converter = NULL;
+      return phrase;
+    }
+  }
+  char *converted = opencc_convert_utf8(*converter, phrase.UTF8String, (size_t)-1);
+  if (converted == NULL) return phrase;
+  NSString *result = [[NSString alloc] initWithUTF8String:converted];
+  opencc_convert_utf8_free(converted);
+  return result.length == 0 ? phrase : result;
+#else
+  (void)mode;
+  return phrase;
 #endif
 }
 

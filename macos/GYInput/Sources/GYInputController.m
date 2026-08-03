@@ -217,9 +217,20 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   return _selectedCandidateIndex + GYCandidateRowSize < visibleCount || _engine.canPageDown;
 }
 
+- (NSArray<NSString *> *)candidatesForCurrentCodeFromRime:(NSArray<NSString *> *)rimeCandidates {
+  // Local phrases belong at the start of the first Rime page only. Repeating
+  // them after every PageDown would make the 5 × 5 browser appear to loop.
+  if (_engine.currentPageNumber != 0) return rimeCandidates;
+  NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+  for (NSString *phrase in [GYSettingsStore.sharedStore customPhrasesForCode:_composition]) {
+    [result addObject:[_engine localCandidateForPhrase:phrase inputMode:_mode]];
+  }
+  [result addObjectsFromArray:rimeCandidates];
+  return result.array;
+}
+
 - (void)refreshCandidatesFromCurrentRimePage {
-  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine currentCandidates]
-                                                                     forCode:_composition];
+  _candidates = [self candidatesForCurrentCodeFromRime:[_engine currentCandidates]];
 }
 
 - (void)resetCandidateViewport {
@@ -507,8 +518,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   }
   if ([command isEqualToString:@"deleteBackward:"] && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition]
-                                                                        forCode:_composition];
+    _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
     [self resetCandidateViewport];
     if (_composition.length == 0) [self cancelComposition];
     else [self updateMarkedTextForClient:client];
@@ -604,7 +614,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 
   if (event.keyCode == kVK_Delete && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
+    _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
     [self resetCandidateViewport];
     if (_composition.length == 0) [self cancelComposition];
     else [self updateMarkedTextForClient:client];
@@ -660,7 +670,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
     return NO;
   }
   _composition = [_composition stringByAppendingString:text];
-  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
+  _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
   [self resetCandidateViewport];
   [self updateMarkedTextForClient:client];
   return YES;

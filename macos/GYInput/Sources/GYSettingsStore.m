@@ -174,14 +174,6 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
   _document[kCustomPhrases] = @{};
   [self save];
 }
-- (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)rimeCandidates forCode:(NSString *)code {
-  NSArray<NSString *> *phrases = [self customPhrasesForCode:code];
-  if (phrases.count == 0) return rimeCandidates;
-  NSMutableOrderedSet *result = [NSMutableOrderedSet orderedSetWithArray:phrases];
-  [result addObjectsFromArray:rimeCandidates];
-  return result.array;
-}
-
 - (NSDictionary<NSString *,id> *)portableSettingsBackup {
   return @{
     @"format": kBackupFormat,

@@ -25,8 +25,6 @@
 - (void)setCustomPhrase:(NSString *)phrase forCode:(NSString *)code;
 - (void)setCustomPhrases:(NSArray<NSString *> *)phrases forCode:(NSString *)code;
 - (void)clearCustomPhrases;
-- (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)rimeCandidates
-                                                  forCode:(NSString *)code;
 
 /// A portable, privacy-preserving settings backup. Learning data and the
 /// Rime user database are deliberately excluded.
