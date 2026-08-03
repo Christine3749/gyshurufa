@@ -99,10 +99,25 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   }
 }
 
+// The visual candidate stream is not always identical to one physical Rime
+// page: locally configured phrases are placed before the first Rime result.
+// Preserve the physical Rime page/index beside every displayed word so that a
+// 5 × 5 grid can span the boundary without skipping Rime candidates or losing
+// learning when a user selects one.
+@interface GYCandidateEntry : NSObject
+@property(nonatomic, copy) NSString *text;
+@property(nonatomic) NSUInteger rimePageNumber;
+@property(nonatomic) NSUInteger rimeCandidateIndex;
+@end
+
+@implementation GYCandidateEntry
+@end
+
 @implementation GYInputController {
   GYRimeBridge *_engine;
   GYCandidatePanel *_candidatePanel;
   NSArray<NSString *> *_candidates;
+  NSMutableArray<GYCandidateEntry *> *_candidateEntries;
   NSString *_composition;
   NSUInteger _candidateOffset;
   NSUInteger _selectedCandidateIndex;
@@ -134,6 +149,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
       openSettingsHandler:^{ [weakSelf showPreferences:nil]; }];
   _composition = @"";
   _candidates = @[];
+  _candidateEntries = [NSMutableArray array];
   _candidateOffset = 0;
   _selectedCandidateIndex = 0;
   _expandedCandidates = NO;
@@ -192,9 +208,81 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   return _expandedCandidates ? GYExpandedCandidatePageSize : GYCollapsedCandidatePageSize;
 }
 
+- (void)synchronizeCandidateTexts {
+  NSMutableArray<NSString *> *texts = [NSMutableArray arrayWithCapacity:_candidateEntries.count];
+  for (GYCandidateEntry *entry in _candidateEntries) [texts addObject:entry.text];
+  _candidates = texts;
+}
+
+- (void)appendRimeCandidates:(NSArray<NSString *> *)rimeCandidates
+                   pageNumber:(NSUInteger)pageNumber
+                  excludingSet:(nullable NSSet<NSString *> *)excluded {
+  for (NSUInteger index = 0; index < rimeCandidates.count; ++index) {
+    NSString *candidate = rimeCandidates[index];
+    if (candidate.length == 0 || [excluded containsObject:candidate]) continue;
+    GYCandidateEntry *entry = [GYCandidateEntry new];
+    entry.text = candidate;
+    entry.rimePageNumber = pageNumber;
+    entry.rimeCandidateIndex = index;
+    [_candidateEntries addObject:entry];
+  }
+}
+
+- (void)beginCandidateStreamWithFirstRimePage:(NSArray<NSString *> *)rimeCandidates {
+  _candidateEntries = [NSMutableArray array];
+  NSMutableDictionary<NSString *, NSNumber *> *firstRimeIndices = [NSMutableDictionary dictionary];
+  for (NSUInteger index = 0; index < rimeCandidates.count; ++index) {
+    NSString *candidate = rimeCandidates[index];
+    if (candidate.length != 0 && firstRimeIndices[candidate] == nil) firstRimeIndices[candidate] = @(index);
+  }
+
+  // Keep configured phrases in their saved order. When a phrase already is a
+  // Rime candidate, retain its Rime origin so choosing it still updates local
+  // learning instead of committing an untracked duplicate.
+  NSMutableSet<NSString *> *seen = [NSMutableSet set];
+  for (NSString *phrase in [GYSettingsStore.sharedStore customPhrasesForCode:_composition]) {
+    NSString *candidate = [_engine localCandidateForPhrase:phrase inputMode:_mode];
+    if (candidate.length == 0 || [seen containsObject:candidate]) continue;
+    GYCandidateEntry *entry = [GYCandidateEntry new];
+    entry.text = candidate;
+    NSNumber *rimeIndex = firstRimeIndices[candidate];
+    entry.rimePageNumber = rimeIndex == nil ? NSNotFound : 0;
+    entry.rimeCandidateIndex = rimeIndex == nil ? NSNotFound : rimeIndex.unsignedIntegerValue;
+    [_candidateEntries addObject:entry];
+    [seen addObject:candidate];
+  }
+  [self appendRimeCandidates:rimeCandidates pageNumber:0 excludingSet:seen];
+  [self synchronizeCandidateTexts];
+}
+
+- (BOOL)appendNextRimePageToCandidateStream {
+  if (![_engine canPageDown] || ![_engine pageDown]) return NO;
+  NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
+  NSUInteger pageNumber = _engine.currentPageNumber;
+  if (rimeCandidates.count == 0) return NO;
+  NSUInteger countBefore = _candidateEntries.count;
+  [self appendRimeCandidates:rimeCandidates pageNumber:pageNumber excludingSet:nil];
+  [self synchronizeCandidateTexts];
+  return _candidateEntries.count > countBefore;
+}
+
+// Lazily append physical Rime pages only when the current 5-cell or 5 × 5
+// viewport needs them. This makes local phrases a prefix of one continuous
+// stream rather than a destructive insertion into Rime's first 25 results.
+- (BOOL)ensureCandidateAtIndex:(NSUInteger)index {
+  while (_candidateEntries.count <= index && [_engine canPageDown]) {
+    if (![self appendNextRimePageToCandidateStream]) break;
+  }
+  return _candidateEntries.count > index;
+}
+
 - (NSArray<NSString *> *)displayedCandidates {
+  NSUInteger pageSize = [self displayedCandidatePageSize];
+  if (pageSize != 0 && _candidateOffset <= NSUIntegerMax - (pageSize - 1)) {
+    [self ensureCandidateAtIndex:_candidateOffset + pageSize - 1];
+  }
   if (_candidateOffset >= _candidates.count) return @[];
-  NSUInteger length = MIN([self displayedCandidatePageSize], _candidates.count - _candidateOffset);
+  NSUInteger length = MIN(pageSize, _candidates.count - _candidateOffset);
   return [_candidates subarrayWithRange:NSMakeRange(_candidateOffset, length)];
 }
 
@@ -212,25 +300,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 }
 
 - (BOOL)canShowNextCandidatePage {
-  if (!_expandedCandidates) return _candidates.count > GYCollapsedCandidatePageSize;
-  NSUInteger visibleCount = MIN(_candidates.count, GYExpandedCandidatePageSize);
-  return _selectedCandidateIndex + GYCandidateRowSize < visibleCount || _engine.canPageDown;
-}
-
-- (NSArray<NSString *> *)candidatesForCurrentCodeFromRime:(NSArray<NSString *> *)rimeCandidates {
-  // Local phrases belong at the start of the first Rime page only. Repeating
-  // them after every PageDown would make the 5 × 5 browser appear to loop.
-  if (_engine.currentPageNumber != 0) return rimeCandidates;
-  NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
-  for (NSString *phrase in [GYSettingsStore.sharedStore customPhrasesForCode:_composition]) {
-    [result addObject:[_engine localCandidateForPhrase:phrase inputMode:_mode]];
-  }
-  [result addObjectsFromArray:rimeCandidates];
-  return result.array;
-}
-
-- (void)refreshCandidatesFromCurrentRimePage {
-  _candidates = [self candidatesForCurrentCodeFromRime:[_engine currentCandidates]];
+  NSUInteger pageSize = [self displayedCandidatePageSize];
+  if (_candidateOffset > NSUIntegerMax - pageSize) return NO;
+  if (_selectedCandidateIndex + GYCandidateRowSize < _candidateOffset + pageSize &&
+      [self ensureCandidateAtIndex:_selectedCandidateIndex + GYCandidateRowSize]) return YES;
+  return [self ensureCandidateAtIndex:_candidateOffset + pageSize];
 }
 
 - (void)resetCandidateViewport {
@@ -242,16 +316,13 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 
 - (nullable NSString *)commitDisplayedCandidateAtIndex:(NSUInteger)index {
   NSUInteger candidateIndex = _candidateOffset + index;
-  if (candidateIndex >= _candidates.count) return nil;
-  NSString *candidate = _candidates[candidateIndex];
-  NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
-  // Local phrase lists can contain several entries for one code.  If a phrase
-  // already exists in Rime, commit through Rime so it participates in local
-  // learning; otherwise commit the purely local phrase directly.  Looking up
-  // by displayed text also keeps the index correct after de-duplication.
-  NSUInteger rimeIndex = [rimeCandidates indexOfObject:candidate];
-  if (rimeIndex != NSNotFound) return [_engine commitCandidateAtIndex:rimeIndex];
-  return candidate;
+  if (candidateIndex >= _candidateEntries.count) return nil;
+  GYCandidateEntry *entry = _candidateEntries[candidateIndex];
+  if (entry.rimePageNumber != NSNotFound && entry.rimeCandidateIndex != NSNotFound) {
+    NSString *commit = [_engine commitCandidateAtPage:entry.rimePageNumber index:entry.rimeCandidateIndex];
+    if (commit.length != 0) return commit;
+  }
+  return entry.text;
 }
 
 - (void)selectDisplayedCandidateAtIndex:(NSUInteger)index {
@@ -266,11 +337,6 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   NSUInteger pageSize = [self displayedCandidatePageSize];
   if (_candidateOffset >= pageSize) {
     _candidateOffset -= pageSize;
-  } else if ([_engine pageUp]) {
-    [self refreshCandidatesFromCurrentRimePage];
-    if (!_expandedCandidates && _candidates.count > pageSize) {
-      _candidateOffset = ((_candidates.count - 1) / pageSize) * pageSize;
-    }
   } else {
     return;
   }
@@ -281,14 +347,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 - (void)showNextCandidatePage {
   if (_composition.length == 0) return;
   NSUInteger pageSize = [self displayedCandidatePageSize];
-  if (_candidateOffset + pageSize < _candidates.count) {
-    _candidateOffset += pageSize;
-  } else if ([_engine pageDown]) {
-    [self refreshCandidatesFromCurrentRimePage];
-    _candidateOffset = 0;
-  } else {
+  if (_candidateOffset > NSUIntegerMax - pageSize ||
+      ![self ensureCandidateAtIndex:_candidateOffset + pageSize]) {
     return;
   }
+  _candidateOffset += pageSize;
   _selectedCandidateIndex = _candidateOffset;
   [self updateMarkedTextForClient:self.client];
 }
@@ -298,6 +361,9 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   _expandedCandidates = !_expandedCandidates;
   NSUInteger pageSize = [self displayedCandidatePageSize];
   _candidateOffset = (_selectedCandidateIndex / pageSize) * pageSize;
+  if (pageSize != 0 && _candidateOffset <= NSUIntegerMax - (pageSize - 1)) {
+    [self ensureCandidateAtIndex:_candidateOffset + pageSize - 1];
+  }
   [self updateMarkedTextForClient:self.client];
 }
 
@@ -324,23 +390,26 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
     // *row* (five candidates), rather than jumping a whole 25-candidate grid.
     // This is the same continuous-browse contract as the Windows build.
     _expandedCandidates = YES;
-    _candidateOffset = 0;
+    _candidateOffset = (_selectedCandidateIndex / GYExpandedCandidatePageSize) * GYExpandedCandidatePageSize;
+    [self ensureCandidateAtIndex:_candidateOffset + GYExpandedCandidatePageSize - 1];
     [self updateMarkedTextForClient:self.client];
     return;
   }
 
-  NSUInteger visibleCount = MIN(_candidates.count, GYExpandedCandidatePageSize);
-  if (_selectedCandidateIndex + GYCandidateRowSize < visibleCount) {
+  NSUInteger visibleEnd = MIN(_candidates.count, _candidateOffset + GYExpandedCandidatePageSize);
+  if (_selectedCandidateIndex <= NSUIntegerMax - GYCandidateRowSize &&
+      _selectedCandidateIndex + GYCandidateRowSize < visibleEnd) {
     _selectedCandidateIndex += GYCandidateRowSize;
-    _candidateOffset = 0;
     [self updateMarkedTextForClient:self.client];
-  } else if ([_engine pageDown]) {
-    // Preserve the visual column when crossing from the fifth row to the next
-    // Rime page, then continue the same one-row movement on that page.
+  } else if (_candidateOffset <= NSUIntegerMax - GYExpandedCandidatePageSize &&
+             [self ensureCandidateAtIndex:_candidateOffset + GYExpandedCandidatePageSize]) {
+    // Preserve the visual column while entering the next virtual 5 × 5 page.
+    // That page may begin with the final Rime candidates displaced by local
+    // phrases, so it must not be assumed to equal one physical Rime page.
     NSUInteger column = _selectedCandidateIndex % GYCandidateRowSize;
-    [self refreshCandidatesFromCurrentRimePage];
-    _candidateOffset = 0;
-    _selectedCandidateIndex = MIN(column, _candidates.count == 0 ? 0 : _candidates.count - 1);
+    _candidateOffset += GYExpandedCandidatePageSize;
+    NSUInteger pageEnd = MIN(_candidates.count, _candidateOffset + GYExpandedCandidatePageSize);
+    _selectedCandidateIndex = MIN(_candidateOffset + column, pageEnd == 0 ? 0 : pageEnd - 1);
     [self updateMarkedTextForClient:self.client];
   }
 }
@@ -353,20 +422,20 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   if (_composition.length == 0) return;
   if (!_expandedCandidates) return;
 
-  if (_selectedCandidateIndex >= GYCandidateRowSize) {
+  if (_selectedCandidateIndex >= _candidateOffset + GYCandidateRowSize) {
     _selectedCandidateIndex -= GYCandidateRowSize;
-    _candidateOffset = 0;
     [self updateMarkedTextForClient:self.client];
     return;
   }
 
-  if ([_engine pageUp]) {
+  if (_candidateOffset >= GYExpandedCandidatePageSize) {
     NSUInteger column = _selectedCandidateIndex % GYCandidateRowSize;
-    [self refreshCandidatesFromCurrentRimePage];
-    _candidateOffset = 0;
-    NSUInteger visibleCount = MIN(_candidates.count, GYExpandedCandidatePageSize);
+    _candidateOffset -= GYExpandedCandidatePageSize;
+    NSUInteger visibleEnd = MIN(_candidates.count, _candidateOffset + GYExpandedCandidatePageSize);
+    NSUInteger visibleCount = visibleEnd > _candidateOffset ? visibleEnd - _candidateOffset : 0;
     NSUInteger lastRowStart = visibleCount == 0 ? 0 : ((visibleCount - 1) / GYCandidateRowSize) * GYCandidateRowSize;
-    _selectedCandidateIndex = MIN(lastRowStart + column, visibleCount == 0 ? 0 : visibleCount - 1);
+    _selectedCandidateIndex = MIN(_candidateOffset + lastRowStart + column,
+                                  visibleEnd == 0 ? 0 : visibleEnd - 1);
     [self updateMarkedTextForClient:self.client];
     return;
   }
@@ -450,7 +519,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 - (void)candidateSelected:(NSAttributedString *)candidateString {
   NSString *text = candidateString.string;
   if (text.length == 0) return;
-  NSUInteger index = [_candidates indexOfObject:text];
+  // Prefer the visible occurrence: Rime can intentionally expose equal text
+  // on different physical pages, each with a different learning index.
+  NSUInteger index = [[self displayedCandidates] indexOfObject:text];
+  if (index != NSNotFound) index += _candidateOffset;
+  else index = [_candidates indexOfObject:text];
   if (index == NSNotFound) {
     [self commitText:text];
     return;
@@ -518,7 +591,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   }
   if ([command isEqualToString:@"deleteBackward:"] && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
+    [self beginCandidateStreamWithFirstRimePage:[_engine candidatesForCode:_composition]];
     [self resetCandidateViewport];
     if (_composition.length == 0) [self cancelComposition];
     else [self updateMarkedTextForClient:client];
@@ -614,7 +687,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
 
   if (event.keyCode == kVK_Delete && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
+    [self beginCandidateStreamWithFirstRimePage:[_engine candidatesForCode:_composition]];
     [self resetCandidateViewport];
     if (_composition.length == 0) [self cancelComposition];
     else [self updateMarkedTextForClient:client];
@@ -670,7 +743,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
     return NO;
   }
   _composition = [_composition stringByAppendingString:text];
-  _candidates = [self candidatesForCurrentCodeFromRime:[_engine candidatesForCode:_composition]];
+  [self beginCandidateStreamWithFirstRimePage:[_engine candidatesForCode:_composition]];
   [self resetCandidateViewport];
   [self updateMarkedTextForClient:client];
   return YES;
@@ -683,6 +756,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   [_engine clearComposition];
   _composition = @"";
   _candidates = @[];
+  _candidateEntries = [NSMutableArray array];
   [self resetCandidateViewport];
   [_candidatePanel hide];
 }
@@ -696,11 +770,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   NSArray<NSString *> *displayed = [self displayedCandidates];
   [_candidatePanel showWithCandidates:displayed
                          selectedIndex:[self selectedIndexInDisplayedCandidates]
-                           pageNumber:_engine.currentPageNumber * 5 + _candidateOffset / [self displayedCandidatePageSize]
+                           pageNumber:_candidateOffset / [self displayedCandidatePageSize]
                       canGoPreviousPage:[self canShowPreviousCandidatePage]
                           canGoNextPage:[self canShowNextCandidatePage]
                               expanded:_expandedCandidates
-                   canExpandCandidates:_candidates.count > GYCollapsedCandidatePageSize
+                   canExpandCandidates:_candidates.count > GYCollapsedCandidatePageSize || _engine.canPageDown
                          inputModeTitle:GYCompactModeTitle(_mode)
                              forClient:client];
 }
@@ -709,6 +783,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   [_engine clearComposition];
   _composition = @"";
   _candidates = @[];
+  _candidateEntries = [NSMutableArray array];
   [self resetCandidateViewport];
   [_candidatePanel hide];
   id client = self.client;

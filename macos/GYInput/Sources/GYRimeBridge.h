@@ -21,6 +21,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)canPageUp;
 - (BOOL)canPageDown;
 - (nullable NSString *)commitCandidateAtIndex:(NSUInteger)index;
+/// Selects a candidate from a previously displayed physical Rime page.  The
+/// controller uses this for its virtual 5 × 5 stream, where local phrases can
+/// precede a Rime page without changing Rime's own candidate indices.
+- (nullable NSString *)commitCandidateAtPage:(NSUInteger)pageNumber index:(NSUInteger)index;
 - (BOOL)pageUp;
 - (BOOL)pageDown;
 - (void)clearComposition;

@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import "GYInputMode.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
 /// Persistent per-user settings shared by every IMK input session. Values live
 /// in Application Support so a future Preferences app edits the same file.
 @interface GYSettingsStore : NSObject
@@ -34,3 +36,5 @@
                                 error:(NSError * _Nullable * _Nullable)error;
 
 @end
+
+NS_ASSUME_NONNULL_END

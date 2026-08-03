@@ -73,6 +73,10 @@ static BOOL GYOpenCCIsValid(opencc_t converter) {
 }
 #endif
 
+@interface GYRimeBridge ()
+- (BOOL)moveToCandidatePage:(NSUInteger)pageNumber;
+@end
+
 @implementation GYRimeBridge {
   NSURL *_sharedDataURL;
   NSURL *_userDataURL;
@@ -273,6 +277,17 @@ static BOOL GYOpenCCIsValid(opencc_t converter) {
   _currentPageNumber = 0;
   _canPageUp = NO;
   _canPageDown = NO;
+#endif
+}
+
+- (nullable NSString *)commitCandidateAtPage:(NSUInteger)pageNumber index:(NSUInteger)index {
+#if GY_HAS_RIME
+  if (![self moveToCandidatePage:pageNumber]) return nil;
+  return [self commitCandidateAtIndex:index];
+#else
+  (void)pageNumber;
+  (void)index;
+  return nil;
 #endif
 }
 
