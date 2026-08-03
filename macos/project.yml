@@ -37,6 +37,10 @@ targets:
         OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime -lopencc"
     postCompileScripts:
       - name: Embed and sign librime
+        # The dylib is copied and signed with the active development or
+        # release identity. It must intentionally run on every archive/build;
+        # declaring that explicitly avoids an Xcode dependency-analysis warning.
+        basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
           framework_dir="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
