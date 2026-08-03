@@ -59,6 +59,13 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
   return YES;
 }
 
+static NSURL *GYDefaultUserDataURL(void) {
+  NSURL *support = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
+                                                           inDomains:NSUserDomainMask] firstObject];
+  return [[support URLByAppendingPathComponent:@"GYInput" isDirectory:YES]
+                   URLByAppendingPathComponent:@"rime" isDirectory:YES];
+}
+
 @implementation GYRimeBridge {
   NSURL *_sharedDataURL;
   NSURL *_userDataURL;
@@ -230,6 +237,12 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
   _canPageUp = NO;
   _canPageDown = NO;
 #endif
+}
+
++ (BOOL)moveLearningDatabaseToTrash:(NSError * _Nullable * _Nullable)error {
+  NSURL *database = [GYDefaultUserDataURL() URLByAppendingPathComponent:@"luna_pinyin.userdb" isDirectory:YES];
+  if (![NSFileManager.defaultManager fileExistsAtPath:database.path]) return YES;
+  return [NSFileManager.defaultManager trashItemAtURL:database resultingItemURL:nil error:error];
 }
 
 // Rime's backward paging depends on its internal highlighted-candidate

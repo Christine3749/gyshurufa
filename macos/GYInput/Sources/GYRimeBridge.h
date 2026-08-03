@@ -22,6 +22,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)pageDown;
 - (void)clearComposition;
 
+/// Moves only Rime's per-user learning database to the Trash. Bundled schemas
+/// and GY custom phrases live elsewhere and are deliberately preserved. The
+/// current IME process keeps its open database handles until it is restarted.
++ (BOOL)moveLearningDatabaseToTrash:(NSError * _Nullable * _Nullable)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

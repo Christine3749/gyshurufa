@@ -1,10 +1,16 @@
 #import "GYPreferencesController.h"
 #import "GYInputMode.h"
+#import "GYRimeBridge.h"
 #import "GYSettingsStore.h"
 #import "GYUpdateService.h"
 
 static NSColor *GYSettingsColor(CGFloat red, CGFloat green, CGFloat blue) {
   return [NSColor colorWithSRGBRed:red / 255.0 green:green / 255.0 blue:blue / 255.0 alpha:1.0];
+}
+
+static BOOL GYUsesReleaseUpdateChannel(void) {
+  NSString *channel = [NSBundle.mainBundle objectForInfoDictionaryKey:@"GYUpdateChannel"];
+  return [channel isEqualToString:@"release"];
 }
 static NSColor *GYSettingsInk(void) { return GYSettingsColor(17, 19, 24); }
 static NSColor *GYSettingsSurface(void) { return GYSettingsColor(25, 28, 35); }
@@ -198,23 +204,25 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   close.gyPrimary = NO;
   [content addSubview:close];
 
-  NSView *account = [[NSView alloc] initWithFrame:NSMakeRect(24, 90, 472, 54)];
-  account.wantsLayer = YES;
-  account.layer.backgroundColor = GYSettingsSurface().CGColor;
-  account.layer.cornerRadius = 9.0;
-  account.layer.borderWidth = 1.0;
-  account.layer.borderColor = GYSettingsBorder().CGColor;
-  NSTextField *accountTitle = [NSTextField labelWithString:@"账号"];
-  accountTitle.frame = NSMakeRect(15, 26, 90, 18);
-  accountTitle.textColor = GYSettingsText();
-  accountTitle.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
-  NSTextField *accountDetail = [NSTextField labelWithString:@"本地标识 · 未连接云端"];
-  accountDetail.frame = NSMakeRect(15, 8, 240, 16);
-  accountDetail.textColor = GYSettingsMuted();
-  accountDetail.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular];
-  [account addSubview:accountTitle];
-  [account addSubview:accountDetail];
-  [content addSubview:account];
+  NSView *localData = [[NSView alloc] initWithFrame:NSMakeRect(24, 90, 472, 54)];
+  localData.wantsLayer = YES;
+  localData.layer.backgroundColor = GYSettingsSurface().CGColor;
+  localData.layer.cornerRadius = 9.0;
+  localData.layer.borderWidth = 1.0;
+  localData.layer.borderColor = GYSettingsBorder().CGColor;
+  NSTextField *localDataTitle = [NSTextField labelWithString:@"本地数据"];
+  localDataTitle.frame = NSMakeRect(15, 26, 120, 18);
+  localDataTitle.textColor = GYSettingsText();
+  localDataTitle.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
+  NSTextField *localDataDetail = [NSTextField labelWithString:@"词库与学习记录只保存在此 Mac"];
+  localDataDetail.frame = NSMakeRect(15, 8, 260, 16);
+  localDataDetail.textColor = GYSettingsMuted();
+  localDataDetail.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular];
+  GYSettingsButton *resetLearning = [self buttonWithTitle:@"清除学习" frame:NSMakeRect(360, 12, 96, 30) action:@selector(resetLearning:)];
+  [localData addSubview:localDataTitle];
+  [localData addSubview:localDataDetail];
+  [localData addSubview:resetLearning];
+  [content addSubview:localData];
 
   self.simplifiedButton = [self buttonWithTitle:@"简体" frame:NSMakeRect(24, 192, 150, 34) action:@selector(selectMode:)];
   self.simplifiedButton.tag = GYInputModeSimplified;
@@ -353,9 +361,11 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
                                               font:[NSFont systemFontOfSize:11.0 weight:NSFontWeightRegular]
                                              color:GYSettingsMuted() alignment:NSTextAlignmentCenter];
   [content addSubview:self.aboutUpdateStatus];
-  GYSettingsButton *check = [self buttonWithTitle:@"检查更新" frame:NSMakeRect(240, 394, 120, 31) action:@selector(checkForUpdates:)];
+  GYSettingsButton *feedback = [self buttonWithTitle:@"反馈" frame:NSMakeRect(70, 394, 100, 31) action:@selector(sendFeedback:)];
+  GYSettingsButton *check = [self buttonWithTitle:@"检查更新" frame:NSMakeRect(180, 394, 120, 31) action:@selector(checkForUpdates:)];
   check.gyPrimary = YES;
-  GYSettingsButton *done = [self buttonWithTitle:@"完成" frame:NSMakeRect(100, 394, 120, 31) action:@selector(closeAbout:)];
+  GYSettingsButton *done = [self buttonWithTitle:@"完成" frame:NSMakeRect(310, 394, 80, 31) action:@selector(closeAbout:)];
+  [content addSubview:feedback];
   [content addSubview:done];
   [content addSubview:check];
 }
@@ -363,13 +373,45 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
 - (void)showAbout {
   [self ensureAboutWindow];
   self.automaticUpdateCheckBox.state = GYSettingsStore.sharedStore.automaticUpdateChecks ? NSControlStateValueOn : NSControlStateValueOff;
-  self.aboutUpdateStatus.stringValue = @"更新只从 shurufa.wang 的正式发布源获取。";
+  self.aboutUpdateStatus.stringValue = GYUsesReleaseUpdateChannel()
+      ? @"更新只从 shurufa.wang 的正式发布源获取。"
+      : @"内测更新只从 shurufa.wang 的内测发布源获取。";
   [self.aboutWindow center];
   [NSApp activateIgnoringOtherApps:YES];
   [self.aboutWindow makeKeyAndOrderFront:nil];
 }
 
 - (void)closeAbout:(id)sender { (void)sender; [self.aboutWindow orderOut:nil]; }
+
+- (void)sendFeedback:(id)sender {
+  (void)sender;
+  NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版";
+  NSString *build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"—";
+  NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+  NSString *subject = @"GY 输入法 macOS 反馈";
+  NSString *body = [NSString stringWithFormat:
+      @"请描述问题的复现步骤（不要包含密码、原始输入内容或个人词库）：\\n\\n"
+       "使用的 App：\\n"
+       "复现步骤：\\n"
+       "实际结果：\\n"
+       "期望结果：\\n\\n"
+       "--- 自动附带的环境信息 ---\\n"
+       "GY 输入法：%@（%@）\\n"
+       "macOS：%ld.%ld.%ld\\n"
+       "更新通道：%@\\n",
+      version, build, (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion,
+      GYUsesReleaseUpdateChannel() ? @"正式" : @"内测"];
+  NSURLComponents *components = [[NSURLComponents alloc] init];
+  components.scheme = @"mailto";
+  components.path = @"contact@gsyen.com";
+  components.queryItems = @[
+    [NSURLQueryItem queryItemWithName:@"subject" value:subject],
+    [NSURLQueryItem queryItemWithName:@"body" value:body],
+  ];
+  NSURL *URL = components.URL;
+  if (URL != nil && [NSWorkspace.sharedWorkspace openURL:URL]) return;
+  self.aboutUpdateStatus.stringValue = @"无法打开邮件应用：contact@gsyen.com";
+}
 
 - (void)toggleAutomaticUpdateChecks:(NSButton *)sender {
   GYSettingsStore.sharedStore.automaticUpdateChecks = sender.state == NSControlStateValueOn;
@@ -411,6 +453,33 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
 - (void)selectCandidateFont:(GYSettingsButton *)sender {
   GYSettingsStore.sharedStore.candidateFontSize = sender.tag;
   [self reload];
+}
+
+- (void)resetLearning:(id)sender {
+  (void)sender;
+  NSAlert *confirmation = [[NSAlert alloc] init];
+  confirmation.messageText = @"清除本地学习记录？";
+  confirmation.informativeText = @"Rime 学习数据库会移到废纸篓。内置词库和 GY 本地短语不会被删除；重新登录后才会完全生效。";
+  [confirmation addButtonWithTitle:@"移到废纸篓"];
+  [confirmation addButtonWithTitle:@"取消"];
+  __weak typeof(self) weakSelf = self;
+  [confirmation beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+    if (response != NSAlertFirstButtonReturn) return;
+    NSError *error = nil;
+    if ([GYRimeBridge moveLearningDatabaseToTrash:&error]) {
+      NSAlert *success = [[NSAlert alloc] init];
+      success.messageText = @"学习记录已移到废纸篓";
+      success.informativeText = @"请先切换到其他输入法，再注销并重新登录，以安全启用新的本地学习数据库。";
+      [success addButtonWithTitle:@"好"];
+      [success beginSheetModalForWindow:weakSelf.window completionHandler:nil];
+      return;
+    }
+    NSAlert *failure = [[NSAlert alloc] init];
+    failure.messageText = @"无法清除学习记录";
+    failure.informativeText = error.localizedDescription ?: @"请在关闭所有 GY 输入法会话后重试。";
+    [failure addButtonWithTitle:@"好"];
+    [failure beginSheetModalForWindow:weakSelf.window completionHandler:nil];
+  }];
 }
 
 - (void)savePhrase:(id)sender {
