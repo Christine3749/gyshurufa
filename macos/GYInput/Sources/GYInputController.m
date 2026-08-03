@@ -517,7 +517,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   // forwarding NSEvents. Treat this path exactly like the Windows TSF key
   // state machine: ↓ expands first, then moves expanded pages; arrows never
   // require clicking the disclosure control.
-  if (([command isEqualToString:@"pageUp:"] || [command isEqualToString:@"moveUp:"]) && _composition.length != 0) {
+  if (([command isEqualToString:@"pageUp:"] || [command isEqualToString:@"scrollPageUp:"]) && _composition.length != 0) {
+    [self showPreviousCandidatePage];
+    return YES;
+  }
+  if ([command isEqualToString:@"moveUp:"] && _composition.length != 0) {
     [self moveUpCandidateView];
     return YES;
   }
@@ -622,7 +626,11 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
     [self commitDefaultCandidateOrRawComposition];
     return YES;
   }
-  if ((event.keyCode == kVK_PageUp || event.keyCode == kVK_UpArrow) && _composition.length != 0) {
+  if (event.keyCode == kVK_PageUp && _composition.length != 0) {
+    [self showPreviousCandidatePage];
+    return YES;
+  }
+  if (event.keyCode == kVK_UpArrow && _composition.length != 0) {
     [self moveUpCandidateView];
     return YES;
   }
