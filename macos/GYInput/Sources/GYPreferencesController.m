@@ -272,10 +272,14 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   [phrases addSubview:self.phraseSummary];
   [content addSubview:phrases];
 
-  GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 524, 104, 28) action:@selector(clearPhrases:)];
-  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(386, 524, 110, 28) action:@selector(savePhrase:)];
+  GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 524, 96, 28) action:@selector(clearPhrases:)];
+  GYSettingsButton *export = [self buttonWithTitle:@"导出设置" frame:NSMakeRect(130, 524, 96, 28) action:@selector(exportSettings:)];
+  GYSettingsButton *import = [self buttonWithTitle:@"导入设置" frame:NSMakeRect(236, 524, 96, 28) action:@selector(importSettings:)];
+  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(342, 524, 154, 28) action:@selector(savePhrase:)];
   save.gyPrimary = YES;
   [content addSubview:clear];
+  [content addSubview:export];
+  [content addSubview:import];
   [content addSubview:save];
 }
 
@@ -479,6 +483,64 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
     failure.informativeText = error.localizedDescription ?: @"请在关闭所有 GY 输入法会话后重试。";
     [failure addButtonWithTitle:@"好"];
     [failure beginSheetModalForWindow:weakSelf.window completionHandler:nil];
+  }];
+}
+
+- (void)showSettingsAlertWithTitle:(NSString *)title message:(NSString *)message {
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = title;
+  alert.informativeText = message;
+  [alert addButtonWithTitle:@"好"];
+  [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+
+- (void)exportSettings:(id)sender {
+  (void)sender;
+  NSSavePanel *panel = [NSSavePanel savePanel];
+  panel.title = @"导出 GY 输入法设置";
+  panel.nameFieldStringValue = @"GYInput-settings.json";
+  panel.allowedFileTypes = @[@"json"];
+  panel.canCreateDirectories = YES;
+  __weak typeof(self) weakSelf = self;
+  [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+    if (response != NSModalResponseOK || panel.URL == nil) return;
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:GYSettingsStore.sharedStore.portableSettingsBackup
+                                                    options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys
+                                                      error:&error];
+    if (data == nil || ![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) {
+      [weakSelf showSettingsAlertWithTitle:@"无法导出设置" message:error.localizedDescription ?: @"请检查保存位置后重试。"];
+      return;
+    }
+    [weakSelf showSettingsAlertWithTitle:@"已导出设置" message:@"已保存输入模式、候选窗样式、字体、更新偏好和本地短语。学习记录与输入内容不会导出。"];
+  }];
+}
+
+- (void)importSettings:(id)sender {
+  (void)sender;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.title = @"导入 GY 输入法设置";
+  panel.allowedFileTypes = @[@"json"];
+  panel.allowsMultipleSelection = NO;
+  panel.canChooseDirectories = NO;
+  panel.canChooseFiles = YES;
+  __weak typeof(self) weakSelf = self;
+  [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+    if (response != NSModalResponseOK || panel.URL == nil) return;
+    NSError *error = nil;
+    NSData *data = [NSData dataWithContentsOfURL:panel.URL options:0 error:&error];
+    if (data == nil || data.length > 256 * 1024) {
+      [weakSelf showSettingsAlertWithTitle:@"无法导入设置" message:data == nil ? (error.localizedDescription ?: @"无法读取设置文件。") : @"设置备份超过 256 KB，未导入任何内容。"];
+      return;
+    }
+    id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (![decoded isKindOfClass:NSDictionary.class] ||
+        ![GYSettingsStore.sharedStore importPortableSettingsBackup:decoded error:&error]) {
+      [weakSelf showSettingsAlertWithTitle:@"无法导入设置" message:error.localizedDescription ?: @"这不是有效的 GY 输入法设置备份。"];
+      return;
+    }
+    [weakSelf reload];
+    [weakSelf showSettingsAlertWithTitle:@"已导入设置" message:@"本地短语、输入模式和候选窗外观已更新。请在当前输入完成后，再切换或按 Shift 使用新模式。"];
   }];
 }
 

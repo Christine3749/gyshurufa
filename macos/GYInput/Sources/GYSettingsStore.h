@@ -26,4 +26,11 @@
 - (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)rimeCandidates
                                                   forCode:(NSString *)code;
 
+/// A portable, privacy-preserving settings backup. Learning data and the
+/// Rime user database are deliberately excluded.
+- (NSDictionary<NSString *, id> *)portableSettingsBackup;
+/// Validates and atomically applies a backup created by the method above.
+- (BOOL)importPortableSettingsBackup:(NSDictionary<NSString *, id> *)backup
+                                error:(NSError * _Nullable * _Nullable)error;
+
 @end
