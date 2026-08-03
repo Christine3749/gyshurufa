@@ -87,4 +87,4 @@ fi
 
 echo "PASS: exactly one signed GYInput bundle and one matching LaunchServices registration."
 echo "Installed: $installed_app"
-echo "Next: sign out and back in if GY 拼音 is not yet listed in System Settings."
+echo "Next: sign out and back in if GY输入法 is not yet listed in System Settings."

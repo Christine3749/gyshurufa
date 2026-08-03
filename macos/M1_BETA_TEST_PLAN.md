@@ -22,7 +22,7 @@
 ./scripts/install-local-macos.sh --user
 ```
 
-然后前往“系统设置 → 键盘 → 文本输入 → 编辑”，添加 **GY 拼音**。若系统没有立即列出新输入法，退出并重新登录当前账户后再检查；不要通过关闭 SIP、绕过 Gatekeeper 或伪造签名解决该问题。
+然后前往“系统设置 → 键盘 → 文本输入 → 编辑”，添加 **GY输入法**。若系统没有立即列出新输入法，退出并重新登录当前账户后再检查；不要通过关闭 SIP、绕过 Gatekeeper 或伪造签名解决该问题。
 
 机器范围测试和发布包使用 `/Library/Input Methods`。若该机已存在用户目录副本，使用
 `./scripts/install-local-macos.sh --system --replace-user-copy`；不得保留两份同 Bundle ID 的 GYInput.app。先切换到系统自带输入法，才可以卸载 GY。
@@ -86,7 +86,7 @@
 
 ## 发布判定
 
-- 构建、arm64、嵌入 librime、签名和 smoke test 均通过。
+- 构建、arm64、嵌入 librime、当前开发签名验证和 smoke test 均通过；正式发布还必须满足下方的 Developer ID、公证与 Gatekeeper 验证。
 - 8 个应用矩阵全部完成，且没有未解决 P0/P1。
 - 干净用户账户完成至少一次首次安装、更新、回退和卸载。
 - 仅当 Developer ID Application、Developer ID Installer 和 Notary Profile 真实可用时，运行 `package-release.sh`；随后通过签名、staple、Gatekeeper 和 SHA-256 检查才可运行 `publish-r2.sh`。

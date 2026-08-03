@@ -143,4 +143,4 @@ done
 codesign --verify --deep --strict --verbose=2 "$target"
 
 echo "Installed exactly one GYInput bundle: $target"
-echo "Now open System Settings → Keyboard → Input Sources and select GY 拼音."
+echo "Now open System Settings → Keyboard → Input Sources and select GY输入法."

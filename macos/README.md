@@ -4,7 +4,7 @@ This directory is the Apple-Silicon-native product line for GY Input Method. It 
 
 ## Current status
 
-The project now has a native InputMethodKit controller, real arm64 librime build chain, persistent 简体／繁体／EN mode, candidate paging, local learning data, and a signed/notarized PKG pipeline. It still must be built and smoke-tested on an Apple Silicon Mac before public download; Windows cannot validate macOS signing or client compatibility.
+The project now has a native InputMethodKit controller, real arm64 librime build chain, persistent 简体／繁体／EN mode, candidate paging, local learning data, and a Developer ID notarized-release pipeline. The current 0.9.36 beta has been built and smoke-tested on Apple Silicon, but is deliberately **not** a Developer ID-signed or notarized public release. Windows cannot validate macOS signing or client compatibility.
 
 The internal target is offline full pinyin, marked text, a custom Windows-aligned candidate panel (five candidates per collapsed row; a fixed 5 × 5 expanded grid), Space/1–5/Escape/Backspace, PageUp/PageDown, direct keyboard ↓ expansion and arrow navigation, standalone Shift Chinese/EN switching, Chinese punctuation, and an input-source menu for 简体／繁体／EN.
 
@@ -27,7 +27,7 @@ No text is sent to a network service in the input path. Account, AI, and cross-d
 1. Install the current full Xcode app (Command Line Tools alone are insufficient), open it once to accept its licence, and select it with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
 2. Install XcodeGen and the dependencies needed by the bundled librime source (for example, `brew install xcodegen`).
 3. From this directory, run `./scripts/configure-m1.sh`, `./scripts/build-macos.sh`, and `./scripts/smoke-test-macos.sh` in that order.
-4. Install the build with `./scripts/install-local-macos.sh --user`, then add **GY 拼音** in System Settings > Keyboard > Input Sources.
+4. Install the build with `./scripts/install-local-macos.sh --user`, then add **GY输入法** in System Settings > Keyboard > Input Sources.
 5. Test in TextEdit, Safari, Chrome, VS Code, WeChat, Word, Slack, and Terminal.
 
 ### Local install and update
@@ -60,7 +60,7 @@ Before enabling GY in System Settings, verify the result without changing it:
 ```
 
 After an update, close any candidate panel, rerun the same install command,
-then switch away from GY and back to **GY 拼音**. Do not keep both
+then switch away from GY and back to **GY输入法**. Do not keep both
 `~/Library/Input Methods/GYInput.app` and `/Library/Input Methods/GYInput.app`:
 Safari and other AppKit/WebKit clients may resolve the duplicate bundles to
 different input-method servers.

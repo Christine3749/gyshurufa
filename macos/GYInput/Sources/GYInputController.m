@@ -419,7 +419,7 @@ static NSString *GYChinesePunctuationForEvent(NSEvent *event, BOOL *openingSingl
   NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:@"关于 GY 输入法" action:@selector(showAbout:) keyEquivalent:@""];
   about.target = self;
   [menu addItem:about];
-  NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(_mode)] action:nil keyEquivalent:@""];
+  NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY输入法 · %@", GYInputModeTitle(_mode)] action:nil keyEquivalent:@""];
   status.enabled = NO;
   [menu addItem:status];
   return menu;
