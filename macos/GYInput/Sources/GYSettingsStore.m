@@ -5,6 +5,7 @@ static NSString *const kLastChineseMode = @"lastChineseMode";
 static NSString *const kCandidatePageSize = @"candidatePageSize";
 static NSString *const kShowExpandedCandidates = @"showExpandedCandidates";
 static NSString *const kCandidateTheme = @"candidateTheme";
+static NSString *const kCandidateFontSize = @"candidateFontSize";
 static NSString *const kAutomaticUpdateChecks = @"automaticUpdateChecks";
 static NSString *const kLastUpdateCheckTimestamp = @"lastUpdateCheckTimestamp";
 static NSString *const kCustomPhrases = @"customPhrases";
@@ -42,6 +43,7 @@ static NSString *const kCustomPhrases = @"customPhrases";
   if (_document[kCandidatePageSize] == nil) _document[kCandidatePageSize] = @5;
   if (_document[kShowExpandedCandidates] == nil) _document[kShowExpandedCandidates] = @NO;
   if (_document[kCandidateTheme] == nil) _document[kCandidateTheme] = @0;
+  if (_document[kCandidateFontSize] == nil) _document[kCandidateFontSize] = @16;
   if (_document[kAutomaticUpdateChecks] == nil) _document[kAutomaticUpdateChecks] = @YES;
   if (_document[kLastUpdateCheckTimestamp] == nil) _document[kLastUpdateCheckTimestamp] = @0;
   if (![_document[kCustomPhrases] isKindOfClass:NSDictionary.class]) _document[kCustomPhrases] = @{};
@@ -71,6 +73,8 @@ static NSString *const kCustomPhrases = @"customPhrases";
 - (void)setShowExpandedCandidates:(BOOL)value { _document[kShowExpandedCandidates] = @(value); [self save]; }
 - (NSInteger)candidateTheme { return MAX(0, MIN(2, [_document[kCandidateTheme] integerValue])); }
 - (void)setCandidateTheme:(NSInteger)value { _document[kCandidateTheme] = @(MAX(0, MIN(2, value))); [self save]; }
+- (NSInteger)candidateFontSize { return MAX(15, MIN(17, [_document[kCandidateFontSize] integerValue])); }
+- (void)setCandidateFontSize:(NSInteger)value { _document[kCandidateFontSize] = @(MAX(15, MIN(17, value))); [self save]; }
 - (BOOL)automaticUpdateChecks { return [_document[kAutomaticUpdateChecks] boolValue]; }
 - (void)setAutomaticUpdateChecks:(BOOL)value { _document[kAutomaticUpdateChecks] = @(value); [self save]; }
 - (NSTimeInterval)lastUpdateCheckTimestamp { return MAX(0, [_document[kLastUpdateCheckTimestamp] doubleValue]); }

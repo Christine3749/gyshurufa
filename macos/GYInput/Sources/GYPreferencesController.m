@@ -54,7 +54,11 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
     NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
     NSForegroundColorAttributeName: GYSettingsMuted(),
   }];
-  [@"本地短语" drawInRect:NSMakeRect(24, 322, 200, 18) withAttributes:@{
+  [@"候选字体" drawInRect:NSMakeRect(24, 322, 200, 18) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: GYSettingsMuted(),
+  }];
+  [@"本地短语" drawInRect:NSMakeRect(24, 400, 200, 18) withAttributes:@{
     NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightRegular],
     NSForegroundColorAttributeName: GYSettingsMuted(),
   }];
@@ -119,6 +123,9 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
 @property(nonatomic, strong) GYSettingsButton *blueNightThemeButton;
 @property(nonatomic, strong) GYSettingsButton *warmWhiteThemeButton;
 @property(nonatomic, strong) GYSettingsButton *graphiteThemeButton;
+@property(nonatomic, strong) GYSettingsButton *compactFontButton;
+@property(nonatomic, strong) GYSettingsButton *standardFontButton;
+@property(nonatomic, strong) GYSettingsButton *largeFontButton;
 @property(nonatomic, strong) NSTextField *codeField;
 @property(nonatomic, strong) NSTextField *phraseField;
 @property(nonatomic, strong) NSTextField *phraseSummary;
@@ -169,7 +176,7 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
 
 - (void)ensureWindow {
   if (self.window != nil) return;
-  NSRect frame = NSMakeRect(0, 0, 520, 486);
+  NSRect frame = NSMakeRect(0, 0, 520, 564);
   self.window = [[GYSettingsPanel alloc] initWithContentRect:frame
                                                     styleMask:NSWindowStyleMaskBorderless
                                                       backing:NSBackingStoreBuffered
@@ -229,7 +236,17 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   [content addSubview:self.warmWhiteThemeButton];
   [content addSubview:self.graphiteThemeButton];
 
-  NSView *phrases = [[NSView alloc] initWithFrame:NSMakeRect(24, 348, 472, 82)];
+  self.compactFontButton = [self buttonWithTitle:@"紧凑 15" frame:NSMakeRect(24, 348, 150, 34) action:@selector(selectCandidateFont:)];
+  self.compactFontButton.tag = 15;
+  self.standardFontButton = [self buttonWithTitle:@"标准 16" frame:NSMakeRect(185, 348, 150, 34) action:@selector(selectCandidateFont:)];
+  self.standardFontButton.tag = 16;
+  self.largeFontButton = [self buttonWithTitle:@"大号 17" frame:NSMakeRect(346, 348, 150, 34) action:@selector(selectCandidateFont:)];
+  self.largeFontButton.tag = 17;
+  [content addSubview:self.compactFontButton];
+  [content addSubview:self.standardFontButton];
+  [content addSubview:self.largeFontButton];
+
+  NSView *phrases = [[NSView alloc] initWithFrame:NSMakeRect(24, 426, 472, 82)];
   phrases.wantsLayer = YES;
   phrases.layer.backgroundColor = GYSettingsSurface().CGColor;
   phrases.layer.cornerRadius = 9.0;
@@ -247,8 +264,8 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   [phrases addSubview:self.phraseSummary];
   [content addSubview:phrases];
 
-  GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 446, 104, 28) action:@selector(clearPhrases:)];
-  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(386, 446, 110, 28) action:@selector(savePhrase:)];
+  GYSettingsButton *clear = [self buttonWithTitle:@"清空短语" frame:NSMakeRect(24, 524, 104, 28) action:@selector(clearPhrases:)];
+  GYSettingsButton *save = [self buttonWithTitle:@"保存短语" frame:NSMakeRect(386, 524, 110, 28) action:@selector(savePhrase:)];
   save.gyPrimary = YES;
   [content addSubview:clear];
   [content addSubview:save];
@@ -262,6 +279,9 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
   self.blueNightThemeButton.gySelected = store.candidateTheme == 0;
   self.warmWhiteThemeButton.gySelected = store.candidateTheme == 1;
   self.graphiteThemeButton.gySelected = store.candidateTheme == 2;
+  self.compactFontButton.gySelected = store.candidateFontSize == 15;
+  self.standardFontButton.gySelected = store.candidateFontSize == 16;
+  self.largeFontButton.gySelected = store.candidateFontSize == 17;
   NSDictionary<NSString *, NSString *> *phrases = store.customPhrases;
   if (phrases.count == 0) {
     self.phraseSummary.stringValue = @"尚无本地短语。输入编码和内容后保存。";
@@ -385,6 +405,11 @@ static NSColor *GYSettingsBlue(void) { return GYSettingsColor(40, 99, 235); }
 
 - (void)selectTheme:(GYSettingsButton *)sender {
   GYSettingsStore.sharedStore.candidateTheme = sender.tag;
+  [self reload];
+}
+
+- (void)selectCandidateFont:(GYSettingsButton *)sender {
+  GYSettingsStore.sharedStore.candidateFontSize = sender.tag;
   [self reload];
 }
 

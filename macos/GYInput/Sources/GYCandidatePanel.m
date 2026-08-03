@@ -96,8 +96,9 @@ static NSColor *GYPanelBlue(void) { return GYPanelColor(40, 99, 235); }
   // Use the native Chinese UI face explicitly.  Apart from matching the
   // surrounding macOS typography, this prevents a fallback-font mismatch in
   // the IME process from rendering otherwise valid Han candidates as tofu.
-  NSFont *font = [NSFont fontWithName:@"PingFangSC-Semibold" size:16.0] ?:
-      [NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold];
+  const CGFloat fontSize = GYSettingsStore.sharedStore.candidateFontSize;
+  NSFont *font = [NSFont fontWithName:@"PingFangSC-Semibold" size:fontSize] ?:
+      [NSFont systemFontOfSize:fontSize weight:NSFontWeightSemibold];
   return @{ NSFontAttributeName: font,
             NSForegroundColorAttributeName: color };
 }

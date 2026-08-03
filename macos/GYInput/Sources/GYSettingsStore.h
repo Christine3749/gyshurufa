@@ -14,6 +14,9 @@
 /// Candidate strip appearance shared with the Windows build:
 /// 0 = GY 蓝夜, 1 = 暖白, 2 = 石墨.
 @property(nonatomic) NSInteger candidateTheme;
+/// Matches the Windows candidate-font range. The strip keeps its compact
+/// height; only the candidate glyph size changes.
+@property(nonatomic) NSInteger candidateFontSize;
 @property(nonatomic) BOOL automaticUpdateChecks;
 @property(nonatomic) NSTimeInterval lastUpdateCheckTimestamp;
 
