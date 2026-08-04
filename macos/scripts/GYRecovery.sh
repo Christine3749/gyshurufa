@@ -6,7 +6,7 @@ app_path="$target_root/Library/Input Methods/GYInput.app"
 state_root="$target_root/Library/Application Support/GYInput"
 status="$state_root/update-status.plist"
 command="${1:-status}"
-version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null; }
+version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null; }
 valid_app() { [[ -x "$1/Contents/MacOS/GYInput" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" == 'wang.shurufa.inputmethod.GYInput' ]]; }
 read_status() { /usr/bin/defaults read "$status" "$1" 2>/dev/null || true; }
 register_current() {

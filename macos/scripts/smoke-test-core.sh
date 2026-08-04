@@ -69,4 +69,10 @@ if (( event_count < 6 )); then
 fi
 
 printf 'PASS: physical-keyboard smoke test observed %s text-event records.\n' "$event_count"
+user_home="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+baseline="$user_home/Library/Application Support/GYInput/physical-baseline.plist"
+mkdir -p "$(dirname "$baseline")"
+/usr/bin/defaults write "$baseline" version -string "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+/usr/bin/defaults write "$baseline" verifiedAt -string "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "Saved physical-keyboard baseline: $baseline"
 printf 'Mark this version as a rollback baseline: sudo %q mark-known-good\n' "$app/Contents/Resources/GYRecovery.sh"

@@ -14,7 +14,7 @@ if [[ -n "$major" && "$major" -gt 13 && "${GY_ALLOW_DEVELOPMENT_RUNTIME:-}" != "
   echo "Build Rime for macOS 13.0; only local testing may use GY_ALLOW_DEVELOPMENT_RUNTIME=1." >&2
   exit 1
 fi
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 pkg="$root/build/GYInput-${version}-arm64.pkg"
 [[ ! -e "$pkg" ]] || rm -f "$pkg"
 pkgbuild --component "$app" --install-location '/Library/Input Methods' \

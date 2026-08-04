@@ -6,7 +6,10 @@ app_path="$target_root/Library/Input Methods/GYInput.app"
 state_root="$target_root/Library/Application Support/GYInput"
 pending="$state_root/pending-rollback-path"
 status="$state_root/update-status.plist"
-version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null; }
+version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null; }
+login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
+user_home="${GY_INPUT_BASELINE_HOME:-$(/usr/bin/dscl . -read "/Users/$login_user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')}"
+baseline="$user_home/Library/Application Support/GYInput/physical-baseline.plist"
 
 mkdir -p "$state_root/rollback"
 backup=''
@@ -14,6 +17,14 @@ if [[ -d "$app_path" && -f "$status" ]]; then
   current="$(version "$app_path")"
   known_good="$(/usr/bin/defaults read "$status" knownGoodVersion 2>/dev/null || true)"
   if [[ "$current" =~ ^[0-9A-Za-z._-]+$ && "$current" == "$known_good" ]]; then
+    backup="$state_root/rollback/GYInput-$current.app"
+    [[ -d "$backup" ]] || /usr/bin/ditto "$app_path" "$backup"
+  fi
+fi
+if [[ -d "$app_path" && -z "$backup" && -f "$baseline" ]]; then
+  current="$(version "$app_path")"
+  verified="$(/usr/bin/defaults read "$baseline" version 2>/dev/null || true)"
+  if [[ "$current" =~ ^[0-9A-Za-z._-]+$ && "$current" == "$verified" ]]; then
     backup="$state_root/rollback/GYInput-$current.app"
     [[ -d "$backup" ]] || /usr/bin/ditto "$app_path" "$backup"
   fi

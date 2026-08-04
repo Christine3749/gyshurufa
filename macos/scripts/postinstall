@@ -10,12 +10,17 @@ pending="$state_root/pending-rollback-path"
 login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
 
 mkdir -p "$state_root"
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
 rollback_path="$(cat "$pending" 2>/dev/null || true)"
 /usr/bin/defaults write "$status" installedVersion -string "$version"
 /usr/bin/defaults write "$status" activationState -string 'logout-required'
 /usr/bin/defaults write "$status" installedAt -string "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 [[ -z "$rollback_path" ]] || /usr/bin/defaults write "$status" rollbackAppPath -string "$rollback_path"
+if [[ -n "$rollback_path" ]]; then
+  rollback_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$rollback_path/Contents/Info.plist")"
+  /usr/bin/defaults write "$status" knownGoodVersion -string "$rollback_version"
+fi
+/bin/chmod 644 "$status"
 
 if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
   # Register the input source, but never kill/relaunch an active IMK process.

@@ -34,4 +34,4 @@
 
 ## 发布边界
 
-`release/release.json` 是跨端唯一版本真相。当前仍是 `0.9.34` 候选：未完成实体键盘升级矩阵、Developer ID 签名、公证与 stapling 前，不能改为公开发布。
+`release/release.json` 是跨端唯一版本真相。当前仍是 `1.0.9` 候选：未完成实体键盘升级矩阵、Developer ID 签名、公证与 stapling 前，不能改为公开发布。
