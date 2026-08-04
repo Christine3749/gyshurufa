@@ -5,10 +5,7 @@
   "compatibility_date": "2026-08-04",
   "workers_dev": true,
   "routes": [
-    { "pattern": "shurufa.wang/api/releases/macos/preview/*", "zone_name": "shurufa.wang" },
-    { "pattern": "www.shurufa.wang/api/releases/macos/preview/*", "zone_name": "shurufa.wang" },
-    { "pattern": "shurufa.wang/download/macos/preview/*", "zone_name": "shurufa.wang" },
-    { "pattern": "www.shurufa.wang/download/macos/preview/*", "zone_name": "shurufa.wang" }
+    { "pattern": "mac-preview.shurufa.wang", "custom_domain": true }
   ],
   "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "gy-shurufa-releases" }]
 }

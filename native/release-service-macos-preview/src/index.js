@@ -27,7 +27,7 @@ function info(manifest) {
     platform: manifest.platform, channel: manifest.channel, version: manifest.version, architecture: manifest.architecture,
     packageFile: manifest.packageFile, sha256: manifest.sha256, bytes: manifest.bytes, state: manifest.state,
     appSigned: manifest.appSigned, pkgSigned: manifest.pkgSigned, notarized: manifest.notarized,
-    warning: "Candidate preview: separate input source; not a notarized stable release.", downloadUrl: "/download/macos/preview/latest"
+    warning: "Candidate preview: separate input source; not a notarized stable release.", downloadUrl: "/download"
   };
 }
 
@@ -47,8 +47,11 @@ export default {
     let manifest;
     try { manifest = await latest(env); } catch (error) { return json({ error: "invalid_preview", message: error.message }, 503); }
     const path = new URL(request.url).pathname.replace(/\/+$/, "");
-    if (["/api/releases/macos/preview/latest", "/api/releases/macos/preview/health", "/health"].includes(path)) return json(info(manifest));
-    if (!["/download/macos/preview/latest", `/download/macos/preview/${manifest.version}`].includes(path)) return json({ error: "not_found" }, 404);
+    if (["", "/", "/health", "/api/releases/macos/preview/latest"].includes(path)) return json(info(manifest));
+    if (["/sha256", "/download/macos/preview/latest/sha256"].includes(path)) {
+      return new Response(`${manifest.sha256}  ${manifest.packageFile}\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+    }
+    if (!["/download", "/download/macos/preview/latest", `/download/macos/preview/${manifest.version}`].includes(path)) return json({ error: "not_found" }, 404);
     const object = await env.RELEASES.get(manifest.objectKey);
     if (!object) return json({ error: "release_not_found" }, 404);
     if (object.size !== manifest.bytes) return json({ error: "invalid_preview", message: "R2 byte size does not match manifest" }, 503);
