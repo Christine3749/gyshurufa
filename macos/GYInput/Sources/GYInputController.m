@@ -1,6 +1,7 @@
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
 #import "GYDiagnostics.h"
+#import "GYCandidatePanel.h"
 #import "GYInputMode.h"
 #import "GYRimeSession.h"
 
@@ -10,7 +11,7 @@
 @implementation GYInputController {
   __weak id _activeClient;
   GYRimeSession *_rime;
-  IMKCandidates *_candidatePanel;
+  GYCandidatePanel *_candidatePanel;
   NSInteger _selection;
   BOOL _expanded;
   BOOL _hasMarkedText;
@@ -20,12 +21,15 @@
   self = [super initWithServer:server delegate:delegate client:client];
   if (self) {
     _activeClient = client; _rime = [GYRimeSession new];
-    _candidatePanel = [[IMKCandidates alloc] initWithServer:server panelType:kIMKScrollingGridCandidatePanel];
-    [_candidatePanel setDismissesAutomatically:NO];
-    [_candidatePanel setAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
-      NSForegroundColorAttributeName: [NSColor colorWithWhite:0.965 alpha:1],
-      NSBackgroundColorDocumentAttribute: [NSColor colorWithRed:0.067 green:0.075 blue:0.094 alpha:1],
-      IMKCandidatesSendServerKeyEventFirst: @YES}];
+    __weak GYInputController *weakSelf = self;
+    _candidatePanel = [[GYCandidatePanel alloc] initWithActionHandler:^(GYCandidateAction action, NSInteger index) {
+      GYInputController *strongSelf = weakSelf; if (!strongSelf) return;
+      if (action == GYCandidateActionSelect) [strongSelf->_rime selectCandidateAtIndex:index];
+      else if (action == GYCandidateActionToggle) strongSelf->_expanded = !strongSelf->_expanded;
+      else if (action == GYCandidateActionPrevious) [strongSelf->_rime previousPage];
+      else if (action == GYCandidateActionNext) [strongSelf->_rime nextPage];
+      strongSelf->_selection = 0; [strongSelf applyRimeResult];
+    }];
     GYTrace(_rime.ready ? @"controller-init rime=ready" : @"controller-init rime=failed");
   }
   return self;
@@ -53,9 +57,9 @@
   NSArray *visible = self.visibleCandidates;
   if (visible.count == 0) { [_candidatePanel hide]; return; }
   _selection = MIN(_selection, (NSInteger)visible.count - 1);
-  [_candidatePanel updateCandidates]; [_candidatePanel show:kIMKLocateCandidatesBelowHint];
-  NSInteger identifier = [_candidatePanel candidateStringIdentifier:visible[(NSUInteger)_selection]];
-  if (identifier != NSNotFound) [_candidatePanel selectCandidateWithIdentifier:identifier];
+  [_candidatePanel showCandidates:visible selection:_selection mode:GYInputModeStore.sharedStore.mode expanded:_expanded
+                       expandable:_rime.candidates.count > 5 || _rime.hasNextPage previous:_rime.hasPreviousPage
+                             next:_rime.hasNextPage client:self.currentClient];
 }
 
 - (void)clearComposition {
@@ -71,31 +75,32 @@
   if (_rime.preedit.length) { [self showComposition]; [self refreshCandidates]; } else [self clearComposition];
 }
 
-- (NSArray *)candidates:(id)sender { (void)sender; return self.visibleCandidates; }
 - (id)composedString:(id)sender { (void)sender; return _rime.preedit; }
 - (NSAttributedString *)originalString:(id)sender { (void)sender; return [[NSAttributedString alloc] initWithString:_rime.preedit]; }
 - (void)commitComposition:(id)sender { (void)sender; [_rime commitDefault]; [self applyRimeResult]; }
 
-- (void)candidateSelected:(NSAttributedString *)candidateString {
-  NSInteger index = [self.visibleCandidates indexOfObject:candidateString.string];
-  if (index != NSNotFound) { [_rime selectCandidateAtIndex:index]; [self applyRimeResult]; }
-}
-
-- (void)candidateSelectionChanged:(NSAttributedString *)candidateString {
-  NSUInteger index = [self.visibleCandidates indexOfObject:candidateString.string];
-  if (index != NSNotFound) _selection = (NSInteger)index;
-}
-
 - (BOOL)moveSelectionForKey:(NSInteger)keyCode {
   NSArray *visible = self.visibleCandidates;
   if (visible.count == 0) return NO;
-  if (keyCode == kVK_DownArrow && !_expanded) { _expanded = YES; _selection = 0; [self refreshCandidates]; return YES; }
+  if (keyCode == kVK_DownArrow && !_expanded && (_rime.candidates.count > 5 || _rime.hasNextPage)) { _expanded = YES; _selection = 0; [self refreshCandidates]; return YES; }
   if (keyCode == kVK_PageDown && [_rime nextPage]) { _selection = 0; [self refreshCandidates]; return YES; }
   if (keyCode == kVK_PageUp && [_rime previousPage]) { _selection = 0; [self refreshCandidates]; return YES; }
-  if (keyCode == kVK_UpArrow && _selection < 5 && _expanded && !_rime.hasPreviousPage) { _expanded = NO; _selection = 0; [self refreshCandidates]; return YES; }
+  if (keyCode == kVK_UpArrow && _selection < 5 && _expanded) {
+    NSInteger column = _selection;
+    if (_rime.hasPreviousPage && [_rime previousPage]) {
+      NSArray *previous = self.visibleCandidates; NSInteger rowStart = MAX(0, (NSInteger)previous.count - 5) / 5 * 5;
+      _selection = MIN(rowStart + column, (NSInteger)previous.count - 1); [self refreshCandidates]; return YES;
+    }
+    _expanded = NO; _selection = 0; [self refreshCandidates]; return YES;
+  }
   NSInteger delta = keyCode == kVK_LeftArrow ? -1 : keyCode == kVK_RightArrow ? 1 : keyCode == kVK_UpArrow ? -5 : keyCode == kVK_DownArrow ? 5 : 0;
   NSInteger target = _selection + delta;
-  if (delta == 0 || target < 0 || target >= (NSInteger)visible.count) return delta != 0;
+  if (delta == 0 || target < 0 || target >= (NSInteger)visible.count) {
+    if (_expanded && keyCode == kVK_DownArrow && _rime.hasNextPage && [_rime nextPage]) {
+      NSArray *next = self.visibleCandidates; _selection = MIN(_selection % 5, (NSInteger)next.count - 1); [self refreshCandidates]; return YES;
+    }
+    return delta != 0;
+  }
   _selection = target; [self refreshCandidates]; return YES;
 }
 
