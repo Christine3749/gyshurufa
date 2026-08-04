@@ -11,6 +11,12 @@
 #include <vector>
 
 namespace {
+
+// How long a successful Host verification stays trusted. Within an active
+// typing burst this removes the per-keystroke Status round trips entirely;
+// a failed request always clears the stamp and forces a fresh handshake.
+constexpr ULONGLONG kVerifiedHostTtlMs = 1500;
+
 constexpr wchar_t kHostRegistryKey[] = L"SOFTWARE\\GYInput";
 
 std::wstring JoinPath(const std::wstring& root, const wchar_t* child) {
@@ -122,10 +128,19 @@ struct HostedPinyinEngine::Impl {
   std::wstring HostVersion() const { return ReadMachineValue(L"HostVersion"); }
 
   bool EnsureHost() {
+    // Fast path: a Host verified moments ago is almost certainly still alive.
+    // Steady-state keystrokes skip the Status round trip entirely (Lookup and
+    // ShowCandidates each used to pay one). Any failed request clears this
+    // stamp, so a dead Host is detected on the very next key.
+    const ULONGLONG now = GetTickCount64();
+    if (last_verified_tick != 0 && now - last_verified_tick < kVerifiedHostTtlMs) return true;
     const std::wstring expected_version = HostVersion();
     std::wstring status;
     if (SendRequest(gy::host::MessageType::Status, L"", &status)) {
-      if (IsExpectedHostStatus(status, expected_version)) return true;
+      if (IsExpectedHostStatus(status, expected_version)) {
+        last_verified_tick = now;
+        return true;
+      }
       // A versioned Host is single-instance. During a Host-only update, wait
       // until the old owner has really released the pipe before starting the
       // new binary; otherwise the first composition can race the old mutex.
@@ -143,7 +158,10 @@ struct HostedPinyinEngine::Impl {
     // The initial lookup is allowed a short, bounded launch window. No text
     // is ever injected while the Host is unavailable; the TSF preedit remains
     // local and the next key retries this handshake.
-    if (WaitForHostVersion(expected_version, 900)) return true;
+    if (WaitForHostVersion(expected_version, 900)) {
+      last_verified_tick = GetTickCount64();
+      return true;
+    }
     diagnostic = L"GY Host is starting or has a mismatched version";
     return false;
   }
@@ -162,6 +180,7 @@ struct HostedPinyinEngine::Impl {
   std::wstring module_directory;
   std::wstring diagnostic;
   std::mutex mutex;
+  ULONGLONG last_verified_tick = 0;
 };
 
 HostedPinyinEngine::HostedPinyinEngine(std::wstring module_directory)
@@ -171,12 +190,17 @@ HostedPinyinEngine::~HostedPinyinEngine() = default;
 std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin) {
   if (!impl_ || pinyin.empty()) return {};
   std::scoped_lock lock(impl_->mutex);
-  if (impl_->EnsureHost()) {
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    if (!impl_->EnsureHost()) break;
     std::wstring encoded;
     if (SendRequest(gy::host::MessageType::Lookup, pinyin, &encoded)) {
+      impl_->last_verified_tick = GetTickCount64();
       impl_->diagnostic = L"using versioned GY Host";
       return gy::host::DecodeCandidates(encoded);
     }
+    // The cached verification was stale (Host died between keystrokes): drop
+    // it and retry once with a fresh handshake before giving up this key.
+    impl_->last_verified_tick = 0;
   }
   impl_->diagnostic = L"GY Host unavailable";
   return {};
@@ -184,12 +208,18 @@ std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin)
 void HostedPinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candidate) {
   if (!impl_ || pinyin.empty() || candidate.empty()) return;
   std::scoped_lock lock(impl_->mutex);
-  // The Host is normally alive while a composition is being committed. Do not
-  // start it or block this TSF edit path merely to record a preference.
-  std::wstring ignored;
-  SendRequest(gy::host::MessageType::LearnCandidate, gy::host::EncodeLearningEvent(pinyin, candidate), &ignored);
+  // Fire-and-forget: recording a preference must never stall the commit edit
+  // session. Only write when a Host was verified moments ago (never start one
+  // just for learning), and intentionally do not read the response; bytes
+  // already in the pipe buffer are delivered before the Host sees the close.
+  const ULONGLONG now = GetTickCount64();
+  if (impl_->last_verified_tick == 0 || now - impl_->last_verified_tick >= kVerifiedHostTtlMs) return;
+  HANDLE pipe = OpenHostPipe(30);
+  if (pipe == INVALID_HANDLE_VALUE) return;
+  gy::host::WriteMessage(pipe, gy::host::MessageType::LearnCandidate,
+                         gy::host::EncodeLearningEvent(pinyin, candidate));
+  CloseHandle(pipe);
 }
-
 void HostedPinyinEngine::Prewarm() {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);

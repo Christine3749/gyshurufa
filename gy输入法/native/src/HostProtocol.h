@@ -141,6 +141,68 @@ inline bool WriteMessage(HANDLE handle, MessageType type, const std::wstring& pa
       (!byte_count || WriteExact(handle, payload.data(), header.payload_bytes));
 }
 
+// Overlapped variants for server-side pipes created with FILE_FLAG_OVERLAPPED.
+// Passing a null OVERLAPPED to ReadFile/WriteFile on such a handle is invalid,
+// so the host must funnel every transfer through these. The event in
+// `overlapped` must be manual-reset; each call re-arms it before issuing I/O.
+inline bool ReadExactOverlapped(HANDLE handle, OVERLAPPED* overlapped, void* data, DWORD bytes) {
+  auto* cursor = static_cast<unsigned char*>(data);
+  while (bytes > 0) {
+    DWORD read = 0;
+    ResetEvent(overlapped->hEvent);
+    if (!ReadFile(handle, cursor, bytes, &read, overlapped)) {
+      if (GetLastError() != ERROR_IO_PENDING ||
+          !GetOverlappedResult(handle, overlapped, &read, TRUE)) return false;
+    }
+    if (read == 0) return false;
+    cursor += read;
+    bytes -= read;
+  }
+  return true;
+}
+
+inline bool WriteExactOverlapped(HANDLE handle, OVERLAPPED* overlapped, const void* data, DWORD bytes) {
+  const auto* cursor = static_cast<const unsigned char*>(data);
+  while (bytes > 0) {
+    DWORD written = 0;
+    ResetEvent(overlapped->hEvent);
+    if (!WriteFile(handle, cursor, bytes, &written, overlapped)) {
+      if (GetLastError() != ERROR_IO_PENDING ||
+          !GetOverlappedResult(handle, overlapped, &written, TRUE)) return false;
+    }
+    if (written == 0) return false;
+    cursor += written;
+    bytes -= written;
+  }
+  return true;
+}
+
+inline bool ReadMessageOverlapped(HANDLE handle, OVERLAPPED* overlapped, MessageType* type,
+                                  std::wstring* payload) {
+  if (!type || !payload || !overlapped) return false;
+  Header header{};
+  if (!ReadExactOverlapped(handle, overlapped, &header, sizeof(header)) || header.magic != kMagic ||
+      header.protocol_version != kProtocolVersion || header.payload_bytes > kMaxPayloadBytes ||
+      (header.payload_bytes % sizeof(wchar_t)) != 0) return false;
+  payload->assign(header.payload_bytes / sizeof(wchar_t), L'\0');
+  if (header.payload_bytes &&
+      !ReadExactOverlapped(handle, overlapped, payload->data(), header.payload_bytes)) return false;
+  *type = static_cast<MessageType>(header.type);
+  return true;
+}
+
+inline bool WriteMessageOverlapped(HANDLE handle, OVERLAPPED* overlapped, MessageType type,
+                                   const std::wstring& payload) {
+  if (!overlapped) return false;
+  const auto byte_count = payload.size() * sizeof(wchar_t);
+  if (byte_count > kMaxPayloadBytes) return false;
+  Header header{};
+  header.type = static_cast<std::uint16_t>(type);
+  header.payload_bytes = static_cast<std::uint32_t>(byte_count);
+  return WriteExactOverlapped(handle, overlapped, &header, sizeof(header)) &&
+      (!byte_count || WriteExactOverlapped(handle, overlapped, payload.data(), header.payload_bytes));
+}
+
 inline std::wstring EncodeCandidates(const std::vector<std::wstring>& candidates) {
   std::wstring encoded;
   for (const auto& candidate : candidates) {
