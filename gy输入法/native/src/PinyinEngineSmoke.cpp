@@ -130,18 +130,17 @@ int main() {
     return 10;
   }
   const auto paging_candidates = engine.Lookup(L"wo");
-  // Candidate capacity is a ceiling, never a quota. A dictionary is allowed
-  // to return fewer than 26 qualified candidates; however, anything that does
-  // enter pages two and three must be a real multi-character word/phrase.
+  // Paging is unlocked: single-syllable queries fill the pool with one-
+  // character candidates too. The pool ceiling (75) and the base quality gate
+  // (CJK ideographs only) still apply to every page, and a common single-
+  // syllable query must produce more than one page of candidates.
   if (paging_candidates.size() > 75) {
     std::wcerr << L"Candidate pool exceeded its 75-entry ceiling.\n";
     return 8;
   }
-  for (size_t i = 25; i < paging_candidates.size(); ++i) {
-    if (paging_candidates[i].size() < 2 || paging_candidates[i].size() > 8) {
-      std::wcerr << L"Deep candidate quality gate admitted an unsuitable entry.\n";
-      return 8;
-    }
+  if (paging_candidates.size() <= 25 || !UsesOnlyHanCharacters(paging_candidates)) {
+    std::wcerr << L"Single-syllable paging stayed locked at 25 or admitted a non-Han entry.\n";
+    return 8;
   }
   wchar_t local_app_data[MAX_PATH]{};
   if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, MAX_PATH)) return 3;

@@ -119,16 +119,19 @@ bool IsCandidateAcceptable(const std::wstring& candidate) {
 }
 
 bool IsDeepCandidateAcceptable(const std::wstring& candidate) {
-  // Candidates after the first visible page are intentionally held to a higher
-  // bar. Rime's tail normally contains isolated rare characters before it
-  // contains useful phrases. Do not pad extra pages with those fragments:
-  // keep only real, comfortably readable words/phrases and let the menu end
-  // early when there are not enough of them.
-  return IsCandidateAcceptable(candidate) && candidate.size() >= 2 && candidate.size() <= 8;
+  // Paging must not be locked by the quality bar: deep pages accept the same
+  // candidates as the primary page (CJK ideographs, bounded length). Rime
+  // still owns the ranking, so rare tail items stay at the tail but remain
+  // reachable. Single-syllable queries (wo, yi, ...) only produce one-
+  // character candidates; requiring size >= 2 here emptied every page after
+  // the first and hard-locked paging at 25. Quality tuning may tighten this
+  // later, but never by capping the pool again.
+  return IsCandidateAcceptable(candidate);
 }
 
 // The candidate window remains a 5 × 5 page. The first page uses the IME
-// engine's normal ranking; pages two and three only use qualified phrases.
+// engine's normal ranking; later pages continue that ranking without a
+// stricter gate, so paging reaches the full candidate pool.
 // There is no minimum: a query with six good results returns six, not 75
 // padded slots. The larger raw scan leaves room for filtering the tail.
 constexpr int kRawCandidateScanLimit = 96;
@@ -143,7 +146,11 @@ struct LocalSettingsCache {
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, unsigned>> learning;
 
   int input_mode = 0;
+  // Learn() runs on the host/UI path while TSF lookups read this cache from
+  // application threads; every access below must hold this mutex.
+  std::mutex mutex;
   void Refresh() {
+    std::scoped_lock refresh_lock(mutex);
     const std::wstring current_path = SettingsPath();
     const int shared_input_mode = gy::input_mode::Read();
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
@@ -194,7 +201,7 @@ struct LocalSettingsCache {
     }
   }
 
-  void Invalidate() { loaded = false; }
+  void Invalidate() { std::scoped_lock lock(mutex); loaded = false; }
 };
 
 LocalSettingsCache& SettingsCache() {
@@ -205,6 +212,7 @@ LocalSettingsCache& SettingsCache() {
 std::unordered_map<std::wstring, unsigned> LearningScores(const std::wstring& code) {
   auto& cache = SettingsCache();
   cache.Refresh();
+  std::scoped_lock lock(cache.mutex);
   const auto found = cache.learning.find(NormalizeCode(code));
   return found == cache.learning.end() ? std::unordered_map<std::wstring, unsigned>{} : found->second;
 }
@@ -212,6 +220,7 @@ std::unordered_map<std::wstring, unsigned> LearningScores(const std::wstring& co
 std::vector<std::wstring> LocalPhrases(const std::wstring& code) {
   auto& cache = SettingsCache();
   cache.Refresh();
+  std::scoped_lock lock(cache.mutex);
   const auto found = cache.phrases.find(NormalizeCode(code));
   return found == cache.phrases.end() ? std::vector<std::wstring>{} : found->second;
 }
@@ -337,10 +346,13 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
   std::scoped_lock lock(runtime.mutex);
   runtime.api->clear_composition(impl_->session);
   runtime.api->set_option(impl_->session, "ascii_mode", False);
+  // Set the script option before feeding keys: the very first keystroke must
+  // already see the active 简/繁 mode, not whatever option a previous lookup
+  // left on this shared session.
+  runtime.api->set_option(impl_->session, "zh_hans", input_mode == 0 ? True : False);
   const std::string keys = Utf8(pinyin);
   for (const unsigned char key : keys) {
     if (!runtime.api->process_key(impl_->session, key, 0)) return {};
-  runtime.api->set_option(impl_->session, "zh_hans", input_mode == 0 ? True : False);
   }
   RIME_STRUCT(RimeContext, context);
   if (!runtime.api->get_context(impl_->session, &context)) return {};
@@ -363,6 +375,17 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
   runtime.api->free_context(&context);
   candidates.insert(candidates.end(), deep_candidates.begin(), deep_candidates.end());
   const auto scores = LearningScores(pinyin);
+  // Learning must surface words, not merely reorder the 75-pool: a candidate
+  // the user picked before may sit beyond the Rime scan window (rank > 96)
+  // and would otherwise never reappear. Inject the missing learned entries;
+  // the sort below ranks them by score, and the quality/script gates and the
+  // pool cap still apply.
+  for (const auto& entry : scores) {
+    const std::wstring learned = NormalizeOutputScript(entry.first, input_mode);
+    if (!IsCandidateAcceptable(learned)) continue;
+    if (std::find(candidates.begin(), candidates.end(), learned) != candidates.end()) continue;
+    candidates.push_back(learned);
+  }
   std::stable_sort(candidates.begin(), candidates.end(), [&scores](const std::wstring& left, const std::wstring& right) {
     const auto left_score = scores.contains(left) ? scores.at(left) : 0u;
     const auto right_score = scores.contains(right) ? scores.at(right) : 0u;

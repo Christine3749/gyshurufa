@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CandidateLayout.h"
 
@@ -71,6 +71,7 @@ private:
   int input_mode_ = 0;
   std::function<bool(unsigned)> choose_;
   bool expanded_ = false;
+  bool clip_overflow_ = false;
   std::function<void(const RECT&)> open_settings_;
 };
 

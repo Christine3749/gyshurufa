@@ -1,0 +1,7 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="GY 输入法">
+  <rect width="256" height="256" rx="56" fill="#111318"/>
+  <g transform="translate(26 63) scale(1.31)">
+    <path d="M72 26C65 18 54 13 40 13C21 13 8 28 8 50C8 72 21 87 40 87C56 87 68 77 72 63V52H40V66H57C54 72 48 74 40 74C28 74 21 64 21 50C21 36 28 26 40 26C49 26 56 31 60 37L72 26Z" fill="white"/>
+    <path d="M80 15H94L114 50L134 15H148L121 60V87H107V60L80 15Z" fill="white"/>
+  </g>
+</svg>

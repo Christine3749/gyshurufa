@@ -1,9 +1,10 @@
-﻿#include "SettingsWindow.h"
+#include "SettingsWindow.h"
 #include "InputMode.h"
 #include "SettingsFile.h"
 
 #include <algorithm>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <windowsx.h>
 #include <iterator>
 #include <string>
@@ -11,13 +12,31 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
-constexpr COLORREF kInk = RGB(16, 18, 22);
-constexpr COLORREF kSurface = RGB(29, 33, 40);
-constexpr COLORREF kSurfaceHover = RGB(35, 39, 47);
-constexpr COLORREF kBorder = RGB(52, 58, 69);
-constexpr COLORREF kWhite = RGB(250, 250, 251);
-constexpr COLORREF kMuted = RGB(155, 163, 179);
+// The settings window follows the candidate-window theme (Appearance\Theme):
+// one choice, one palette. GY Blue stays constant across themes because it is
+// the VI-locked selection color, and text on accent pills stays near-white.
 constexpr COLORREF kBlue = RGB(43, 96, 221);
+constexpr COLORREF kOnAccent = RGB(250, 250, 251);
+
+struct Palette {
+  COLORREF ink;            // window background
+  COLORREF surface;        // card background
+  COLORREF surface_hover;  // selected card background
+  COLORREF border;
+  COLORREF text;           // primary text
+  COLORREF muted;          // secondary text
+};
+
+Palette PaletteForTheme(int theme) {
+  switch (theme) {
+    case 1:  // 暖白: warm light surface matching the candidate strip swatch.
+      return {RGB(243, 241, 235), RGB(252, 251, 248), RGB(234, 231, 224), RGB(208, 203, 193), RGB(26, 27, 30), RGB(122, 120, 113)};
+    case 2:  // 石墨: neutral graphite without the blue-night cast.
+      return {RGB(21, 23, 28), RGB(30, 33, 40), RGB(36, 40, 48), RGB(54, 59, 70), RGB(244, 245, 247), RGB(148, 154, 168)};
+    default:  // GY 蓝夜: the original dark palette.
+      return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
+  }
+}
 constexpr UINT kMaxSettingsDpi = 136;
 
 int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
@@ -56,38 +75,38 @@ void Text(HDC dc, const std::wstring& value, RECT rect, COLORREF color, UINT for
 // selected item is the only solid accent; unselected items intentionally keep
 // the panel background so the settings page has a calmer system feel.
 void DrawSegmentedChoices(HDC dc, const RECT (&rects)[3], const wchar_t* const labels[3],
-                          int selected, UINT dpi, HFONT font) {
+                          int selected, const Palette& pal, UINT dpi, HFONT font) {
   const RECT group{rects[0].left, rects[0].top, rects[2].right, rects[0].bottom};
-  Rounded(dc, group, kSurface, kBorder, Scale(dpi, 9));
+  Rounded(dc, group, pal.surface, pal.border, Scale(dpi, 9));
   for (int i = 0; i < 3; ++i) {
     if (i > 0) {
       const RECT divider{rects[i].left, group.top + Scale(dpi, 8),
                          rects[i].left + 1, group.bottom - Scale(dpi, 8)};
-      Fill(dc, divider, kBorder);
+      Fill(dc, divider, pal.border);
     }
     if (i == selected) {
       RECT pill = rects[i];
       InflateRect(&pill, -Scale(dpi, 3), -Scale(dpi, 3));
       Rounded(dc, pill, kBlue, kBlue, Scale(dpi, 7));
     }
-    Text(dc, labels[i], rects[i], kWhite, DT_CENTER, font);
+    Text(dc, labels[i], rects[i], i == selected ? kOnAccent : pal.text, DT_CENTER, font);
   }
 }
 
 // The utility actions are stored as separate members for hit testing. Keep
 // that storage explicit instead of relying on an invalid pointer cast.
 void DrawSegmentedActions(HDC dc, const RECT& first, const RECT& second, const RECT& third,
-                          const wchar_t* const labels[3], UINT dpi, HFONT font) {
+                          const wchar_t* const labels[3], const Palette& pal, UINT dpi, HFONT font) {
   const RECT rects[] = {first, second, third};
   const RECT group{rects[0].left, rects[0].top, rects[2].right, rects[0].bottom};
-  Rounded(dc, group, kSurface, kBorder, Scale(dpi, 9));
+  Rounded(dc, group, pal.surface, pal.border, Scale(dpi, 9));
   for (int i = 0; i < 3; ++i) {
     if (i > 0) {
       const RECT divider{rects[i].left, group.top + Scale(dpi, 8),
                          rects[i].left + 1, group.bottom - Scale(dpi, 8)};
-      Fill(dc, divider, kBorder);
+      Fill(dc, divider, pal.border);
     }
-    Text(dc, labels[i], rects[i], kWhite, DT_CENTER, font);
+    Text(dc, labels[i], rects[i], pal.text, DT_CENTER, font);
   }
 }
 
@@ -186,6 +205,7 @@ void SettingsWindow::Show(const RECT& anchor) {
   if (!hwnd_) return;
   CreateControls();
   Load();
+  ApplyThemeBrush();
   Layout();
   RECT actual{}; GetWindowRect(hwnd_, &actual);
   const int final_width = actual.right - actual.left, final_height = actual.bottom - actual.top;
@@ -196,8 +216,13 @@ void SettingsWindow::Show(const RECT& anchor) {
   SetFocus(hwnd_);
 }
 
+void SettingsWindow::ApplyThemeBrush() {
+  if (edit_brush_) DeleteObject(edit_brush_);
+  edit_brush_ = CreateSolidBrush(PaletteForTheme(theme_).surface);
+}
+
 void SettingsWindow::CreateControls() {
-  edit_brush_ = CreateSolidBrush(kSurface);
+  edit_brush_ = CreateSolidBrush(PaletteForTheme(theme_).surface);
   account_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP,
       0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   phrases_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
@@ -205,6 +230,8 @@ void SettingsWindow::CreateControls() {
   const HFONT font = Font(dpi_, 12, FW_NORMAL);
   SendMessageW(account_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   SendMessageW(phrases_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+  // Placeholder so the borderless account field explains itself before typing.
+  SendMessageW(account_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"输入邮箱，例如 name@example.com"));
   // The edit controls retain their UI font for the lifetime of this Host.
 }
 
@@ -252,7 +279,7 @@ void SettingsWindow::Layout() {
     done_y = ai_preview_rect_.bottom + Scale(dpi_, 20);
   } else {
     account_rect_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 52)};
-    MoveWindow(account_edit_, account_rect_.left + Scale(dpi_, 122), account_rect_.top + Scale(dpi_, 12), std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 138)), Scale(dpi_, 27), TRUE);
+    MoveWindow(account_edit_, account_rect_.left + Scale(dpi_, 126), account_rect_.top + Scale(dpi_, 13), std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 152)), Scale(dpi_, 26), TRUE);
     phrases_rect_ = {content_left, account_rect_.bottom + Scale(dpi_, 18), content_left + card_width, account_rect_.bottom + Scale(dpi_, 90)};
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
   }
@@ -270,17 +297,18 @@ bool SettingsWindow::Hit(const RECT& rect, POINT point) const { return !IsRectEm
 void SettingsWindow::TogglePhrases() { phrases_expanded_ = !phrases_expanded_; Layout(); }
 
 void SettingsWindow::Paint(HDC dc) {
+  const Palette pal = PaletteForTheme(theme_);
   RECT client{}; GetClientRect(hwnd_, &client);
-  Fill(dc, client, kInk);
-  const HPEN outline = CreatePen(PS_SOLID, 1, kBorder);
+  Fill(dc, client, pal.ink);
+  const HPEN outline = CreatePen(PS_SOLID, 1, pal.border);
   const HGDIOBJ old_pen = SelectObject(dc, outline); const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
   RoundRect(dc, 0, 0, client.right, client.bottom, Scale(dpi_, 14), Scale(dpi_, 14));
   SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(outline);
   const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL);
-  DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, kWhite);
-  Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, kWhite, DT_LEFT, title);
-  Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, kMuted, DT_LEFT, tiny);
-  Text(dc, L"×", close_rect_, kMuted, DT_CENTER, title);
+  DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, pal.text);
+  Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, pal.text, DT_LEFT, title);
+  Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
+  Text(dc, L"×", close_rect_, pal.muted, DT_CENTER, title);
 
   const wchar_t* nav_labels[] = {L"通用", L"输入", L"外观", L"账户"};
   for (int i = 0; i < 4; ++i) {
@@ -289,65 +317,69 @@ void SettingsWindow::Paint(HDC dc) {
       RECT marker{nav_rects_[i].right - Scale(dpi_, 2), nav_rects_[i].top + Scale(dpi_, 8), nav_rects_[i].right + Scale(dpi_, 7), nav_rects_[i].bottom - Scale(dpi_, 8)};
       Fill(dc, marker, kBlue);
     }
-    Text(dc, nav_labels[i], nav_rects_[i], selected ? kWhite : kMuted, DT_CENTER, medium);
+    Text(dc, nav_labels[i], nav_rects_[i], selected ? pal.text : pal.muted, DT_CENTER, medium);
   }
 
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
   const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户"};
   const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户"};
-  Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, kWhite, DT_LEFT, medium);
-  Text(dc, page_subtitles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 118), content_right, Scale(dpi_, 137)}, kMuted, DT_LEFT, tiny);
+  Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
+  Text(dc, page_subtitles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 118), content_right, Scale(dpi_, 137)}, pal.muted, DT_LEFT, tiny);
 
   if (page_ == Page::General) {
-    Rounded(dc, phrases_rect_, kSurface, kBorder, Scale(dpi_, 9));
-    Text(dc, L"常用短语", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 8), phrases_rect_.left + Scale(dpi_, 190), phrases_rect_.top + Scale(dpi_, 32)}, kWhite, DT_LEFT, medium);
+    Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"常用短语", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 8), phrases_rect_.left + Scale(dpi_, 190), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
     Text(dc, phrases_expanded_ ? L"完成编辑" : L"管理 ›", RECT{phrases_rect_.right - Scale(dpi_, 100), phrases_rect_.top + Scale(dpi_, 8), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, kBlue, DT_RIGHT, medium);
-    if (!phrases_expanded_) Text(dc, L"例如：dz=地址|电子邮箱", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, kMuted, DT_LEFT, tiny);
+    if (!phrases_expanded_) Text(dc, L"例如：dz=地址|电子邮箱", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* tools[] = {L"清空学习", L"导出", L"导入"};
-    DrawSegmentedActions(dc, clear_rect_, export_rect_, import_rect_, tools, dpi_, medium);
+    DrawSegmentedActions(dc, clear_rect_, export_rect_, import_rect_, tools, pal, dpi_, medium);
   } else if (page_ == Page::Input) {
-    Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 22), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 3)}, kMuted, DT_LEFT, tiny);
+    Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 22), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* input_modes[] = {L"简体", L"繁体", L"EN"};
-    DrawSegmentedChoices(dc, input_mode_rects_, input_modes, input_mode_, dpi_, medium);
-    Rounded(dc, phrases_rect_, kSurface, kBorder, Scale(dpi_, 9));
-    Text(dc, L"切换规则", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 9), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31)}, kWhite, DT_LEFT, medium);
-    Text(dc, L"Shift 快速切换 EN；EN 模式下字母、标点、Enter 与快捷键原样直出。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, kMuted, DT_LEFT, tiny);
+    DrawSegmentedChoices(dc, input_mode_rects_, input_modes, input_mode_, pal, dpi_, medium);
+    Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"切换规则", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 9), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"Shift 快速切换 EN；EN 模式下字母、标点、Enter 与快捷键原样直出。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
   } else if (page_ == Page::Appearance) {
-    Text(dc, L"候选窗主题", RECT{theme_rects_[0].left, theme_rects_[0].top - Scale(dpi_, 22), theme_rects_[2].right, theme_rects_[0].top - Scale(dpi_, 3)}, kMuted, DT_LEFT, tiny);
+    Text(dc, L"候选窗主题", RECT{theme_rects_[0].left, theme_rects_[0].top - Scale(dpi_, 22), theme_rects_[2].right, theme_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* themes[] = {L"GY 蓝夜", L"暖白", L"石墨"};
     for (int i = 0; i < 3; ++i) {
       const bool selected = theme_ == i;
-      Rounded(dc, theme_rects_[i], selected ? kSurfaceHover : kSurface, selected ? kBlue : kBorder, Scale(dpi_, 8));
+      Rounded(dc, theme_rects_[i], selected ? pal.surface_hover : pal.surface, selected ? kBlue : pal.border, Scale(dpi_, 8));
       RECT preview{theme_rects_[i].left + Scale(dpi_, 12), theme_rects_[i].top + Scale(dpi_, 9), theme_rects_[i].left + Scale(dpi_, 112), theme_rects_[i].bottom - Scale(dpi_, 9)};
       const COLORREF preview_fill = i == 1 ? RGB(246, 244, 239) : (i == 2 ? RGB(21, 23, 28) : RGB(17, 27, 46));
-      const COLORREF preview_ink = i == 1 ? RGB(26, 27, 30) : kWhite;
-      Rounded(dc, preview, preview_fill, selected ? kBlue : kBorder, Scale(dpi_, 5));
+      const COLORREF preview_ink = i == 1 ? RGB(26, 27, 30) : kOnAccent;
+      Rounded(dc, preview, preview_fill, selected ? kBlue : pal.border, Scale(dpi_, 5));
       Text(dc, L"GY   1   2   3", RECT{preview.left + Scale(dpi_, 7), preview.top, preview.right - Scale(dpi_, 5), preview.bottom}, preview_ink, DT_LEFT, tiny);
-      Text(dc, themes[i], RECT{preview.right + Scale(dpi_, 16), theme_rects_[i].top, theme_rects_[i].right - Scale(dpi_, 46), theme_rects_[i].bottom}, kWhite, DT_LEFT, medium);
-      Text(dc, selected ? L"●" : L"○", RECT{theme_rects_[i].right - Scale(dpi_, 34), theme_rects_[i].top, theme_rects_[i].right - Scale(dpi_, 14), theme_rects_[i].bottom}, selected ? kBlue : kMuted, DT_CENTER, medium);
+      Text(dc, themes[i], RECT{preview.right + Scale(dpi_, 16), theme_rects_[i].top, theme_rects_[i].right - Scale(dpi_, 46), theme_rects_[i].bottom}, pal.text, DT_LEFT, medium);
+      Text(dc, selected ? L"●" : L"○", RECT{theme_rects_[i].right - Scale(dpi_, 34), theme_rects_[i].top, theme_rects_[i].right - Scale(dpi_, 14), theme_rects_[i].bottom}, selected ? kBlue : pal.muted, DT_CENTER, medium);
     }
-    Text(dc, L"候选字大小", RECT{size_rects_[0].left, size_rects_[0].top - Scale(dpi_, 22), size_rects_[2].right, size_rects_[0].top - Scale(dpi_, 3)}, kMuted, DT_LEFT, tiny);
+    Text(dc, L"候选字大小", RECT{size_rects_[0].left, size_rects_[0].top - Scale(dpi_, 22), size_rects_[2].right, size_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* sizes[] = {L"紧凑", L"默认", L"大"};
-    DrawSegmentedChoices(dc, size_rects_, sizes, size_index_, dpi_, medium);
-    Rounded(dc, ai_preview_rect_, kSurface, kBorder, Scale(dpi_, 10));
-    Text(dc, L"AI 外观预览助手", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 12), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 36)}, kWhite, DT_LEFT, medium);
-    Text(dc, L"可根据你的描述生成预览；确认前不会更改任何设置。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 34), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 54)}, kMuted, DT_LEFT, tiny);
+    DrawSegmentedChoices(dc, size_rects_, sizes, size_index_, pal, dpi_, medium);
+    Rounded(dc, ai_preview_rect_, pal.surface, pal.border, Scale(dpi_, 10));
+    Text(dc, L"AI 外观预览助手", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 12), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"可根据你的描述生成预览；确认前不会更改任何设置。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 34), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 54)}, pal.muted, DT_LEFT, tiny);
     RECT preview_input{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 66), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 100)};
-    Rounded(dc, preview_input, kInk, kBorder, Scale(dpi_, 7));
-    Text(dc, L"例如：更安静一点，字稍微大一点", RECT{preview_input.left + Scale(dpi_, 12), preview_input.top, preview_input.right - Scale(dpi_, 12), preview_input.bottom}, kMuted, DT_LEFT, tiny);
-    Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 110), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 10)}, kMuted, DT_LEFT, tiny);
+    Rounded(dc, preview_input, pal.ink, pal.border, Scale(dpi_, 7));
+    Text(dc, L"例如：更安静一点，字稍微大一点", RECT{preview_input.left + Scale(dpi_, 12), preview_input.top, preview_input.right - Scale(dpi_, 12), preview_input.bottom}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 110), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 10)}, pal.muted, DT_LEFT, tiny);
   } else {
-    Rounded(dc, account_rect_, kSurface, kBorder, Scale(dpi_, 9));
-    Text(dc, L"账号", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 5), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom - Scale(dpi_, 8)}, kWhite, DT_LEFT, medium);
-    Text(dc, L"本地标识", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 25), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom}, kMuted, DT_LEFT, tiny);
-    Rounded(dc, phrases_rect_, kSurface, kBorder, Scale(dpi_, 9));
-    Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, kWhite, DT_LEFT, medium);
-    Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, kMuted, DT_LEFT, tiny);
+    Rounded(dc, account_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"账号", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 5), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom - Scale(dpi_, 8)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"本地标识", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 25), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom}, pal.muted, DT_LEFT, tiny);
+    // The account edit is a borderless EDIT child; without a visible frame it
+    // blends into the card and users cannot discover where to type.
+    const RECT account_input{account_rect_.left + Scale(dpi_, 116), account_rect_.top + Scale(dpi_, 10), account_rect_.right - Scale(dpi_, 16), account_rect_.bottom - Scale(dpi_, 10)};
+    Rounded(dc, account_input, pal.ink, pal.border, Scale(dpi_, 7));
+    Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
-  Text(dc, L"完成", done_rect_, kWhite, DT_CENTER, medium);
-  Text(dc, L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, kMuted, DT_LEFT, tiny);
+  Text(dc, L"完成", done_rect_, kOnAccent, DT_CENTER, medium);
+  Text(dc, L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
   DeleteObject(title); DeleteObject(medium); DeleteObject(tiny);
 }
 
@@ -418,7 +450,12 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       SelectObject(buffer, previous); DeleteObject(bitmap); DeleteDC(buffer);
       EndPaint(hwnd, &paint); return 0;
     }
-    case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wparam), kWhite); SetBkColor(reinterpret_cast<HDC>(wparam), kSurface); return reinterpret_cast<LRESULT>(self->edit_brush_);
+    case WM_CTLCOLOREDIT: {
+      const Palette pal = PaletteForTheme(self->theme_);
+      SetTextColor(reinterpret_cast<HDC>(wparam), pal.text);
+      SetBkColor(reinterpret_cast<HDC>(wparam), pal.surface);
+      return reinterpret_cast<LRESULT>(self->edit_brush_);
+    }
     case WM_MOUSEMOVE: {
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
@@ -441,7 +478,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       for (int i = 0; i < 4; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
       if (self->page_ == Page::Input) for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }

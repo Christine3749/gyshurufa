@@ -16,7 +16,7 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
   const windows = release?.platforms.windows;
   const windowsReady = Boolean(windows?.available);
   const macos = release?.platforms.macos;
-  const macosReady = Boolean(macos?.signed && macos?.notarized);
+  const macosReady = Boolean(macos?.available);
 
   const handleCopyHash = () => {
     if (!windowsReady) return;
@@ -209,6 +209,7 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
     </section>
   );
 };
+
 
 
 

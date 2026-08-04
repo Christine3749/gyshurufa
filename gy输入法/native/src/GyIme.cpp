@@ -49,6 +49,20 @@ HRESULT SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
 }
 
 #ifdef GY_IME_TRACE
+void TraceRect(const wchar_t* event, const RECT& rect) {
+  wchar_t directory[MAX_PATH]{};
+  if (!GetTempPathW(MAX_PATH, directory)) return;
+  const std::wstring path = std::wstring(directory) + L"GyIme.trace.log";
+  const HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  wchar_t line[256]{};
+  const int length = swprintf_s(line, L"pid=%lu event=%ls rect=%ld,%ld,%ld,%ld\r\n",
+                                GetCurrentProcessId(), event, rect.left, rect.top, rect.right, rect.bottom);
+  DWORD written = 0;
+  if (length > 0) WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+  CloseHandle(file);
+}
 void Trace(const wchar_t* event, HRESULT hr = S_OK, WPARAM key = 0) {
   wchar_t directory[MAX_PATH]{};
   if (!GetTempPathW(MAX_PATH, directory)) return;
@@ -66,6 +80,7 @@ void Trace(const wchar_t* event, HRESULT hr = S_OK, WPARAM key = 0) {
 }
 #else
 void Trace(const wchar_t*, HRESULT = S_OK, WPARAM = 0) {}
+void TraceRect(const wchar_t*, const RECT&) {}
 #endif
 
 enum class EditActionKind { Append, InsertText, Backspace, CommitCandidate, CommitRaw, Cancel };
@@ -146,7 +161,7 @@ public:
     if (keystroke_mgr_) { keystroke_mgr_->UnadviseKeyEventSink(client_id_); keystroke_mgr_->Release(); keystroke_mgr_ = nullptr; }
     if (thread_mgr_ && thread_mgr_sink_ != TF_INVALID_COOKIE) { ITfSource* source = nullptr; if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) { source->UnadviseSink(thread_mgr_sink_); source->Release(); } }
     thread_mgr_sink_ = TF_INVALID_COOKIE;
-    if (context_) { context_->Release(); context_ = nullptr; }
+    if (context_) { context_->Release(); context_ = nullptr; last_caret_valid_ = false; }
     if (thread_mgr_) { thread_mgr_->Release(); thread_mgr_ = nullptr; }
     shift_down_ = shift_used_ = false;
     // The selected language survives profile reactivation so it never changes
@@ -156,6 +171,7 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL focused) override {
+    Trace(L"focus.app", S_OK, focused ? 1 : 0);
     // Browser address bars, developer tools and cross-page navigation can move
     // focus before Windows delivers the final Ctrl/Alt/Win key-up. Never carry
     // that stale modifier state into the next editable control, otherwise
@@ -300,6 +316,7 @@ public:
   HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr*, ITfDocumentMgr* focus) override {
+    Trace(L"focus.document", S_OK, focus ? 1 : 0);
     CancelComposition();
     ResetTransientKeyboardState();
     if (!focus) { SetContext(nullptr); return S_OK; }
@@ -323,7 +340,7 @@ public:
     if (gy::input_mode::IsEnglish(input_mode_) && action.kind != EditActionKind::Cancel) return S_OK;
     if (action.kind == EditActionKind::InsertText) {
       HRESULT hr = S_OK;
-      if (composition_) hr = CommitComposition(cookie, selected_);
+      if (composition_) hr = CommitComposition(edit_context, cookie, selected_);
       return FAILED(hr) ? hr : InsertText(edit_context, cookie, action.character);
     }
     if (action.kind == EditActionKind::Append) {
@@ -342,8 +359,8 @@ public:
       expanded_candidates_ = false;
       return composition_text_.empty() ? ClearComposition(cookie) : UpdateComposition(edit_context, cookie);
     }
-    if (action.kind == EditActionKind::CommitCandidate) return CommitComposition(cookie, action.index);
-    if (action.kind == EditActionKind::CommitRaw) return CommitComposition(cookie, 0, true);
+    if (action.kind == EditActionKind::CommitCandidate) return CommitComposition(edit_context, cookie, action.index);
+    if (action.kind == EditActionKind::CommitRaw) return CommitComposition(edit_context, cookie, 0, true);
     return ClearComposition(cookie);
   }
 private:
@@ -466,6 +483,11 @@ private:
   }
   void SetContext(ITfContext* context) {
     if (context == context_) return;
+    Trace(L"context.change", S_OK, context ? 1 : 0);
+    // The remembered caret belongs to the previous context: an app or document
+    // switch must never anchor the candidate window to a position measured
+    // somewhere else (it jumped across the screen after an app switch).
+    last_caret_valid_ = false;
     CancelComposition();
     if (context_) context_->Release();
     context_ = context;
@@ -507,7 +529,18 @@ private:
     if (SUCCEEDED(hr)) {
       hr = range->SetText(cookie, 0, composition_text_.c_str(), static_cast<LONG>(composition_text_.size()));
       Trace(L"composition.set-text", hr);
-      if (SUCCEEDED(hr)) ShowCandidates(edit_context, range, cookie);
+      if (SUCCEEDED(hr)) {
+        // Measure the candidate anchor on the full composition range first,
+        // then pin the caret to the composition end: XAML hosts (Win11
+        // Notepad) leave the caret at the composition start after SetText.
+        ShowCandidates(edit_context, range, cookie);
+        range->Collapse(cookie, TF_ANCHOR_END);
+        TF_SELECTION selection{};
+        selection.range = range;
+        selection.style.ase = TF_AE_NONE;
+        selection.style.fInterimChar = FALSE;
+        Trace(L"composition.selection", edit_context->SetSelection(cookie, 1, &selection));
+      }
       range->Release();
     }
     return hr;
@@ -526,7 +559,7 @@ private:
     selection.range->Release();
     return hr;
   }
-  HRESULT CommitComposition(TfEditCookie cookie, unsigned index, bool raw_text = false) {
+  HRESULT CommitComposition(ITfContext* edit_context, TfEditCookie cookie, unsigned index, bool raw_text = false) {
     if (!composition_) return S_OK;
     const bool selected_candidate = !raw_text && index < candidates_.size();
     const std::wstring pinyin = composition_text_;
@@ -535,9 +568,20 @@ private:
     HRESULT hr = composition_->GetRange(&range);
     if (SUCCEEDED(hr)) {
       hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
-      range->Release();
     }
     if (SUCCEEDED(hr)) hr = composition_->EndComposition(cookie);
+    // XAML hosts (Win11 Notepad) restore the selection to the composition start
+    // on EndComposition; the next commit then inserts before the previous one
+    // and text accumulates backwards. Pin the caret to the end of the commit.
+    if (SUCCEEDED(hr) && range && edit_context) {
+      range->Collapse(cookie, TF_ANCHOR_END);
+      TF_SELECTION selection{};
+      selection.range = range;
+      selection.style.ase = TF_AE_NONE;
+      selection.style.fInterimChar = FALSE;
+      Trace(L"commit.selection", edit_context->SetSelection(cookie, 1, &selection));
+    }
+    if (range) range->Release();
     composition_->Release();
     composition_ = nullptr;
     if (SUCCEEDED(hr) && selected_candidate) engine_.Learn(pinyin, text);
@@ -580,6 +624,7 @@ private:
   void ShowCandidates(ITfContext* edit_context, ITfRange* known_range, TfEditCookie cookie = TF_INVALID_EDIT_COOKIE) {
     if (gy::input_mode::IsEnglish(input_mode_) || candidates_.empty()) { engine_.HideCandidates(); return; }
     RECT caret = last_caret_;
+    bool have_caret = last_caret_valid_;
     ITfRange* range = known_range;
     bool release_range = false;
     if (!range && composition_ && SUCCEEDED(composition_->GetRange(&range))) release_range = range != nullptr;
@@ -588,18 +633,47 @@ private:
       BOOL clipped = FALSE;
       if (SUCCEEDED(edit_context->GetActiveView(&view))) {
         RECT measured{};
-        if (SUCCEEDED(view->GetTextExt(cookie, range, &measured, &clipped)) && !clipped) {
+        // A clipped rect still belongs to this context; a caret remembered
+        // from another app does not. ShowInternal clamps the window on-screen.
+        if (SUCCEEDED(view->GetTextExt(cookie, range, &measured, &clipped))) {
           caret = measured;
           last_caret_ = measured;
+          last_caret_valid_ = true;
+          have_caret = true;
+          TraceRect(L"caret.tsf", measured);
         }
         view->Release();
       }
     }
     if (release_range) range->Release();
+    {  // A clearly disagreeing system caret vetoes the TSF rect: Win11 Notepad's XAML view reports GetTextExt shifted by its tab strip.
+      // A caret remembered from another context is never used:
+      // last_caret_valid_ keeps cross-context anchors out. The key handler
+      // runs on the target thread, so this thread's GUI caret belongs here.
+      GUITHREADINFO gui{sizeof(gui)};
+      if (GetGUIThreadInfo(GetCurrentThreadId(), &gui) && gui.hwndCaret &&
+          (gui.rcCaret.right > gui.rcCaret.left || gui.rcCaret.bottom > gui.rcCaret.top)) {
+        POINT origin{gui.rcCaret.left, gui.rcCaret.top};
+        if (ClientToScreen(gui.hwndCaret, &origin)) {
+          const RECT gui_caret{origin.x, origin.y, origin.x + (gui.rcCaret.right - gui.rcCaret.left),
+                               origin.y + (gui.rcCaret.bottom - gui.rcCaret.top)};
+          const LONG veto = ((caret.bottom - caret.top) > (gui_caret.bottom - gui_caret.top) ? (caret.bottom - caret.top) : (gui_caret.bottom - gui_caret.top)) / 2 + 8;
+          if (!have_caret || (caret.top + caret.bottom) - (gui_caret.top + gui_caret.bottom) > 2 * veto || (gui_caret.top + gui_caret.bottom) - (caret.top + caret.bottom) > 2 * veto) { caret = gui_caret; last_caret_ = gui_caret; last_caret_valid_ = true; have_caret = true; TraceRect(L"caret.gui", gui_caret); }
+        }
+      }
+    }
+    if (!have_caret && !last_caret_valid_) {
+      // Nothing was ever measured in this context (Chromium's layout can lag
+      // one keystroke right after an app switch). One late frame is harmless;
+      // a window shown at a stale rect is the drift users actually see.
+      TraceRect(L"caret.skip", caret);
+      return;
+    }
+    TraceRect(L"caret.pick", caret);
     engine_.ShowCandidates(caret, candidates_, selected_, page_start_, input_mode_, expanded_candidates_, selection_callback_.Endpoint());
   }
   bool Select(unsigned index) { if (index >= candidates_.size()) return false; return SUCCEEDED(RequestEdit({EditActionKind::CommitCandidate, 0, index})); }
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 
@@ -642,12 +716,18 @@ HRESULT RegisterProfile(bool remove) {
   }
   profiles->Release();
   return hr;
-}HRESULT RegisterCategory(bool remove) {
+}
+// A plain TIP_KEYBOARD registration cannot activate in the Windows 11 console
+// or Windows Terminal input stack. Register the same capability categories the
+// inbox Chinese TIPs carry so the text service is offered there as well.
+const GUID kTipCategories[] = {kCategoryTipKeyboard, kCategoryImmersiveSupport, kCategorySystraySupport,
+                               kCategoryUiElementEnabled, kCategoryComLess};
+HRESULT RegisterCategory(bool remove) {
   ITfCategoryMgr* categories = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_ITfCategoryMgr, reinterpret_cast<void**>(&categories));
   if (FAILED(hr)) return hr;
-  if (remove) hr = categories->UnregisterCategory(CLSID_GyTextService, GUID_TFCAT_TIP_KEYBOARD, CLSID_GyTextService);
-  else hr = categories->RegisterCategory(CLSID_GyTextService, GUID_TFCAT_TIP_KEYBOARD, CLSID_GyTextService);
+  for (const GUID& category : kTipCategories) {
+    hr = remove ? categories->UnregisterCategory(CLSID_GyTextService, category, CLSID_GyTextService) : categories->RegisterCategory(CLSID_GyTextService, category, CLSID_GyTextService); if (FAILED(hr)) break; }
   categories->Release(); return hr;
 }
 }  // namespace

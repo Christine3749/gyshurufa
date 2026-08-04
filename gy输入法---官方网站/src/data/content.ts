@@ -230,12 +230,27 @@ export const ECOSYSTEM_MODULES: EcosystemModule[] = [
 
 export const CHANGELOG_HISTORY: VersionInfo[] = [
   {
+    version: 'v0.9.40',
+    date: '2026-08-05',
+    channel: '候选版 (Candidate)',
+    size: '9.6 MB',
+    architecture: 'x64',
+    sha256: '',
+    highlights: [
+      '修复：命令行（PowerShell/CMD）中输入法无法激活的问题，补充 TSF 类别注册',
+      '修复：记事本等应用中光标跳到拼音前面的问题，提交后正确恢复选区',
+      '修复：候选框超过 25 字无法翻页的问题，长词按自然宽度排版',
+      '优化：候选框宽度适配高 DPI 缩放（125%/150%），不再异常裁切',
+      '优化：从其他窗口切回时候选框位置不再漂移'
+    ]
+  },
+  {
     version: 'v1.2.0-preview',
     date: '2026-07-28',
     channel: '早期预览版 (Preview)',
     size: '32.4 MB',
     architecture: 'x64 / ARM64',
-    sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    sha256: '',
     highlights: [
       '新增：基础输入核心引擎 C++ 2.0 重构，出词延迟缩短至 0.8ms 内',
       '新增：全新微光质感候选框设计，适配 Windows 11 Fluent 视觉语言与圆角',
@@ -258,5 +273,6 @@ export const CHANGELOG_HISTORY: VersionInfo[] = [
     ]
   }
 ];
+
 
 

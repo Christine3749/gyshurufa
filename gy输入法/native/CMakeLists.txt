@@ -73,6 +73,13 @@ if(MSVC)
 endif()
 target_include_directories(GyIme PRIVATE src)
 target_link_libraries(GyIme PRIVATE ole32 advapi32)
+# Field diagnosis: configure with -DGY_IME_TRACE=ON to log TSF focus/key/edit
+# events to %TEMP%/GyIme.trace.log without touching source. Stays off for
+# release and installer builds.
+option(GY_IME_TRACE "Log GyIme TSF events to %TEMP%/GyIme.trace.log" OFF)
+if(GY_IME_TRACE)
+  target_compile_definitions(GyIme PRIVATE GY_IME_TRACE)
+endif()
 set_target_properties(GyIme PROPERTIES
   OUTPUT_NAME "GyIme"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

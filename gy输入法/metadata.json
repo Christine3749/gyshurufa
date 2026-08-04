@@ -1,0 +1,6 @@
+{
+  "name": "GY输入法",
+  "description": "GSYEN 旗下快、准、本地优先的 Windows 中文输入法界面系统与高保真原型",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

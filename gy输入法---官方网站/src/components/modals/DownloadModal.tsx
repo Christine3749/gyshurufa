@@ -107,7 +107,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               </span>
               <button
                 onClick={handleCopyHash}
-                disabled={!windows?.sha256}
+                disabled={!windowsReady}
                 className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
               >
                 {copiedHash ? (
@@ -124,7 +124,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               </button>
             </div>
             <div className="p-3 rounded-lg bg-slate-900 text-slate-300 font-mono text-xs break-all leading-relaxed select-all">
-              {windows?.sha256 ?? '发布验证中'}
+              {windowsReady ? (windows?.sha256 || '发布验证中') : '待校验' }
             </div>
           </div>
 
@@ -168,5 +168,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     </div>
   );
 };
+
+
 
 

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GY cross-platform release manifest",
+  "type": "object",
+  "required": ["schemaVersion", "releaseId", "channel", "windows", "macos"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "releaseId": { "type": "string", "minLength": 1 },
+    "channel": { "enum": ["candidate", "beta", "stable"] },
+    "publishedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+    "windows": {
+      "type": "object",
+      "required": ["version", "coreVersion", "hostVersion", "architecture", "setupFile", "zipFile", "sha256", "bytes", "state"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "coreVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "hostVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "architecture": { "const": "x64" },
+        "setupFile": { "type": "string", "pattern": "^GYInputSetup-\\d+\\.\\d+\\.\\d+\\.exe$" },
+        "zipFile": { "type": "string", "pattern": "^GYInput-\\d+\\.\\d+\\.\\d+\\.zip$" },
+        "sha256": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "state": { "enum": ["draft", "candidate", "awaiting-signature", "stable"] }
+      }
+    },
+    "macos": {
+      "type": "object",
+      "required": ["version", "architecture", "state"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "architecture": { "const": "arm64" },
+        "packageFile": { "type": "string", "pattern": "^GYInput-\\d+\\.\\d+\\.\\d+-arm64\\.pkg$" },
+        "sha256": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "signed": { "type": "boolean" },
+        "notarized": { "type": "boolean" },
+        "state": { "enum": ["verification-required", "candidate", "signed", "notarized", "stable"] }
+      }
+    }
+  },
+  "additionalProperties": false
+}

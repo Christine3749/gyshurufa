@@ -1,4 +1,4 @@
-﻿#include "CandidateWindow.h"
+#include "CandidateWindow.h"
 #include "CandidateLayout.h"
 
 #include <algorithm>
@@ -227,12 +227,46 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   // row rhythm, footer placement, disclosure-arrow geometry and VI colors
   // intentionally remain untouched.
   const int comfortable_grid_cell_width = Scale(dpi, grid_columns >= 6 ? 118 : grid_columns == 4 ? 102 : 110);
+  // Five columns are locked, but cell width follows the widest candidate on
+  // the current page: a page of single characters must not inherit the full
+  // comfortable cell width and inflate the panel with empty air. The approved
+  // comfortable width remains the ceiling; the compact minimum is the floor.
+  const int grid_cell_cap = std::min(comfortable_grid_cell_width, fitted_grid_cell_width);
+  int content_grid_cell_width = Scale(dpi, 54);
+  if (expanded_grid) {
+    const int cell_insets = Scale(dpi, 21) + Scale(dpi, 5) + Scale(dpi, 8);
+    for (unsigned i = 0; i < visible_count; ++i) {
+      content_grid_cell_width = std::max(content_grid_cell_width,
+          Measure(dc, candidate_font, candidates_[page_start_ + i]) + cell_insets);
+    }
+  }
   const int grid_cell_width = expanded_grid
-      ? std::min(comfortable_grid_cell_width, fitted_grid_cell_width)
+      ? std::clamp(content_grid_cell_width, (Scale(dpi, 54) + grid_cell_cap) / 2, grid_cell_cap)
       : fitted_grid_cell_width;
+  // Candidate text is an input decision, not decoration: when the natural row
+  // fits the panel cap, every chip gets its full measured width and nothing is
+  // clipped. Only a genuinely overflowing row falls back to the shared
+  // word_room cap, where Paint then marks the cut with an ellipsis instead of
+  // silently dropping the tail of a long candidate.
+  clip_overflow_ = false;
+  if (visible_count > 0) {
+    if (expanded_grid) {
+      const int word_area = grid_cell_width - Scale(dpi, 21) - Scale(dpi, 5);
+      for (unsigned i = 0; i < visible_count; ++i) {
+        if (Measure(dc, candidate_font, candidates_[page_start_ + i]) > word_area) { clip_overflow_ = true; break; }
+      }
+    } else {
+      int natural_width = x + total_gap + gap + collapsed_controls + padding;
+      for (unsigned i = 0; i < visible_count; ++i) {
+        natural_width += non_word_width + Measure(dc, candidate_font, candidates_[page_start_ + i]) + Scale(dpi, 8);
+      }
+      clip_overflow_ = natural_width > max_width;
+    }
+  }
 
   for (unsigned i = 0; i < visible_count; ++i) {
-    const int word_width = std::min(Measure(dc, candidate_font, candidates_[page_start_ + i]), word_room);
+    const int measured_word_width = Measure(dc, candidate_font, candidates_[page_start_ + i]);
+    const int word_width = clip_overflow_ ? std::min(measured_word_width, word_room) : measured_word_width;
     const int chip_width = expanded_grid ? grid_cell_width : non_word_width + word_width + Scale(dpi, 8);
     const unsigned row = expanded_grid ? i / grid_columns : 0;
     const unsigned column = expanded_grid ? i % grid_columns : 0;
@@ -359,7 +393,7 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   // Keep five columns, but cap the panel at a comfortable physical width so
   // the confirmed GY layout is the same on laptop and desktop screens.
   const int monitor_available = std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20));
-  const int compact_panel_cap = expanded_ ? 820 : 720;
+  const int compact_panel_cap = expanded_ ? Scale(dpi, 820) : Scale(dpi, 720);
   const int available_width = std::min(monitor_available, compact_panel_cap);
   Layout(dpi, available_width);
   const int width = content_width_;
@@ -534,8 +568,10 @@ void CandidateWindow::Paint(HDC dc) {
     // Candidate text is an input decision, not decorative copy. Never turn
     // it into “…”: Layout reserves enough room for the engine's bounded
     // phrases, and users can see exactly what Enter or its numeric shortcut
-    // will commit.
-    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, false);
+    // will commit. Ellipsis is the honest last resort for rows that physically
+    // overflow the panel (clip_overflow_); Layout guarantees it never triggers
+    // for candidates that fit.
+    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, clip_overflow_);
   }
 
   if (!mode_popup_ && !IsRectEmpty(&next_page_rect_)) {

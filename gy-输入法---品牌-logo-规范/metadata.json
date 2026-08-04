@@ -1,0 +1,6 @@
+{
+  "name": "GY 输入法 - 品牌 Logo 规范",
+  "description": "GY 输入法系统级品牌标识设计与规范展示",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

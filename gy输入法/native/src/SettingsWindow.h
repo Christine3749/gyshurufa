@@ -14,6 +14,7 @@ private:
   void Load();
   void Save();
   void TogglePhrases();
+  void ApplyThemeBrush();
   void ClearLearning();
   void ExportBackup();
   void ImportBackup();

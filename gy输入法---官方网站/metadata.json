@@ -1,0 +1,6 @@
+{
+  "name": "GY输入法 - 官方网站",
+  "description": "GY输入法 (GY Shurufa) - 面向 Windows 的 AI 原生中文输入法官方网站。快、准、默认本地优先，GSYEN 智能工作生态的一部分。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

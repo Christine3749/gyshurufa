@@ -1,0 +1,18 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Required offline Rime runtime data. These generated files are intentionally
+# versioned so a clean clone can build and package the same local engine.
+!native/runtime/rime/shared/
+!native/runtime/rime/shared/build/
+!native/runtime/rime/shared/build/default.yaml
+!native/runtime/rime/shared/build/luna_pinyin.schema.yaml
+!native/runtime/rime/shared/build/luna_pinyin.table.bin
+!native/runtime/rime/shared/build/luna_pinyin.reverse.bin
+!native/runtime/rime/shared/build/luna_pinyin.prism.bin
+!native/runtime/rime/shared/build/SHA256SUMS.txt

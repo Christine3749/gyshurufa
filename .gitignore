@@ -2,12 +2,16 @@
 **/dist/
 **/build*/
 **/release/
-!release/
-release/*
-!release/release.json
-!release/release.schema.json
-!release/RELEASE_WORKFLOW.md
-!release/ACCOUNT_CONTRACT.md
+/release/
+!/release/
+/release/*
+!/release/release.json
+!/release/release.schema.json
+!/release/RELEASE_WORKFLOW.md
+!/release/ACCOUNT_CONTRACT.md
+**/native/runtime/
+test-write.txt
+security-scan-*.jsonl
 **/.wrangler/
 **/.vercel/
 **/third_party/
@@ -19,3 +23,4 @@ release/*
 *.log
 .env
 .DS_Store
+/releases/
