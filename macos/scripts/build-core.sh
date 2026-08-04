@@ -7,6 +7,7 @@ manifest="$root/../release/release.json"
 rime_prefix="${GY_RIME_PREFIX:-$(brew --prefix librime)}"
 rime_shared="$root/../native/runtime/rime/shared"
 opencc_data="$(brew --prefix opencc)/share/opencc"
+logo="$root/../native/installer/assets/gy-tray-icon.svg"
 identity="${GY_DEVELOPMENT_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
   identity="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:.*\)"/\1/p' | head -1)"
@@ -16,6 +17,7 @@ fi
 [[ -f "$rime_prefix/lib/librime.dylib" ]] || { echo "Apple Silicon librime is required." >&2; exit 1; }
 [[ -f "$rime_shared/gy_pinyin.schema.yaml" ]] || { echo "Shared GY Rime data is missing." >&2; exit 1; }
 [[ -f "$opencc_data/t2s.json" ]] || { echo "OpenCC conversion data is required." >&2; exit 1; }
+[[ -f "$logo" ]] || { echo "Shared GY logo is missing." >&2; exit 1; }
 release_version="$(/usr/bin/plutil -extract version raw -o - "$manifest")"
 plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$root/GYInput/Resources/Info.plist")"
 [[ "$release_version" == "$plist_version" ]] || { echo "Info.plist version must match release/release.json." >&2; exit 1; }
@@ -23,6 +25,18 @@ plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources/Rime"
 cp "$root/GYInput/Resources/Info.plist" "$app/Contents/Info.plist"
+iconset="$app/Contents/Resources/GYIcon.iconset"
+mkdir "$iconset"
+sips -s format png -z 1024 1024 "$logo" --out "$iconset/icon_512x512@2x.png" >/dev/null
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$iconset/icon_512x512@2x.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+done
+for size in 16 32 128 256; do
+  doubled=$((size * 2))
+  sips -z "$doubled" "$doubled" "$iconset/icon_512x512@2x.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/GYIcon.icns"
+rm -rf "$iconset"
 ditto "$rime_shared" "$app/Contents/Resources/Rime/shared"
 ditto "$opencc_data" "$app/Contents/Resources/Rime/shared/opencc"
 "$root/scripts/verify-input-source-contract.sh" "$app/Contents/Info.plist"

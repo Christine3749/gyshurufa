@@ -5,6 +5,7 @@
 ## 共同输入体验
 
 - `gy_pinyin` 是 Windows 与 macOS 共同的输入 schema；词库、拼写规则、标点和 OpenCC 简繁规则不在 Mac 端另造一套。
+- Bundle 图标由 Windows 的唯一源文件 `native/installer/assets/gy-tray-icon.svg` 生成；深墨黑背景和白色 GY 标准字不在 Mac 端重绘。
 - 简体／繁体／EN 三模式由 GY 保存；EN 除切换键外完全直通应用。
 - Rime 用户学习仅落在本机 `~/Library/Application Support/GYInput/rime`；输入路径不联网、不读取剪贴板。
 - 当前候选 UI 使用系统 5 列面板作为兼容阶段：默认最多 5 个，`↓` 展开最多 5×5，支持方向键、分页、1–5 和鼠标选词。

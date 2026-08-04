@@ -8,6 +8,8 @@
   <string>zh-Hans</string>
   <key>CFBundleExecutable</key>
   <string>GYInput</string>
+  <key>CFBundleIconFile</key>
+  <string>GYIcon</string>
   <key>CFBundleIdentifier</key>
   <string>wang.shurufa.inputmethod.GYInput</string>
   <key>CFBundleInfoDictionaryVersion</key>
