@@ -205,8 +205,13 @@ public:
     if (key == VK_OEM_7) return RequestEdit({EditActionKind::Append, L'\''});
     if (key == VK_BACK) return RequestEdit({EditActionKind::Backspace});
     if (key == VK_ESCAPE) return RequestEdit({EditActionKind::Cancel});
+    // In the compact strip Enter preserves the established raw-pinyin path.
+    // Once the user explicitly opens the 5 x 5 grid, Enter and Space both
+    // commit the currently highlighted candidate.
+    if (gy::keys::ShouldCommitSelectedCandidate(key, expanded_candidates_)) {
+      return RequestEdit({EditActionKind::CommitCandidate, 0, selected_});
+    }
     if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::CommitRaw});
-    if (gy::keys::IsCandidateCommitKey(key)) return RequestEdit({EditActionKind::CommitCandidate, 0, selected_});
     if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::CommitCandidate, 0, page_start_ + static_cast<unsigned>(key - '1')});
     if (key == VK_PRIOR) { MovePage(-1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
     if (key == VK_UP) {

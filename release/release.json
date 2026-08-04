@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "channel": "candidate",
-  "version": "0.9.34",
-  "coreVersion": "0.9.34",
-  "hostVersion": "0.9.34",
+  "version": "0.9.35",
+  "coreVersion": "0.9.35",
+  "hostVersion": "0.9.35",
   "windows": {
-    "setupFile": "GYInputSetup-0.9.34.exe",
-    "zipFile": "GYInput-0.9.34.zip",
-    "sha256": "PENDING-PACKAGE-VERIFICATION",
-    "bytes": 0,
-    "state": "draft"
+    "setupFile": "GYInputSetup-0.9.35.exe",
+    "zipFile": "GYInput-0.9.35.zip",
+    "sha256": "FB58751838B448946CC0AD835B39AE3CE8A428C51DB4FC3C0AF23B567D28D77E",
+    "bytes": 10087546,
+    "state": "candidate"
   },
   "macos": {
     "state": "verification-required"

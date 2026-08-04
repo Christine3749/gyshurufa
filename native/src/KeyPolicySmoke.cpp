@@ -32,6 +32,13 @@ int wmain() {
       !gy::keys::IsCandidateCommitKey(VK_SPACE) || gy::keys::IsCandidateCommitKey(VK_RETURN) ||
       !gy::keys::IsCommitKey(VK_RETURN) || !gy::keys::IsCommitKey(VK_SPACE) ||
       gy::keys::IsCommitKey(VK_SHIFT)) return 8;
+  // Compact Enter keeps raw pinyin available; grid Enter commits the selected
+  // cell so arrow-key navigation has a keyboard confirmation path.
+  if (gy::keys::ShouldCommitSelectedCandidate(VK_RETURN, false) ||
+      !gy::keys::ShouldCommitSelectedCandidate(VK_RETURN, true) ||
+      !gy::keys::ShouldCommitSelectedCandidate(VK_SPACE, false) ||
+      !gy::keys::ShouldCommitSelectedCandidate(VK_SPACE, true) ||
+      gy::keys::ShouldCommitSelectedCandidate(VK_TAB, true)) return 13;
 
   if (gy::input_mode::Normalize(-1) != gy::input_mode::kSimplified ||
       gy::input_mode::Normalize(99) != gy::input_mode::kEnglish ||

@@ -6,7 +6,7 @@
 
 | 共同部分 | 唯一来源 | 两端要求 |
 | --- | --- | --- |
-| 产品行为 | `GY_INPUT_METHOD_PRODUCT_STANDARD.md` | 简体／繁体／EN、离线输入、候选质量、5×5 及键盘规则一致。 |
+| 产品行为 | `GY_INPUT_METHOD_PRODUCT_STANDARD.md` | 简体／繁体／EN、离线输入、候选质量、5×5 及键盘规则一致；展开网格中方向键移动，`Enter` / `Space` 提交高亮候选。 |
 | 已确认 VI | `gy输入法/GY_VISUAL_IDENTITY.md` | GY Logo、箭头、候选窗、颜色和设置页不得擅改。 |
 | 发布真相 | `release/release.json` | 一个版本号、一个 Windows EXE、一个 Mac ARM64 PKG、各自 SHA-256。 |
 | 发布校验 | `release/verify-release-manifest.mjs` | 先校验，再上传；只有双端完整才可以切换 `latest.json`。 |
@@ -31,10 +31,11 @@
 5. 两端都运行共享发布校验，再由 Windows 发布机最后切换 R2 的 `releases/latest.json`。
 6. 官网只请求 `/api/releases/latest`；只有 Worker 返回已验证的 Windows 和 macOS 元数据时显示下载按钮。
 
-## 当前 0.9.33 的真实状态
+## 当前 0.9.35 的真实状态
 
-`0.9.33` 仍是 `candidate/draft`：本地存在 Windows EXE，但 canonical manifest 还没有最终哈希；此电脑没有已签名、公证的 Mac PKG。因此它不能成为跨平台 `latest`，也不应被官网标为“正式可下载”。
+Windows `0.9.35` 是已本地验证的候选包：DLL、Host、安装包均为 `0.9.35`，10 项原生测试通过，实际 EXE 的 SHA-256 已写入 `release.json`。它尚未推送为线上正式 latest。
 
+macOS 仍为 `verification-required`：尚未在 M1 实机完成同版本 ARM64 PKG 的签名、公证、staple 与哈希校验。因此本版本不能成为跨平台 `latest`，官网也不得把 Mac 标为“可下载”。
 ## GitHub 共同仓库
 
 本地仓库当前没有配置 `origin`。得到正确 GitHub URL 后，仅执行一次：
