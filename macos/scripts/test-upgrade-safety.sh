@@ -19,6 +19,6 @@ backup="$state_root/rollback/GYInput-$(version "$app").app"
 [[ -x "$backup/Contents/MacOS/GYInput" ]] || { echo 'Known-good app was not snapshotted.' >&2; exit 1; }
 "$root/scripts/postinstall" ignored '/Library/Input Methods' "$sandbox" >/dev/null
 [[ "$(/usr/bin/stat -f '%Lp' "$state_root/update-status.plist")" == 644 ]] || { echo 'Upgrade status must be user-readable.' >&2; exit 1; }
-status="$(GY_INPUT_ROOT="$sandbox" "$root/scripts/GYRecovery.sh" status)"
+status="$(GY_INPUT_ROOT="$sandbox" GY_INPUT_BASELINE_HOME="$sandbox" "$root/scripts/GYRecovery.sh" status)"
 [[ "$status" == *'activation=logout-required'* && "$status" == *"functional-baseline=$(version "$app")"* && "$status" == *"rollback=$backup"* ]] || { echo 'Upgrade status is incomplete.' >&2; exit 1; }
 echo 'PASS: upgrade snapshots only a functionally accepted GY core and requires logout activation.'

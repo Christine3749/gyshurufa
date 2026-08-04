@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$root/../shared/session/test-session-guard.sh"
 "$root/scripts/verify-input-source-contract.sh"
 "$root/scripts/build-core.sh"
 workspace="$(mktemp -d)"
