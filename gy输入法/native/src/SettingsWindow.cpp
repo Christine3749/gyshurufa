@@ -245,7 +245,7 @@ void SettingsWindow::Layout() {
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
   for (int i = 0; i < 4; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
-  account_rect_ = {}; phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {};
+  account_rect_ = {}; phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -261,8 +261,9 @@ void SettingsWindow::Layout() {
   } else if (page_ == Page::Input) {
     for (int i = 0; i < 3; ++i) input_mode_rects_[i] = {content_left + i * option_width, base_y, content_left + (i + 1) * option_width, base_y + group_height};
     phrases_rect_ = {content_left, base_y + group_height + Scale(dpi_, 28), content_left + card_width, base_y + group_height + Scale(dpi_, 86)};
+    warm_rect_ = {content_left, phrases_rect_.bottom + Scale(dpi_, 14), content_left + card_width, phrases_rect_.bottom + Scale(dpi_, 86)};
     ShowWindow(phrases_edit_, SW_HIDE);
-    done_y = phrases_rect_.bottom + Scale(dpi_, 22);
+    done_y = warm_rect_.bottom + Scale(dpi_, 22);
   } else if (page_ == Page::Appearance) {
     // Full-width stacked theme cards preserve the approved narrow vertical
     // composition instead of turning this page into a three-column strip.
@@ -340,6 +341,13 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"切换规则", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 9), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
     Text(dc, L"Shift 快速切换 EN；EN 模式下字母、标点、Enter 与快捷键原样直出。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+    // Warm start card: the toggle is honest about the low-spec trade-off, so
+    // the annotation must stay in sync with PerformanceSettings.h consumers.
+    Rounded(dc, warm_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"热启动加速", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 9), warm_rect_.left + Scale(dpi_, 190), warm_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    Text(dc, warm_start_ ? L"已开启 · 点击关闭" : L"已关闭 · 点击开启", RECT{warm_rect_.right - Scale(dpi_, 150), warm_rect_.top + Scale(dpi_, 9), warm_rect_.right - Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 31)}, warm_start_ ? kBlue : pal.muted, DT_RIGHT, medium);
+    Text(dc, L"开启后引擎保持热连接，按键零等待；关闭后每次按键重新握手。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 32), warm_rect_.right - Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 48)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"建议 4 核 CPU / 8 GB 内存及以上开启；更低配置的设备请关闭。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 49), warm_rect_.right - Scale(dpi_, 16), warm_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
   } else if (page_ == Page::Appearance) {
     Text(dc, L"候选窗主题", RECT{theme_rects_[0].left, theme_rects_[0].top - Scale(dpi_, 22), theme_rects_[2].right, theme_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* themes[] = {L"GY 蓝夜", L"暖白", L"石墨"};
@@ -391,6 +399,7 @@ void SettingsWindow::Load() {
   theme_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"Theme", 0, path.c_str())), 0, 2);
   const int points = GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str());
   size_index_ = points <= 13 ? 0 : points >= 17 ? 2 : 1;
+  warm_start_ = GetPrivateProfileIntW(L"Performance", L"WarmStart", 1, path.c_str()) != 0;
 
   std::vector<wchar_t> phrases(4096, L'\0'); GetPrivateProfileSectionW(L"Phrases", phrases.data(), static_cast<DWORD>(phrases.size()), path.c_str());
   std::wstring text;
@@ -404,6 +413,7 @@ void SettingsWindow::Save() {
   WritePrivateProfileStringW(L"Account", L"Name", account, path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"Theme", std::to_wstring(theme_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"CandidateSize", std::to_wstring(points[size_index_]).c_str(), path.c_str());
+  WritePrivateProfileStringW(L"Performance", L"WarmStart", warm_start_ ? L"1" : L"0", path.c_str());
   gy::input_mode::Write(input_mode_);
   const int length = GetWindowTextLengthW(phrases_edit_); std::vector<wchar_t> raw(static_cast<size_t>(length) + 1, L'\0'); GetWindowTextW(phrases_edit_, raw.data(), static_cast<int>(raw.size()));
   std::wstring section; const std::wstring input(raw.data()); size_t begin = 0;
@@ -461,7 +471,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point);
-      if (self->page_ == Page::Input) for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point);
+      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
@@ -470,7 +480,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point);
-      if (self->page_ == Page::Input) for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point);
+      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
@@ -478,6 +488,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       for (int i = 0; i < 4; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
       if (self->page_ == Page::Input) for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }

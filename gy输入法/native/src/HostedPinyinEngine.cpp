@@ -1,6 +1,7 @@
 #include "HostedPinyinEngine.h"
 
 #include "HostProtocol.h"
+#include "PerformanceSettings.h"
 
 #include <windows.h>
 
@@ -132,8 +133,11 @@ struct HostedPinyinEngine::Impl {
     // Steady-state keystrokes skip the Status round trip entirely (Lookup and
     // ShowCandidates each used to pay one). Any failed request clears this
     // stamp, so a dead Host is detected on the very next key.
+    // Warm start off (settings panel, low-spec mode) disables this keep-alive
+    // cache; the setting is re-read at most once per TTL window per process.
     const ULONGLONG now = GetTickCount64();
-    if (last_verified_tick != 0 && now - last_verified_tick < kVerifiedHostTtlMs) return true;
+    if (last_verified_tick != 0 && now - last_verified_tick < kVerifiedHostTtlMs &&
+        gy::performance::WarmStartEnabled()) return true;
     const std::wstring expected_version = HostVersion();
     std::wstring status;
     if (SendRequest(gy::host::MessageType::Status, L"", &status)) {

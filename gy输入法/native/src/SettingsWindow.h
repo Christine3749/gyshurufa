@@ -37,6 +37,9 @@ private:
   RECT input_mode_rects_[3]{};
   RECT nav_rects_[4]{};
   bool phrases_expanded_ = false;
+  // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
+  // 输入 page card toggles it and annotates the low-spec recommendation.
+  bool warm_start_ = true;
   RECT account_rect_{};
   RECT theme_rects_[3]{};
   RECT size_rects_[3]{};
@@ -45,6 +48,7 @@ private:
   RECT export_rect_{};
   RECT import_rect_{};
   RECT ai_preview_rect_{};
+  RECT warm_rect_{};
   RECT done_rect_{};
   RECT close_rect_{};
 };

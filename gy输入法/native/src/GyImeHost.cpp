@@ -1,5 +1,6 @@
 #include "CandidateWindow.h"
 #include "HostProtocol.h"
+#include "PerformanceSettings.h"
 #include "PinyinEngine.h"
 #include "SettingsWindow.h"
 #include "TrayController.h"
@@ -220,7 +221,10 @@ void ServeRequests(PinyinEngine* engine, std::atomic_bool* running, DWORD ui_thr
   // attach instantly. The old single-instance server recycled its one pipe
   // after every request, so each new connection waited ~15ms in WaitNamedPipe;
   // bursts (4 connections per keystroke) and multiple apps amplified that.
-  std::vector<PipeListener> listeners(kPipeInstanceCount);
+  // Warm start off (low-spec mode) falls back to a single pre-accepted
+  // instance; the setting is read once at Host startup.
+  const size_t instance_count = gy::performance::WarmStartEnabled() ? kPipeInstanceCount : 1;
+  std::vector<PipeListener> listeners(instance_count);
   std::vector<HANDLE> wait_handles;
   wait_handles.push_back(stop_event);
   for (auto& listener : listeners) {
