@@ -293,10 +293,10 @@ struct PinyinEngine::Impl {
       diagnostic = L"librime could not create a session";
       return;
     }
-    if (!runtime.api->select_schema(session, "luna_pinyin")) {
+    if (!runtime.api->select_schema(session, "gy_pinyin")) {
       runtime.api->destroy_session(session);
       session = 0;
-      diagnostic = L"librime could not select luna_pinyin";
+      diagnostic = L"librime could not select gy_pinyin";
       return;
     }
     runtime.api->set_option(session, "ascii_mode", False);

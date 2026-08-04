@@ -36,7 +36,7 @@ switches:
     states: [ 。，, ．， ]
 
 menu:
-  page_size: 20
+  page_size: 25
 
 engine:
   processors:
