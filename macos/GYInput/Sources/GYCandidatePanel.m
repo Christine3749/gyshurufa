@@ -96,7 +96,7 @@ static NSString *GYModeText(GYInputMode mode) { return mode == GYInputModeTradit
 }
 @end
 
-@implementation GYCandidatePanel { GYCandidateWindow *_window; GYCandidateSurface *_surface; NSRect _lastCaret; BOOL _hasLastCaret; }
+@implementation GYCandidatePanel { GYCandidateWindow *_window; GYCandidateSurface *_surface; }
 - (instancetype)initWithActionHandler:(GYCandidateActionHandler)handler {
   if ((self = [super init])) {
     _surface = [[GYCandidateSurface alloc] initWithHandler:handler];
@@ -108,14 +108,13 @@ static NSString *GYModeText(GYInputMode mode) { return mode == GYInputModeTradit
 }
 - (void)showCandidates:(NSArray<NSString *> *)candidates selection:(NSInteger)selection mode:(GYInputMode)mode expanded:(BOOL)expanded expandable:(BOOL)expandable previous:(BOOL)previous next:(BOOL)next client:(id)client {
   [_surface configure:candidates selection:selection mode:mode expanded:expanded expandable:expandable previous:previous next:next]; NSSize size = _surface.preferredSize;
-  NSRect caret = NSZeroRect;
-  if ([client respondsToSelector:@selector(selectedRange)] && [client respondsToSelector:@selector(firstRectForCharacterRange:actualRange:)]) {
-    NSRange selected = [client selectedRange];
-    if (selected.location != NSNotFound) caret = [client firstRectForCharacterRange:selected actualRange:NULL];
-  }
-  if (NSHeight(caret) > 0 && !NSEqualRects(caret, NSZeroRect)) { _lastCaret = caret; _hasLastCaret = YES; }
-  else if (_hasLastCaret) caret = _lastCaret;
-  else { [self hide]; return; }
+  if (![client respondsToSelector:@selector(firstRectForCharacterRange:actualRange:)]) { [self hide]; return; }
+  NSRange range = NSMakeRange(NSNotFound, 0);
+  if ([client respondsToSelector:@selector(markedRange)]) range = [client markedRange];
+  if (range.location != NSNotFound && range.length) range = NSMakeRange(NSMaxRange(range), 0);
+  if (range.location == NSNotFound && [client respondsToSelector:@selector(selectedRange)]) range = [client selectedRange];
+  NSRect caret = range.location == NSNotFound ? NSZeroRect : [client firstRectForCharacterRange:range actualRange:NULL];
+  if (NSHeight(caret) <= 0 || NSEqualRects(caret, NSZeroRect)) { [self hide]; return; }
   NSScreen *screen = NSScreen.mainScreen;
   for (NSScreen *item in NSScreen.screens) if (NSIntersectsRect(caret, item.visibleFrame)) { screen = item; break; }
   NSRect visible = screen.visibleFrame;

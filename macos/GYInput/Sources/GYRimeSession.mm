@@ -5,6 +5,7 @@
 static const int GYRimeBackspace = 0xff08;
 static const int GYRimePageUp = 0xff55;
 static const int GYRimePageDown = 0xff56;
+static const NSUInteger GYCandidatePoolLimit = 75;
 
 static NSString *GYString(const char *value) { return value ? [[NSString alloc] initWithUTF8String:value] ?: @"" : @""; }
 
@@ -71,7 +72,7 @@ static NSString *GYString(const char *value) { return value ? [[NSString alloc] 
   _page = context.menu.page_no;
   _hasPreviousPage = _page > 0;
   NSMutableArray *candidates = [NSMutableArray array]; NSMutableArray *indices = [NSMutableArray array];
-  for (int index = 0; index < context.menu.num_candidates; index++) {
+  for (int index = 0; index < context.menu.num_candidates && candidates.count < GYCandidatePoolLimit; index++) {
     NSString *candidate = GYNormalizeCandidate(GYString(context.menu.candidates[index].text), _mode);
     if (candidate.length && ![candidates containsObject:candidate]) {
       [candidates addObject:candidate]; [indices addObject:@(index)];

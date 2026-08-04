@@ -4,7 +4,7 @@ config_version: '2.2'
 schema_list:
   - schema: gy_pinyin
 menu:
-  page_size: 25
+  page_size: 75
 punctuator:
   full_shape:
     __include: punctuation:/full_shape

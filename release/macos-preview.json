@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "platform": "macos",
   "channel": "preview",
-  "version": "2.0.0",
-  "packageFile": "GYInputPreview-2.0.0-arm64.pkg",
-  "objectKey": "previews/macos/2.0.0/GYInputPreview-2.0.0-arm64.pkg",
-  "sha256": "1411AFF5E9528D0EEEEFEB15FC1E6D81BE70F8CC566B7702177E95251DE81A06",
-  "bytes": 11328917,
+  "version": "2.0.1",
+  "packageFile": "GYInputPreview-2.0.1-arm64.pkg",
+  "objectKey": "previews/macos/2.0.1/GYInputPreview-2.0.1-arm64.pkg",
+  "sha256": "5FE2DBA1CE9300CE3F793BBB76560B23454935AE8C468014ACF1E3D562FE1445",
+  "bytes": 11329716,
   "architecture": "arm64",
   "appSigned": "Apple Development (local)",
   "pkgSigned": false,
   "notarized": false,
   "state": "candidate",
-  "acceptance": "macOS-only; separate GYInputPreview source; not a stable release"
+  "acceptance": "macOS-only; separate source; cursor anchoring and 75 real candidates in 25-item pages"
 }
