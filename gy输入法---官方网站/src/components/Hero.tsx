@@ -48,11 +48,11 @@ export const Hero: React.FC<HeroProps> = ({ onOpenDownload, onOpenPrivacy }) => 
             {/* Main Headline */}
             <div className="space-y-4">
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-slate-900 tracking-tight leading-[1.15]">
-                输入，应该更快，<br />
-                <span className="text-blue-600">也更安心。</span>
+                GY输入法，<br />
+                <span className="text-blue-600">AI时代的输入法。</span>
               </h1>
               <p className="text-base sm:text-lg text-slate-600 max-w-xl mx-auto lg:mx-0 leading-relaxed font-normal">
-                GY输入法是一款面向 Windows 的 AI 原生中文输入法。毫秒级低延迟响应、精准拼音联想、默认本地优先。让每一次打字，都是安全愉悦的开始。
+                GY输入法是一款面向 Windows 的 AI 原生中文输入法。毫秒级低延迟响应、精准拼音联想、默认本地优先。让 AI 在你明确需要时增强输入，而基础拼音、词库与学习始终默认本地优先。
               </p>
             </div>
 

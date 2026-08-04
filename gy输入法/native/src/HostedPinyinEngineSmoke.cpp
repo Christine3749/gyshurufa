@@ -1,8 +1,10 @@
 #include "HostedPinyinEngine.h"
 #include "HostProtocol.h"
+#include "NativeTestInputMode.h"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -21,6 +23,19 @@ std::wstring ModuleDirectory() {
   std::wstring result(path, length);
   const size_t slash = result.find_last_of(L"\\/");
   return slash == std::wstring::npos ? std::wstring{} : result.substr(0, slash);
+}
+
+bool IsHanOnly(const std::vector<std::wstring>& candidates) {
+  const auto is_han = [](wchar_t character) {
+    return (character >= 0x3400 && character <= 0x4DBF) ||
+        (character >= 0x4E00 && character <= 0x9FFF) ||
+        (character >= 0xF900 && character <= 0xFAFF);
+  };
+  return !candidates.empty() && std::all_of(candidates.begin(), candidates.end(),
+      [&is_han](const std::wstring& candidate) {
+        return !candidate.empty() &&
+            std::all_of(candidate.begin(), candidate.end(), is_han);
+      });
 }
 
 bool PrepareEnvironment(const std::wstring& directory) {
@@ -67,11 +82,21 @@ int wmain() {
     std::wcerr << L"Cannot prepare isolated hosted-engine test.\n";
     return 1;
   }
+  const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
   HostedPinyinEngine engine(directory);
   const auto first = engine.Lookup(L"nihao");
   if (first.empty()) {
     std::wcerr << L"The DLL-side Host bootstrap did not return candidates: " << engine.Diagnostic() << L"\n";
     return 2;
+  }
+  // This crosses the same DLL -> Host IPC boundary as the user-facing IME.
+  // A local-engine-only test is insufficient: a stale Host must never publish
+  // a sparse 3-column panel as though the 5x5 release rule had passed.
+  const auto expanded = engine.Lookup(L"wo");
+  if (expanded.size() < 20 || !IsHanOnly(expanded)) {
+    std::wcerr << L"Hosted candidate pool cannot support a 5x5 grid: "
+               << expanded.size() << L" qualified candidates.\n";
+    return 5;
   }
   if (!Send(gy::host::MessageType::Shutdown)) {
     std::wcerr << L"Cannot request a private Host shutdown.\n";

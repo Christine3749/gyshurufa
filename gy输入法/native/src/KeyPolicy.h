@@ -30,10 +30,14 @@ constexpr bool ShouldCaptureChinesePunctuation(WPARAM key, bool shift) {
   return gy::punctuation::IsQuoteKey(key) || gy::punctuation::ChineseCharacter(key, shift) != 0;
 }
 
-// Space confirms the active Chinese candidate. Enter commits the raw pinyin as
-// ASCII text, while leaving GY in Chinese mode; only standalone Shift toggles
-// 中 and EN.
+// Space confirms the active Chinese candidate. Enter commits raw pinyin as
+// ASCII text in the compact row, but confirms the actively highlighted item
+// after the user explicitly opens the candidate grid. This gives the grid a
+// standard move-then-Enter path without changing raw-pinyin entry.
 constexpr bool IsCandidateCommitKey(WPARAM key) { return key == VK_SPACE; }
 constexpr bool IsRawTextCommitKey(WPARAM key) { return key == VK_RETURN; }
+constexpr bool ShouldCommitSelectedCandidate(WPARAM key, bool expanded_candidates) {
+  return IsCandidateCommitKey(key) || (expanded_candidates && key == VK_RETURN);
+}
 constexpr bool IsCommitKey(WPARAM key) { return IsCandidateCommitKey(key) || IsRawTextCommitKey(key); }
 }  // namespace gy::keys

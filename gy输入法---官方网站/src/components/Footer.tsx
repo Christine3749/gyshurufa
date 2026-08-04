@@ -59,7 +59,7 @@ export const Footer: React.FC<FooterProps> = ({
               </li>
               <li>
                 <button onClick={onOpenChangelogModal} className="hover:text-white transition-colors text-left">
-                  版本更新日志 ({BRAND_INFO.version})
+                  版本更新日志
                 </button>
               </li>
             </ul>

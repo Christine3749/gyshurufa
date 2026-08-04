@@ -1,11 +1,13 @@
 param(
-  [string]$Version = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim(),
+  [string]$Version,
   [ValidateSet('Release')][string]$Configuration = 'Release',
   [string]$OutputRoot = (Join-Path $PSScriptRoot 'release')
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must use major.minor.patch format.' }
+Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
+$manifest = Get-GYReleaseManifest
+$Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
 
 $build = Join-Path $PSScriptRoot 'build-release'
 cmake -S $PSScriptRoot -B $build -G 'Visual Studio 17 2022' -A x64 "-DGY_VERSION=$Version"
@@ -29,6 +31,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Install-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1') -Destination (Join-Path $packageRoot 'Validate-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'LICENSES') -Force | Out-Null
+Copy-Item -LiteralPath (Get-GYReleaseManifestPath) -Destination (Join-Path $packageRoot 'release.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $packageRoot 'LICENSES\librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $packageRoot 'LICENSES\rime-data-license.txt')
 Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $Version -NoNewline -Encoding utf8
@@ -65,5 +68,6 @@ ZIP 是离线/高级用户备用包
 本发行包完全离线运行，不上传输入内容。
 "@
 Set-Content -LiteralPath (Join-Path $packageRoot 'README.txt') -Value $readme -Encoding utf8
-Compress-Archive -LiteralPath $packageRoot -DestinationPath (Join-Path $OutputRoot "GYInput-$Version.zip") -CompressionLevel Optimal
-Write-Host "Release package created: $(Join-Path $OutputRoot "GYInput-$Version.zip")"
+# Do not create the ZIP here. At this stage the installer/Mac hashes may still
+# be pending. Finalize-GYRelease.ps1 is the sole owner of immutable ZIP output.
+Write-Host "Release payload prepared: $packageRoot. Run Finalize-GYRelease.ps1 after both platform artifacts are verified."

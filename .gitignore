@@ -2,6 +2,12 @@
 **/dist/
 **/build*/
 **/release/
+!release/
+release/*
+!release/release.json
+!release/release.schema.json
+!release/RELEASE_WORKFLOW.md
+!release/ACCOUNT_CONTRACT.md
 **/.wrangler/
 **/.vercel/
 **/third_party/

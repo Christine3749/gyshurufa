@@ -1,4 +1,5 @@
 #include "HostProtocol.h"
+#include "NativeTestInputMode.h"
 
 #include <windows.h>
 
@@ -60,6 +61,7 @@ int wmain() {
     std::wcerr << L"Cannot prepare an isolated Host test environment.\n";
     return 4;
   }
+  const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
   const std::wstring directory = ModuleDirectory();
   const std::wstring host = directory + L"\\GyImeHost.exe";
   STARTUPINFOW startup{};
@@ -97,7 +99,7 @@ CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
   if (!lookup_ok || !learn_ok || !learned_lookup_ok || candidates.empty() || learned_candidates.empty() ||
       learned_candidates.front() != learned) {
-    std::wcerr << L"Host learning integration failed.\n";
+    std::wcerr << L"Host learning integration failed. lookup=" << lookup_ok << L" learn=" << learn_ok << L" learnedLookup=" << learned_lookup_ok << L" initialCount=" << candidates.size() << L" learnedCount=" << learned_candidates.size() << L" expectedLength=" << learned.size() << L" firstLength=" << (learned_candidates.empty() ? 0 : learned_candidates.front().size()) << L"\n";
     return 2;
   }
   std::wcout << learned_candidates.front() << L"\n";

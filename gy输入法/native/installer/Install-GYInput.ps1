@@ -10,7 +10,7 @@ $tipId = '0804:{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}{5F689D3E-73E3-4C2B-979A-2D
 $packageRoot = $PSScriptRoot
 $payloadRoot = Join-Path $packageRoot 'payload'
 $version = (Get-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Raw).Trim()
-$tsfVersion = '0.9.15'
+$tsfVersion = $version
 if ($version -ne $tsfVersion) { throw "Release version mismatch: Host=$version, Core=$tsfVersion. Refusing mixed installation." }
 $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $installRoot = Join-Path $programFiles 'GYInput'
@@ -20,6 +20,7 @@ $installedDll = Join-Path $tsfRoot 'GyIme.dll'
 $installedHost = Join-Path $versionRoot ("GyImeHost-$version.exe")
 $installedHealth = Join-Path $versionRoot ("GyImeHealth-$version.exe")
 $installedIcon = Join-Path $tsfRoot 'gy.ico'
+$installedHostIcon = Join-Path $versionRoot 'gy.ico'
 
 function Get-X64RegSvr32 {
   if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { return Join-Path $env:WINDIR 'Sysnative\regsvr32.exe' }
@@ -48,6 +49,7 @@ function Test-ThisReleaseInstalled {
          (Test-SameFile (Join-Path $payloadRoot ("GyImeHost-$version.exe")) $installedHost) -and
          (Test-SameFile (Join-Path $payloadRoot ("GyImeHealth-$version.exe")) $installedHealth) -and
          (Test-SameFile (Join-Path $payloadRoot 'gy.ico') $installedIcon) -and
+         (Test-SameFile (Join-Path $payloadRoot 'gy.ico') $installedHostIcon) -and
          (Test-SameFile (Join-Path $payloadRoot 'rime.dll') (Join-Path $versionRoot 'rime.dll')) -and
          (Test-SameTree (Join-Path $payloadRoot 'rime-data') (Join-Path $versionRoot 'rime-data'))
 }
@@ -112,11 +114,15 @@ function Get-ActiveGyState {
   if ($host -and $hostVersion) {
     $health = Join-Path (Split-Path -Parent $host) ("GyImeHealth-" + $hostVersion + ".exe")
   }
+  $dll = Get-ActiveGyDll
   return [ordered]@{
-    dll = Get-ActiveGyDll
+    schemaVersion = 2
+    dll = $dll
     host = $host
     version = $hostVersion
+    coreVersion = Get-CoreVersionFromDllPath $dll
     health = $health
+    activationState = 'captured-active-registry'
     capturedAtUtc = [DateTime]::UtcNow.ToString('o')
   }
 }
@@ -134,12 +140,42 @@ function Set-ActiveGyHost {
   Set-ActiveGyHostValue $installedHost $version
 }
 
+
+function Get-CoreVersionFromDllPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+  if ($Path -match '\\tsf-(\d+\.\d+\.\d+)\\GyIme\.dll$') { return $matches[1] }
+  return ''
+}
+
+function Test-ThisReleaseActive {
+  $activeDll = Get-ActiveGyDll
+  $activeHost = Get-ActiveGyHost
+  $activeHostVersion = Get-ActiveGyHostVersion
+  return (Test-ThisReleaseInstalled) -and
+         [string]::Equals($activeDll, $installedDll, [StringComparison]::OrdinalIgnoreCase) -and
+         [string]::Equals($activeHost, $installedHost, [StringComparison]::OrdinalIgnoreCase) -and
+         [string]::Equals($activeHostVersion, $version, [StringComparison]::Ordinal) -and
+         (Test-Path -LiteralPath $activeDll -PathType Leaf) -and
+         (Test-Path -LiteralPath $activeHost -PathType Leaf)
+}
+
+function Write-GyStateAtomically([object]$State, [string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'GY activation state path is required.' }
+  $directory = Split-Path -Parent $Path
+  $temporary = Join-Path $directory ('.' + [IO.Path]::GetFileName($Path) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+  try {
+    [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
+  } finally {
+    if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+  }
+}
 function Save-PreviousGyState([object]$State) {
   if (-not $State -or -not (Test-ManagedGyPath ([string]$State.dll)) -or
       -not (Test-ManagedGyPath ([string]$State.host)) -or
       [string]::IsNullOrWhiteSpace([string]$State.version)) { return }
   $previousPath = Join-Path $installRoot 'install-state.previous.json'
-  $State | ConvertTo-Json | Set-Content -LiteralPath $previousPath -Encoding utf8
+  Write-GyStateAtomically $State $previousPath
 }
 
 function Restore-PreviousGyState {
@@ -166,7 +202,7 @@ function Restore-PreviousGyState {
   if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     Copy-Item -LiteralPath $currentPath -Destination (Join-Path $installRoot 'install-state.rolled-back.json') -Force
   }
-  $previous | ConvertTo-Json | Set-Content -LiteralPath $currentPath -Encoding utf8
+  Write-GyStateAtomically $previous $currentPath
 }
 
 function Remove-ActiveGyHostIfCurrent {
@@ -187,9 +223,9 @@ $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 if (-not $Elevated) {
   if (-not $Uninstall) {
     Assert-Payload
-    if (Test-ThisReleaseInstalled) {
+    if (Test-ThisReleaseActive) {
       Update-CurrentUserKeyboardList
-      Write-Host "GY 输入法 $version 已安装；已确认键盘列表。"
+      Write-Host "GY 输入法 $version 已激活；已确认键盘列表与 DLL / Host 注册表指向。"
       exit 0
     }
   }
@@ -201,7 +237,16 @@ if (-not $Elevated) {
   Update-CurrentUserKeyboardList
   if ($Uninstall) { Write-Host 'GY 输入法已从当前账户的键盘列表移除。' }
   elseif ($Rollback) { Write-Host 'GY 输入法已回滚到上一个已验证版本。关闭并重新打开正在输入的应用即可生效。' }
-  else { Write-Host 'GY 输入法已安装。按 Win + Space，选择“GY 输入法（拼音）”。' }
+  else {
+    $newState = $null
+    $newStatePath = Join-Path $installRoot 'install-state.json'
+    if (Test-Path -LiteralPath $newStatePath) { $newState = Get-Content -LiteralPath $newStatePath -Raw | ConvertFrom-Json }
+    if ($newState -and $newState.requiresClientReload -eq $true) {
+      Write-Host 'GY 输入法已安装并激活新版本核心，但检测到已打开的应用可能仍在使用旧版 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。'
+    } else {
+      Write-Host 'GY 输入法已安装。按 Win + Space，选择“GY 输入法（拼音）”。'
+    }
+  }
   exit 0
 }
 if (-not $isAdmin) { throw '注册系统输入法需要管理员权限。' }
@@ -238,6 +283,7 @@ if (-not (Test-Path -LiteralPath $installedDll)) { Copy-Item -LiteralPath $paylo
 if (-not (Test-SameFile $payloadHost $installedHost)) { Copy-Item -LiteralPath $payloadHost -Destination $installedHost -Force }
 if (-not (Test-SameFile $payloadHealth $installedHealth)) { Copy-Item -LiteralPath $payloadHealth -Destination $installedHealth -Force }
 if (-not (Test-Path -LiteralPath $installedIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedIcon -Force }
+if (-not (Test-SameFile $payloadIcon $installedHostIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedHostIcon -Force }
 if (-not (Test-SameFile $payloadRime (Join-Path $versionRoot 'rime.dll'))) { Copy-Item -LiteralPath $payloadRime -Destination (Join-Path $versionRoot 'rime.dll') -Force }
 if (-not (Test-SameTree $payloadData (Join-Path $versionRoot 'rime-data'))) {
   if (Test-Path -LiteralPath (Join-Path $versionRoot 'rime-data')) { Remove-Item -LiteralPath (Join-Path $versionRoot 'rime-data') -Recurse -Force }
@@ -246,11 +292,25 @@ if (-not (Test-SameTree $payloadData (Join-Path $versionRoot 'rime-data'))) {
 $health = Start-Process -FilePath $installedHealth -WorkingDirectory $versionRoot -Wait -PassThru
 if ($health.ExitCode -ne 0) { throw "GY 输入法离线引擎自检失败；退出码：$($health.ExitCode)。旧版本保持不变。" }
 $previousState = Get-ActiveGyState
+$previousCoreVersion = ''
+$previousCoreVersion = [string]$previousState.coreVersion
+if ([string]::IsNullOrWhiteSpace($previousCoreVersion)) {
+  $previousCoreVersion = Get-CoreVersionFromDllPath ([string]$previousState.dll)
+}
+$coreActivationPending = -not [string]::IsNullOrWhiteSpace($previousCoreVersion) -and $previousCoreVersion -ne $tsfVersion
 $process = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $installedDll) -Wait -PassThru
 if ($process.ExitCode -ne 0) { throw "GY 输入法注册失败；regsvr32 返回 $($process.ExitCode)。" }
 try {
   Set-ActiveGyHost
-  @{ version = $version; hostVersion = $version; coreVersion = $tsfVersion; installedAtUtc = [DateTime]::UtcNow.ToString('o'); dll = $installedDll; host = $installedHost; health = $installedHealth; updateModel = 'versioned-tsf-host' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installRoot 'install-state.json') -Encoding utf8
+  if (-not (Test-ThisReleaseActive)) { throw 'GY activation verification failed: registry does not point to the staged DLL and Host.' }
+  $activationState = if ($coreActivationPending) { 'registered-pending-client-reload' } else { 'active' }
+  $state = [ordered]@{
+    schemaVersion = 2; version = $version; hostVersion = $version; coreVersion = $tsfVersion
+    installedAtUtc = [DateTime]::UtcNow.ToString('o'); dll = $installedDll; host = $installedHost; health = $installedHealth
+    updateModel = 'versioned-tsf-host'; activationState = $activationState; registryVerified = $true
+    requiresClientReload = $coreActivationPending; previousCoreVersion = $previousCoreVersion
+  }
+  Write-GyStateAtomically $state (Join-Path $installRoot 'install-state.json')
   Save-PreviousGyState $previousState
 } catch {
   if ((Test-ManagedGyPath ([string]$previousState.dll)) -and (Test-ManagedGyPath ([string]$previousState.host)) -and $previousState.version) {

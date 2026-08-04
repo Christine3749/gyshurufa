@@ -1,8 +1,8 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.9.15"
+  #error "MyAppVersion must be supplied by build-installer.ps1"
 #endif
 #ifndef MyTsfVersion
-#define MyTsfVersion "0.9.15"
+#error "MyTsfVersion must be supplied by build-installer.ps1"
 #endif
 #define MyAppName "GY 输入法"
 #define MyAppPublisher "GY Input Method"
@@ -80,6 +80,7 @@ Source: "{#MyPayloadDir}\GyImeHost-{#MyAppVersion}.exe"; DestDir: "{#MyVersionRo
 Source: "{#MyPayloadDir}\GyImeHealth-{#MyAppVersion}.exe"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
 
 Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyTsfRoot}"; Flags: onlyifdoesntexist
+Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime.dll"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime-data\*"; DestDir: "{#MyVersionRoot}\rime-data"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: "{#SourcePath}\Set-GYKeyboard.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -143,6 +144,7 @@ begin
   Result := FileExists(InstalledStableDllPath()) and
             FileExists(AddBackslash(Directory) + 'GyImeHost-{#MyAppVersion}.exe') and
             FileExists(AddBackslash(Directory) + 'GyImeHealth-{#MyAppVersion}.exe') and
+            FileExists(AddBackslash(Directory) + 'gy.ico') and
             FileExists(AddBackslash(Directory) + 'rime.dll') and
             DirExists(AddBackslash(Directory) + 'rime-data\shared');
 end;
@@ -185,11 +187,12 @@ begin
   StringChangeEx(Result, '"', '\"', True);
 end;
 
-function GyStateJson(const DllPath, HostPath, HostVersion, HealthPath: String): String;
+function GyStateJson(const DllPath, HostPath, HostVersion, CoreVersion, HealthPath, ActivationState: String): String;
 begin
-  Result := '{"dll":"' + JsonEscape(DllPath) + '","host":"' + JsonEscape(HostPath) +
+  Result := '{"schemaVersion":2,"dll":"' + JsonEscape(DllPath) + '","host":"' + JsonEscape(HostPath) +
             '","version":"' + JsonEscape(HostVersion) + '","hostVersion":"' + JsonEscape(HostVersion) +
-            '","coreVersion":"{#MyTsfVersion}","health":"' + JsonEscape(HealthPath) + '"}';
+            '","coreVersion":"' + JsonEscape(CoreVersion) + '","health":"' + JsonEscape(HealthPath) +
+            '","activationState":"' + JsonEscape(ActivationState) + '"}';
 end;
 
 procedure CapturePreviousGyState();
@@ -216,13 +219,13 @@ procedure SaveCapturedPreviousGyState();
 begin
   if not PreviousStateAvailable then Exit;
   SaveStringToFile(ExpandConstant('{app}\install-state.previous.json'),
-                   GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHealth), False);
+                    GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'registered-pending-client-reload'), False);
 end;
 
 procedure SaveActiveGyState();
 begin
   SaveStringToFile(ExpandConstant('{app}\install-state.json'),
-                   GyStateJson(StableDllPath(), VersionHostPath(), '{#MyAppVersion}', VersionHealthPath()), False);
+                    GyStateJson(StableDllPath(), VersionHostPath(), '{#MyAppVersion}', '{#MyTsfVersion}', VersionHealthPath(), 'registered-pending-client-reload'), False);
 end;
 
 function UpdateKeyboardList(Add: Boolean): Boolean;
@@ -254,6 +257,33 @@ begin
             (CompareText(ActiveHost, VersionHostPath()) = 0);
 end;
 
+function VerifyActivatedRelease(): Boolean;
+var
+  ActiveDll: String;
+  ActiveHost: String;
+  ActiveVersion: String;
+begin
+  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Classes\CLSID\{#MyClassId}\InprocServer32', '', ActiveDll) and
+            RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost) and
+            RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', ActiveVersion) and
+            (CompareText(ActiveDll, StableDllPath()) = 0) and
+            (CompareText(ActiveHost, VersionHostPath()) = 0) and
+            (CompareText(ActiveVersion, '{#MyAppVersion}') = 0) and
+            FileExists(ActiveDll) and FileExists(ActiveHost);
+end;
+
+procedure RestoreCapturedPreviousGyState();
+var
+  ResultCode: Integer;
+begin
+  if not PreviousStateAvailable then Exit;
+  Exec(ExpandConstant('{sys}\regsvr32.exe'), '/s "' + PreviousDll + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', PreviousHost);
+  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', PreviousHostVersion);
+  SaveStringToFile(ExpandConstant('{app}\install-state.json'),
+                    GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'rolled-back-pending-client-reload'), False);
+end;
+
 function InitializeSetup(): Boolean;
 begin
   CoreConnectorIsNew := not FileExists(InstalledStableDllPath());
@@ -275,6 +305,11 @@ begin
     CapturePreviousGyState();
     if not RegisterGyTextService() then Abort;
     RegisterGyHost();
+    if not VerifyActivatedRelease() then begin
+      RestoreCapturedPreviousGyState();
+      MsgBox('GY 输入法升级未能通过 DLL / Host 版本激活校验，已安全恢复上一版。请关闭正在输入的应用后重试；若这是首次安装，请重启 Windows 后重试。', mbError, MB_OK);
+      Abort;
+    end;
     SaveActiveGyState();
     SaveCapturedPreviousGyState();
     KeyboardAdded := UpdateKeyboardList(True);

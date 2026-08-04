@@ -1,9 +1,11 @@
 param(
-  [string]$Version = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim()
+  [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must use major.minor.patch format.' }
+Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
+$manifest = Get-GYReleaseManifest
+$Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
 
 $isccCandidates = @(
   (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),

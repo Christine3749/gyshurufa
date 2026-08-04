@@ -52,11 +52,48 @@ struct Header {
 };
 #pragma pack(pop)
 
+// Status decoding accepts both the current bare version response and the
+// reserved structured response. This lets a future Host add health metadata
+// without breaking DLLs that are still running during an update.
+struct HostStatus {
+  std::wstring host_version;
+  std::uint32_t protocol_version = kProtocolVersion;
+  std::wstring release_version;
+};
+
+inline std::wstring EncodeStatus(const HostStatus& status) {
+  return status.host_version + std::wstring(1, L'\0') + std::to_wstring(status.protocol_version) +
+      std::wstring(1, L'\0') + status.release_version;
+}
+
+inline bool DecodeStatus(const std::wstring& encoded, HostStatus* status) {
+  if (!status || encoded.empty()) return false;
+  const size_t first = encoded.find(L'\0');
+  if (first == std::wstring::npos) {
+    status->host_version = encoded;
+    status->protocol_version = 1;
+    status->release_version.clear();
+    return true;
+  }
+  const size_t second = encoded.find(L'\0', first + 1);
+  if (second == std::wstring::npos) return false;
+  try {
+    status->host_version = encoded.substr(0, first);
+    status->protocol_version = static_cast<std::uint32_t>(
+        std::stoul(encoded.substr(first + 1, second - first - 1)));
+    status->release_version = encoded.substr(second + 1);
+  } catch (...) {
+    return false;
+  }
+  return !status->host_version.empty() && status->protocol_version > 0;
+}
 struct CandidateUiState {
   RECT caret{};
   std::vector<std::wstring> candidates;
   unsigned selected = 0;
   unsigned page_start = 0;
+  unsigned input_mode = 0;  // 0 = simplified, 1 = traditional, 2 = English
+  bool expanded = false;
   std::wstring callback_pipe;
 };
 
@@ -150,8 +187,12 @@ inline std::wstring EncodeCandidateUi(const CandidateUiState& state) {
   encoded += std::to_wstring(state.selected);
   encoded.push_back(L'\0');
   encoded += std::to_wstring(state.page_start);
-  // Marker keeps v1 candidate payloads readable while allowing newer DLLs to
-  // provide a per-session callback endpoint for click-to-commit.
+  // Tagged fields preserve compatibility with older payloads while letting the
+  // TSF DLL make the Host render the exact active input mode and grid state.
+  encoded.push_back(L'\0');
+  encoded += L"@mode=" + std::to_wstring(state.input_mode > 2 ? 2 : state.input_mode);
+  encoded.push_back(L'\0');
+  encoded += L"@expanded=" + std::to_wstring(state.expanded ? 1 : 0);
   encoded.push_back(L'\0');
   encoded += L"@pipe=" + state.callback_pipe;
   for (const auto& candidate : state.candidates) {
@@ -188,9 +229,20 @@ inline bool DecodeCandidateUi(const std::wstring& encoded, CandidateUiState* sta
     return false;
   }
   size_t first_candidate = 6;
-  if (fields.size() >= 8 && fields[6].rfind(L"@pipe=", 0) == 0) {
-    state->callback_pipe = fields[6].substr(6);
-    first_candidate = 7;
+  if (fields.size() > first_candidate && fields[first_candidate].rfind(L"@mode=", 0) == 0) {
+    try { state->input_mode = static_cast<unsigned>(std::stoul(fields[first_candidate].substr(6))); } catch (...) { return false; }
+    if (state->input_mode > 2) return false;
+    ++first_candidate;
+  }
+  if (fields.size() > first_candidate && fields[first_candidate].rfind(L"@expanded=", 0) == 0) {
+    const std::wstring value = fields[first_candidate].substr(10);
+    if (value != L"0" && value != L"1") return false;
+    state->expanded = value == L"1";
+    ++first_candidate;
+  }
+  if (fields.size() > first_candidate && fields[first_candidate].rfind(L"@pipe=", 0) == 0) {
+    state->callback_pipe = fields[first_candidate].substr(6);
+    ++first_candidate;
   }
   state->candidates.assign(fields.begin() + first_candidate, fields.end());
   return !state->candidates.empty();

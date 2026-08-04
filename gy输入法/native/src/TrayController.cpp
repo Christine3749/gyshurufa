@@ -25,12 +25,10 @@ ATOM RegisterTrayClass() {
 }
 
 std::wstring InstallIconPath(const std::wstring& host_directory) {
-  const size_t version_slash = host_directory.find_last_of(L"\\/");
-  if (version_slash == std::wstring::npos) return {};
-  const std::wstring versions_directory = host_directory.substr(0, version_slash);
-  const size_t install_slash = versions_directory.find_last_of(L"\\/");
-  if (install_slash == std::wstring::npos) return {};
-  return versions_directory.substr(0, install_slash) + L"\\tsf-0.9.15\\gy.ico";
+  // Each versioned Host ships its icon beside the executable. Never tie the
+  // tray asset to a particular TSF DLL version: that was why upgraded Hosts
+  // silently fell back to the generic Windows application icon.
+  return host_directory.empty() ? std::wstring{} : host_directory + L"\\gy.ico";
 }
 
 NOTIFYICONDATAW MakeIconData(HWND hwnd, HICON icon) {

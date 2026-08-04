@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <msctf.h>
 
 #include <algorithm>
@@ -10,8 +10,11 @@
 #include <vector>
 
 #include "SelectionCallback.h"
+#include "CandidateLayout.h"
 #include "Guids.h"
 #include "HostedPinyinEngine.h"
+#include "InputCapturePolicy.h"
+#include "InputMode.h"
 #include "KeyPolicy.h"
 #include "PunctuationPolicy.h"
 
@@ -20,6 +23,10 @@ constexpr unsigned kCandidatesPerPage = 5;
 constexpr unsigned kToggleModeAction = std::numeric_limits<unsigned>::max();
 constexpr unsigned kPreviousPageAction = kToggleModeAction - 1;
 constexpr unsigned kNextPageAction = kToggleModeAction - 2;
+constexpr unsigned kToggleExpandedAction = kToggleModeAction - 3;
+constexpr unsigned kPreviousExpandedPageAction = kToggleModeAction - 4;
+constexpr unsigned kNextExpandedPageAction = kToggleModeAction - 5;
+constexpr unsigned kExpandedCandidatesPerPage = 5 * 5;
 HINSTANCE g_module = nullptr;
 
 std::wstring GuidToString(REFGUID guid) {
@@ -34,24 +41,6 @@ std::wstring ModuleDirectory() {
   std::wstring directory(path);
   const size_t separator = directory.find_last_of(L"\\/");
   return separator == std::wstring::npos ? std::wstring{} : directory.substr(0, separator);
-}
-
-std::wstring InputSettingsPath() {
-  wchar_t root[MAX_PATH]{};
-  if (!GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH)) return {};
-  const std::wstring directory = std::wstring(root) + L"\\GYInput";
-  CreateDirectoryW(directory.c_str(), nullptr);
-  return directory + L"\\settings.ini";
-}
-
-int ConfiguredInputMode() {
-  const std::wstring path = InputSettingsPath();
-  return std::clamp(path.empty() ? 0 : static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", 0, path.c_str())), 0, 2);
-}
-
-void SaveConfiguredInputMode(int mode) {
-  const std::wstring path = InputSettingsPath();
-  if (!path.empty()) WritePrivateProfileStringW(L"Input", L"Mode", std::to_wstring(std::clamp(mode, 0, 2)).c_str(), path.c_str());
 }
 
 HRESULT SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
@@ -79,11 +68,12 @@ void Trace(const wchar_t* event, HRESULT hr = S_OK, WPARAM key = 0) {
 void Trace(const wchar_t*, HRESULT = S_OK, WPARAM = 0) {}
 #endif
 
-enum class EditActionKind { Append, InsertText, Backspace, Commit, Cancel };
+enum class EditActionKind { Append, InsertText, Backspace, CommitCandidate, CommitRaw, Cancel };
 struct EditAction {
   EditActionKind kind;
   wchar_t character = 0;
   unsigned index = 0;
+  unsigned long long mode_generation = 0;
 };
 
 class GyTextService;
@@ -107,7 +97,7 @@ private:
 
 class GyTextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink, public ITfThreadMgrEventSink, public ITfCompositionSink {
 public:
-  GyTextService() : engine_(ModuleDirectory()), selection_callback_(g_module, [this](unsigned action) { HandleHostAction(action); }) {}
+  GyTextService() : engine_(ModuleDirectory()), selection_callback_(g_module, [this](unsigned action) { return HandleHostAction(action); }) {}
   ~GyTextService() { Deactivate(); }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
     if (!object) return E_INVALIDARG; *object = nullptr;
@@ -165,8 +155,18 @@ public:
     client_id_ = TF_CLIENTID_NULL; return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL focused) override {
+    // Browser address bars, developer tools and cross-page navigation can move
+    // focus before Windows delivers the final Ctrl/Alt/Win key-up. Never carry
+    // that stale modifier state into the next editable control, otherwise
+    // ShouldEat() treats ordinary letters as application shortcuts.
+    ResetTransientKeyboardState();
+    if (!focused) CancelComposition();
+    else SynchronizeInputMode(false);
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
+    ReconcileModifierState();
     if (!eaten) return E_INVALIDARG;
     if (gy::keys::ShouldMarkShiftUsed(shift_down_, key)) shift_used_ = true;
     SynchronizeInputMode(false);
@@ -176,6 +176,9 @@ public:
   }
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
+    // A focus switch can leave a cached Ctrl/Alt/Win state behind. Reconcile
+    // before deciding whether a plain Shift release is the GY mode toggle.
+    ReconcileModifierState();
     *eaten = IsShiftKey(key) && gy::keys::ShouldCaptureShift(HasShortcutModifier());
     return S_OK;
   }
@@ -185,6 +188,8 @@ public:
     if (IsShiftKey(key)) { shift_down_ = true; shift_used_ = HasShortcutModifier(); return S_OK; }
     if (shift_down_) shift_used_ = true;
     UpdateModifierState(key, true);
+    ReconcileModifierState();
+    SynchronizeInputMode(false);
     Trace(L"key.down", S_OK, key);
 
     // Shift alone changes the GY conversion mode. Ctrl+Space and other
@@ -200,18 +205,87 @@ public:
     if (key == VK_OEM_7) return RequestEdit({EditActionKind::Append, L'\''});
     if (key == VK_BACK) return RequestEdit({EditActionKind::Backspace});
     if (key == VK_ESCAPE) return RequestEdit({EditActionKind::Cancel});
-    if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, static_cast<unsigned>(candidates_.size())});
-    if (gy::keys::IsCandidateCommitKey(key)) return RequestEdit({EditActionKind::Commit, 0, selected_});
-    if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::Commit, 0, page_start_ + static_cast<unsigned>(key - '1')});
-    if (key == VK_PRIOR) { MovePage(-1); ShowCandidates(context_, nullptr); return S_OK; }
-    if (key == VK_NEXT) { MovePage(1); ShowCandidates(context_, nullptr); return S_OK; }
-    if (key == VK_UP || key == VK_LEFT) { MoveSelection(-1); ShowCandidates(context_, nullptr); return S_OK; }
-    if (key == VK_DOWN || key == VK_RIGHT) { MoveSelection(1); ShowCandidates(context_, nullptr); return S_OK; }
+    // In the compact strip Enter preserves the established raw-pinyin path.
+    // Once the user explicitly opens the 5 x 5 grid, Enter and Space both
+    // commit the currently highlighted candidate.
+    if (gy::keys::ShouldCommitSelectedCandidate(key, expanded_candidates_)) {
+      return RequestEdit({EditActionKind::CommitCandidate, 0, selected_});
+    }
+    if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::CommitRaw});
+    if (key >= '1' && key <= '5') {
+      unsigned candidate_index = page_start_ + static_cast<unsigned>(key - '1');
+      if (expanded_candidates_) {
+        candidate_index = gy::candidate_layout::ExpandedDigitCandidate(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()),
+            static_cast<unsigned>(key - '0'));
+      }
+      // The short final row has no hidden candidate behind a missing column.
+      // Keep the digit consumed while composition is active, but never commit
+      // a different item than the user asked for.
+      if (candidate_index >= candidates_.size()) return S_OK;
+      return RequestEdit({EditActionKind::CommitCandidate, 0, candidate_index});
+    }
+    if (key == VK_PRIOR) { MovePage(-1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_UP) {
+      if (expanded_candidates_) {
+        // The first ↑ on page one is the deliberate exit gesture. On later
+        // pages, ↑ continues to the prior 5 × 5 page in the same column.
+        if (page_start_ == 0 && selected_ < kCandidatesPerPage) {
+          expanded_candidates_ = false;
+          page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
+        } else {
+          selected_ = gy::candidate_layout::MoveExpandedUp(
+              selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+          page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
+        }
+      } else {
+        MovePage(-1, kCandidatesPerPage);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
+    if (key == VK_NEXT) { MovePage(1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
+    if (key == VK_DOWN) {
+      if (!expanded_candidates_) {
+        expanded_candidates_ = true;
+        page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
+      } else {
+        selected_ = gy::candidate_layout::MoveExpandedDown(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+        page_start_ = selected_ / kExpandedCandidatesPerPage * kExpandedCandidatesPerPage;
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
+    if (key == VK_LEFT) {
+      if (expanded_candidates_) {
+        selected_ = gy::candidate_layout::MoveExpandedLeft(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+      } else {
+        MoveSelection(-1);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
+    if (key == VK_RIGHT) {
+      if (expanded_candidates_) {
+        selected_ = gy::candidate_layout::MoveExpandedRight(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()));
+      } else {
+        MoveSelection(1);
+      }
+      ShowCandidates(context_, nullptr);
+      return S_OK;
+    }
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
     *eaten = FALSE;
+    // Use real keyboard state so a return from another app cannot suppress a
+    // bare-Shift Chinese/English toggle.
+    ReconcileModifierState();
+    SynchronizeInputMode(false);
     const bool should_toggle = IsShiftKey(key) && gy::keys::ShouldToggleMode(shift_down_, shift_used_, HasShortcutModifier());
     if (IsShiftKey(key)) shift_down_ = false;
     UpdateModifierState(key, false);
@@ -225,12 +299,28 @@ public:
   }
   HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr*, ITfDocumentMgr* focus) override { CancelComposition(); if (!focus) { SetContext(nullptr); return S_OK; } ITfContext* context = nullptr; if (SUCCEEDED(focus->GetTop(&context))) SetContext(context); if (context) context->Release(); return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr*, ITfDocumentMgr* focus) override {
+    CancelComposition();
+    ResetTransientKeyboardState();
+    if (!focus) { SetContext(nullptr); return S_OK; }
+    ITfContext* context = nullptr;
+    if (SUCCEEDED(focus->GetTop(&context))) SetContext(context);
+    if (context) context->Release();
+    // The mode is persisted by Settings / Shift. Re-read it after every
+    // document focus change so a tab with a stale TSF instance cannot leave
+    // the newly focused field in EN while the user has selected Chinese.
+    SynchronizeInputMode(false);
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext*) override { return S_OK; }
   HRESULT ApplyEdit(ITfContext* edit_context, const EditAction& action, TfEditCookie cookie) {
     // A request posted by a window that has already lost focus must not edit the new window.
     if (!edit_context || edit_context != context_) return S_OK;
+    // Once a mode transition happened, old Chinese edit work is stale. This is
+    // the final EN direct-mode guard against queued TSF edit sessions.
+    if (action.mode_generation != mode_generation_) return S_OK;
+    if (gy::input_mode::IsEnglish(input_mode_) && action.kind != EditActionKind::Cancel) return S_OK;
     if (action.kind == EditActionKind::InsertText) {
       HRESULT hr = S_OK;
       if (composition_) hr = CommitComposition(cookie, selected_);
@@ -241,6 +331,7 @@ public:
       candidates_ = engine_.Lookup(composition_text_);
       selected_ = 0;
       page_start_ = 0;
+      expanded_candidates_ = false;
       return UpdateComposition(edit_context, cookie);
     }
     if (action.kind == EditActionKind::Backspace) {
@@ -248,9 +339,11 @@ public:
       candidates_ = engine_.Lookup(composition_text_);
       selected_ = 0;
       page_start_ = 0;
+      expanded_candidates_ = false;
       return composition_text_.empty() ? ClearComposition(cookie) : UpdateComposition(edit_context, cookie);
     }
-    if (action.kind == EditActionKind::Commit) return CommitComposition(cookie, action.index);
+    if (action.kind == EditActionKind::CommitCandidate) return CommitComposition(cookie, action.index);
+    if (action.kind == EditActionKind::CommitRaw) return CommitComposition(cookie, 0, true);
     return ClearComposition(cookie);
   }
 private:
@@ -263,6 +356,24 @@ private:
       case VK_LWIN: case VK_RWIN: win_down_ = down; break;
       default: break;
     }
+  }
+  void ResetTransientKeyboardState() {
+    shift_down_ = false;
+    shift_used_ = false;
+    control_down_ = false;
+    alt_down_ = false;
+    win_down_ = false;
+  }
+  void ReconcileModifierState() {
+    // Alt+Tab and browser renderer switches can route the final modifier key-up
+    // to another process. A stale cached Alt/Ctrl/Win must never make GY treat
+    // normal letters as application shortcuts after focus returns.
+    const auto physically_down = [](int key) {
+      return IsDown(key) || IsPhysicallyDown(key);
+    };
+    if (!physically_down(VK_CONTROL) && !physically_down(VK_LCONTROL) && !physically_down(VK_RCONTROL)) control_down_ = false;
+    if (!physically_down(VK_MENU) && !physically_down(VK_LMENU) && !physically_down(VK_RMENU)) alt_down_ = false;
+    if (!physically_down(VK_LWIN) && !physically_down(VK_RWIN)) win_down_ = false;
   }
   static bool IsShiftKey(WPARAM key) { return gy::keys::IsShiftKey(key); }
   bool IsControlDown() const {
@@ -277,51 +388,66 @@ private:
     return std::min<unsigned>(kCandidatesPerPage,
                               static_cast<unsigned>(candidates_.size()) - page_start_);
   }
+  unsigned PageSizeForCurrentView() const { return expanded_candidates_ ? kExpandedCandidatesPerPage : kCandidatesPerPage; }
   void MoveSelection(int delta) {
     if (candidates_.empty()) return;
     const int count = static_cast<int>(candidates_.size());
     selected_ = static_cast<unsigned>((static_cast<int>(selected_) + delta + count) % count);
-    page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
+    const unsigned page_size = PageSizeForCurrentView();
+    page_start_ = selected_ / page_size * page_size;
   }
-  void MovePage(int delta) {
+  void MovePage(int delta, unsigned page_size) {
     if (candidates_.empty()) return;
-    const int last_page = static_cast<int>((candidates_.size() - 1) / kCandidatesPerPage);
-    const int current_page = static_cast<int>(page_start_ / kCandidatesPerPage);
+    page_size = std::max(1u, page_size);
+    const int last_page = static_cast<int>((candidates_.size() - 1) / page_size);
+    const int current_page = static_cast<int>(page_start_ / page_size);
     const int target_page = std::clamp(current_page + delta, 0, last_page);
-    page_start_ = static_cast<unsigned>(target_page) * kCandidatesPerPage;
+    page_start_ = static_cast<unsigned>(target_page) * page_size;
     selected_ = page_start_;
   }
   void ToggleEnglishMode() {
-    const int next_mode = english_mode_ ? chinese_mode_ : 2;
-    SaveConfiguredInputMode(next_mode);
+    const int next_mode = gy::input_mode::IsEnglish(input_mode_) ? chinese_mode_ : gy::input_mode::kEnglish;
+    gy::input_mode::Write(next_mode);
     ApplyInputMode(next_mode, true);
   }
   void ApplyInputMode(int mode, bool announce) {
-    mode = std::clamp(mode, 0, 2);
-    const bool next_english = mode == 2;
+    mode = gy::input_mode::Normalize(mode);
+    const bool next_english = gy::input_mode::IsEnglish(mode);
     if (mode == input_mode_ && english_mode_ == next_english) return;
+    ++mode_generation_;
     if (!composition_text_.empty()) CancelComposition();
     input_mode_ = mode;
-    if (mode != 2) chinese_mode_ = mode;
+    if (!next_english) chinese_mode_ = mode;
     english_mode_ = next_english;
-    if (announce) engine_.ShowMode(last_caret_, english_mode_);
+    if (next_english) engine_.HideCandidates();
+    if (announce) engine_.ShowMode(last_caret_, input_mode_);
   }
-  void SynchronizeInputMode(bool announce) { ApplyInputMode(ConfiguredInputMode(), announce); }
-  void HandleHostAction(unsigned action) {
+  void SynchronizeInputMode(bool announce) { ApplyInputMode(gy::input_mode::Read(), announce); }
+  bool HandleHostAction(unsigned action) {
     if (action == kToggleModeAction) {
       ToggleEnglishMode();
+    } else if (action == kToggleExpandedAction) {
+      expanded_candidates_ = !expanded_candidates_;
+      ShowCandidates(context_, nullptr);
     } else if (action == kPreviousPageAction) {
-      MovePage(-1);
+      MovePage(-1, kCandidatesPerPage);
       ShowCandidates(context_, nullptr);
     } else if (action == kNextPageAction) {
-      MovePage(1);
+      MovePage(1, kCandidatesPerPage);
+      ShowCandidates(context_, nullptr);
+    } else if (action == kPreviousExpandedPageAction) {
+      MovePage(-1, kExpandedCandidatesPerPage);
+      ShowCandidates(context_, nullptr);
+    } else if (action == kNextExpandedPageAction) {
+      MovePage(1, kExpandedCandidatesPerPage);
       ShowCandidates(context_, nullptr);
     } else {
-      Select(action);
+      return Select(action);
     }
+    return true;
   }
   wchar_t ChinesePunctuation(WPARAM key) {
-    if (english_mode_ || HasShortcutModifier()) return 0;
+    if (gy::input_mode::IsEnglish(input_mode_) || HasShortcutModifier()) return 0;
     const bool shift = IsDown(VK_SHIFT) || shift_down_;
     if (gy::punctuation::IsQuoteKey(key)) {
       const bool double_quote = shift;
@@ -333,18 +459,10 @@ private:
     return gy::punctuation::ChineseCharacter(key, shift);
   }
   bool ShouldEat(WPARAM key) const {
-    // TSF sees every key. Command modifiers must remain with the application so
-    // Ctrl+C/V/F, Alt shortcuts and Win shortcuts work. Shift+punctuation is
-    // still ordinary typing in Chinese mode, not a shortcut or mode toggle.
-    if (HasShortcutModifier() || english_mode_) return false;
-    if (gy::keys::ShouldCaptureChinesePunctuation(key, IsDown(VK_SHIFT) || shift_down_)) return true;
-    if (IsDown(VK_SHIFT)) return false;
-    if (key >= 'A' && key <= 'Z') return true;
-    if (composition_text_.empty()) return false;
-    if (key == VK_OEM_7 || key == VK_BACK || key == VK_ESCAPE || gy::keys::IsCommitKey(key) ||
-        key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT || key == VK_PRIOR || key == VK_NEXT) return true;
-    if (key >= '1' && key <= '5') return static_cast<unsigned>(key - '1') < CurrentPageCandidateCount();
-    return false;
+    return gy::input_capture::ShouldCapture(
+        gy::input_mode::IsEnglish(input_mode_), HasShortcutModifier(),
+        IsDown(VK_SHIFT) || shift_down_, !composition_text_.empty(),
+        CurrentPageCandidateCount(), key);
   }
   void SetContext(ITfContext* context) {
     if (context == context_) return;
@@ -353,7 +471,7 @@ private:
     context_ = context;
     if (context_) context_->AddRef();
   }
-  HRESULT RequestEdit(EditAction action) { if (!context_) { Trace(L"edit.no-context", E_FAIL); return E_FAIL; } auto* edit = new EditSession(this, context_, action); HRESULT session_hr = E_FAIL; const HRESULT hr = context_->RequestEditSession(client_id_, edit, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &session_hr); Trace(L"edit.request", FAILED(hr) ? hr : session_hr); edit->Release(); return FAILED(hr) ? hr : session_hr; }
+  HRESULT RequestEdit(EditAction action) { if (!context_) { Trace(L"edit.no-context", E_FAIL); return E_FAIL; } action.mode_generation = mode_generation_; auto* edit = new EditSession(this, context_, action); HRESULT session_hr = E_FAIL; const HRESULT hr = context_->RequestEditSession(client_id_, edit, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &session_hr); Trace(L"edit.request", FAILED(hr) ? hr : session_hr); edit->Release(); return FAILED(hr) ? hr : session_hr; }
   HRESULT UpdateComposition(ITfContext* edit_context, TfEditCookie cookie) {
     if (!edit_context) return E_FAIL;
     if (!composition_) {
@@ -408,9 +526,9 @@ private:
     selection.range->Release();
     return hr;
   }
-  HRESULT CommitComposition(TfEditCookie cookie, unsigned index) {
+  HRESULT CommitComposition(TfEditCookie cookie, unsigned index, bool raw_text = false) {
     if (!composition_) return S_OK;
-    const bool selected_candidate = index < candidates_.size();
+    const bool selected_candidate = !raw_text && index < candidates_.size();
     const std::wstring pinyin = composition_text_;
     const std::wstring text = selected_candidate ? candidates_[index] : composition_text_;
     ITfRange* range = nullptr;
@@ -427,6 +545,7 @@ private:
     candidates_.clear();
     selected_ = 0;
     page_start_ = 0;
+    expanded_candidates_ = false;
     engine_.HideCandidates();
     return hr;
   }
@@ -449,6 +568,7 @@ private:
     selected_ = 0;
     page_start_ = 0;
     engine_.HideCandidates();
+    expanded_candidates_ = false;
   }
   void CancelComposition() {
     if (composition_ && context_ && client_id_ != TF_CLIENTID_NULL) {
@@ -458,7 +578,7 @@ private:
     ResetCompositionState();
   }
   void ShowCandidates(ITfContext* edit_context, ITfRange* known_range, TfEditCookie cookie = TF_INVALID_EDIT_COOKIE) {
-    if (candidates_.empty()) { engine_.HideCandidates(); return; }
+    if (gy::input_mode::IsEnglish(input_mode_) || candidates_.empty()) { engine_.HideCandidates(); return; }
     RECT caret = last_caret_;
     ITfRange* range = known_range;
     bool release_range = false;
@@ -476,10 +596,10 @@ private:
       }
     }
     if (release_range) range->Release();
-    engine_.ShowCandidates(caret, candidates_, selected_, page_start_, selection_callback_.Endpoint());
+    engine_.ShowCandidates(caret, candidates_, selected_, page_start_, input_mode_, expanded_candidates_, selection_callback_.Endpoint());
   }
-  void Select(unsigned index) { if (index < candidates_.size()) RequestEdit({EditActionKind::Commit, 0, index}); }
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; int input_mode_ = 0; int chinese_mode_ = 0; bool english_mode_ = false; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  bool Select(unsigned index) { if (index >= candidates_.size()) return false; return SUCCEEDED(RequestEdit({EditActionKind::CommitCandidate, 0, index})); }
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 
@@ -537,5 +657,6 @@ extern "C" HRESULT WINAPI DllCanUnloadNow() { return S_FALSE; }
 extern "C" HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) { if (clsid != CLSID_GyTextService) return CLASS_E_CLASSNOTAVAILABLE; auto* factory = new ClassFactory(); const HRESULT hr = factory->QueryInterface(iid, object); factory->Release(); return hr; }
 extern "C" HRESULT WINAPI DllRegisterServer() { const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); const HRESULT com_hr = RegisterComServer(false); const HRESULT profile_hr = SUCCEEDED(com_hr) ? RegisterProfile(false) : com_hr; const HRESULT category_hr = SUCCEEDED(profile_hr) ? RegisterCategory(false) : profile_hr; if (SUCCEEDED(init)) CoUninitialize(); return FAILED(com_hr) ? com_hr : (FAILED(profile_hr) ? profile_hr : category_hr); }
 extern "C" HRESULT WINAPI DllUnregisterServer() { const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); const HRESULT profile_hr = RegisterProfile(true); const HRESULT category_hr = RegisterCategory(true); const HRESULT com_hr = RegisterComServer(true); if (SUCCEEDED(init)) CoUninitialize(); return FAILED(profile_hr) ? profile_hr : (FAILED(category_hr) ? category_hr : com_hr); }
+
 
 

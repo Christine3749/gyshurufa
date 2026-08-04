@@ -1,4 +1,4 @@
-#include "CandidateWindow.h"
+﻿#include "CandidateWindow.h"
 #include "HostProtocol.h"
 #include "PinyinEngine.h"
 #include "SettingsWindow.h"
@@ -86,7 +86,7 @@ bool SendCandidateSelection(const std::wstring& callback_pipe, unsigned index) {
 
 class HostUi final {
 public:
-  HostUi() : candidates_([this](unsigned index) { SendCandidateSelection(callback_pipe_, index); }, [this](const RECT& anchor) { settings_.Show(anchor); }) {}
+  HostUi() : candidates_([this](unsigned index) { return SendCandidateSelection(callback_pipe_, index); }, [this](const RECT& anchor) { settings_.Show(anchor); }) {}
 
   void Apply(UiCommand* command) {
     if (!command) return;
@@ -96,14 +96,15 @@ public:
         // Preedit is already rendered by the focused app through TSF. The Host
         // deliberately draws only the horizontal candidate strip below it.
         candidates_.Show(command->state.caret, L"", command->state.candidates,
-                         command->state.selected, command->state.page_start);
+                         command->state.selected, command->state.page_start, static_cast<int>(command->state.input_mode),
+                         command->state.expanded);
         break;
       case UiCommandKind::HideCandidates:
         callback_pipe_.clear();
         candidates_.Hide();
         break;
       case UiCommandKind::ShowMode:
-        candidates_.ShowMode(command->state.caret, command->state.selected != 0);
+        candidates_.ShowMode(command->state.caret, static_cast<int>(command->state.input_mode));
         break;
     }
   }
@@ -205,7 +206,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   std::thread server(ServeRequests, &engine, &running, ui_thread_id);
   HostUi ui;
   TrayController tray(ModuleDirectory(), [&ui] { ui.ShowSettings(); });
-  const bool show_tray = GetEnvironmentVariableW(L"GYINPUT_HOST_NO_TRAY", nullptr, 0) == 0;
+  // Windows owns input switching and GY exposes its settings from the input UI.
+  // Keep the tray entry diagnostic-only so a normal install never occupies a
+  // permanent notification-area slot. Set GYINPUT_HOST_SHOW_TRAY=1 to opt in.
+  const bool show_tray = GetEnvironmentVariableW(L"GYINPUT_HOST_SHOW_TRAY", nullptr, 0) > 0;
   if (show_tray) tray.Start();
 
   while (GetMessageW(&message, nullptr, 0, 0) > 0) {

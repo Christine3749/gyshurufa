@@ -1,4 +1,5 @@
-#include "CandidateWindow.h"
+﻿#include "CandidateWindow.h"
+#include "CandidateLayout.h"
 
 #include <algorithm>
 #include <iterator>
@@ -9,6 +10,9 @@ constexpr wchar_t kWindowClass[] = L"GyImeCandidateWindow";
 constexpr COLORREF kBrandInk = RGB(17, 19, 24);       // Homepage black #111318
 constexpr COLORREF kBrandPaper = RGB(250, 250, 248);  // Warm off-white
 constexpr COLORREF kGyBlue = RGB(40, 99, 235);           // Candidate selection accent
+constexpr COLORREF kDisclosureBlue = RGB(82, 128, 226);  // Quiet disclosure accent
+constexpr int kDisclosureInsetX = 8;                         // Locked collapsed control anchor
+constexpr int kDisclosureInsetBottom = 8;                    // Locked collapsed control anchor
 
 int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
 
@@ -49,7 +53,7 @@ int CandidateInputMode() {
 }
 
 const wchar_t* ModeLabel(int input_mode) {
-  return input_mode == 1 ? L"繁" : input_mode == 2 ? L"EN" : L"中";
+  return input_mode == 1 ? L"繁" : input_mode == 2 ? L"EN" : L"简";
 }
 
 ATOM RegisterCandidateClass() {
@@ -71,12 +75,42 @@ void Fill(HDC dc, const RECT& rect, COLORREF color) {
   DeleteObject(brush);
 }
 
-void Text(HDC dc, const std::wstring& value, RECT rect, COLORREF color, UINT format, HFONT font) {
+void Text(HDC dc, const std::wstring& value, RECT rect, COLORREF color, UINT format, HFONT font,
+          bool allow_ellipsis = true) {
   SelectObject(dc, font);
   SetTextColor(dc, color);
-  DrawTextW(dc, value.c_str(), -1, &rect, format | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+  DrawTextW(dc, value.c_str(), -1, &rect,
+            format | DT_SINGLELINE | DT_VCENTER | (allow_ellipsis ? DT_END_ELLIPSIS : 0));
 }
 
+// The disclosure control is drawn as a fine, rounded chevron rather than a
+// glyph so it stays balanced at every Windows DPI scale and font fallback.
+void DrawDisclosureChevron(HDC dc, const RECT& rect, bool expanded, COLORREF color, UINT dpi) {
+  // Position invariant: in the collapsed strip the disclosure stays at the
+  // lower-left of its own cell, before the mode indicator. Style changes must
+  // not alter these coordinates.
+  const int center_x = expanded ? (rect.left + rect.right) / 2 : rect.left + Scale(dpi, kDisclosureInsetX);
+  const int center_y = expanded ? (rect.top + rect.bottom) / 2 : rect.bottom - Scale(dpi, kDisclosureInsetBottom);
+  const int half_width = Scale(dpi, 5);
+  const int half_height = Scale(dpi, 3);
+  LOGBRUSH brush{BS_SOLID, color, 0};
+  const HPEN pen = ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+                                std::max(1, Scale(dpi, 1)), &brush, 0, nullptr);
+  const HGDIOBJ old_pen = SelectObject(dc, pen);
+  POINT points[3]{};
+  if (expanded) {
+    points[0] = POINT{center_x - half_width, center_y + half_height};
+    points[1] = POINT{center_x, center_y - half_height};
+    points[2] = POINT{center_x + half_width, center_y + half_height};
+  } else {
+    points[0] = POINT{center_x - half_width, center_y - half_height};
+    points[1] = POINT{center_x, center_y + half_height};
+    points[2] = POINT{center_x + half_width, center_y - half_height};
+  }
+  Polyline(dc, points, 3);
+  SelectObject(dc, old_pen);
+  DeleteObject(pen);
+}
 int Measure(HDC dc, HFONT font, const std::wstring& text) {
   SelectObject(dc, font);
   SIZE size{};
@@ -139,15 +173,13 @@ void DrawGyWordmark(HDC dc, const RECT& bounds, COLORREF color) {
   DeleteObject(brush);
 }}  // namespace
 
-CandidateWindow::CandidateWindow(std::function<void(unsigned)> choose, std::function<void(const RECT&)> open_settings)
+CandidateWindow::CandidateWindow(std::function<bool(unsigned)> choose, std::function<void(const RECT&)> open_settings)
     : choose_(std::move(choose)), open_settings_(std::move(open_settings)) {}
 CandidateWindow::~CandidateWindow() { Hide(); }
 
 void CandidateWindow::Layout(UINT dpi, int available_width) {
   dpi_ = dpi;
   candidate_rects_.clear();
-  // At 175% scaling the old 38px logical chips became a heavy 67px. Keep a
-  // single compact strip whose only leading state is 中 / EN.
   const int padding = Scale(dpi, 6);
   const int gap = Scale(dpi, 3);
   const int chip_height = Scale(dpi, candidate_point_size_ + 14);
@@ -158,28 +190,46 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
 
   const std::wstring mode_label = ModeLabel(input_mode_);
   const int mode_width = Measure(dc, status_font, mode_label) + Scale(dpi, 18);
-  // Keep the first candidate directly below the application's preedit text.
-  // Mode and paging controls deliberately live after the candidate strip.
-  // Host window coordinates are physical pixels. Three pixels here is exactly
-  // the visual nudge requested at 175% scaling, not three scaled DIPs.
-  int x = std::max(0, padding - 1);
-  int right_edge = padding;
-  const unsigned capacity = expanded_ ? kCandidatesPerPage * 4 : kCandidatesPerPage;
+  const int page_button_width = Scale(dpi, 26);
+  const int page_indicator_width = Scale(dpi, 42);
+  const int expand_width = Scale(dpi, 24);
+  const bool expanded_grid = expanded_ && !mode_popup_;
+  const unsigned capacity = expanded_grid ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
   const unsigned visible_count = mode_popup_ || page_start_ >= candidates_.size() ? 0 : std::min<unsigned>(capacity,
       static_cast<unsigned>(candidates_.size()) - page_start_);
-  const bool has_pages = !mode_popup_ && candidates_.size() > kCandidatesPerPage;
-  const int pager_width = 0;
-  const int expand_width = has_pages ? Scale(dpi, 28) : 0;
-  const int control_width = mode_popup_ ? 0 : mode_width + gap + expand_width;
+  const bool can_expand = !mode_popup_ && candidates_.size() > kCandidatesPerPage;
+  int x = std::max(0, padding - 1);
+  int right_edge = padding;
   const int non_word_width = Scale(dpi, 24);
+  const int collapsed_controls = mode_popup_ ? 0 : mode_width + (can_expand ? gap + expand_width : 0);
   const int total_gap = gap * static_cast<int>(visible_count > 0 ? visible_count - 1 : 0);
-  const int word_room = std::max(Scale(dpi, 22),
-      (max_width - x - padding - control_width - total_gap) /
-          std::max(1, static_cast<int>(visible_count)) - non_word_width);
-  const bool expanded_grid = expanded_ && !mode_popup_;
-  const unsigned grid_columns = std::min<unsigned>(kCandidatesPerPage, std::max(1u, visible_count));
-  const int grid_cell_width = std::max(Scale(dpi, 54),
+  // Four Han characters are a normal Chinese word, not an overflow case. Grow
+  // the compact row to fit that minimum before considering long-word clipping.
+  const int four_character_word_width = Measure(dc, candidate_font, L"输入法候");
+  const int word_room = std::max(four_character_word_width,
+      std::max(Scale(dpi, 22),
+          (max_width - x - padding - collapsed_controls - total_gap) /
+              std::max(1, static_cast<int>(visible_count)) - non_word_width));
+
+  if (expanded_grid) {
+    grid_columns_ = expanded_column_target_;
+  } else {
+    grid_columns_ = kCandidatesPerPage;
+  }
+  // Expanded mode is a fixed five-column matrix. Do not shrink it to the
+  // visible candidate count: six candidates must render as 5 + 1, never 3 x 2.
+  const unsigned grid_columns = expanded_grid ? kExpandedColumns
+                                              : std::min<unsigned>(grid_columns_, std::max(1u, visible_count));
+  const int fitted_grid_cell_width = std::max(Scale(dpi, 54),
       (max_width - 2 * padding - gap * static_cast<int>(grid_columns - 1)) / static_cast<int>(grid_columns));
+  // Keep the approved five-column geometry, but make the expanded matrix a
+  // little denser on 13/14-inch screens. This only reduces horizontal air:
+  // row rhythm, footer placement, disclosure-arrow geometry and VI colors
+  // intentionally remain untouched.
+  const int comfortable_grid_cell_width = Scale(dpi, grid_columns >= 6 ? 118 : grid_columns == 4 ? 102 : 110);
+  const int grid_cell_width = expanded_grid
+      ? std::min(comfortable_grid_cell_width, fitted_grid_cell_width)
+      : fitted_grid_cell_width;
 
   for (unsigned i = 0; i < visible_count; ++i) {
     const int word_width = std::min(Measure(dc, candidate_font, candidates_[page_start_ + i]), word_room);
@@ -190,22 +240,47 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
     const int top = expanded_grid ? padding + static_cast<int>(row) * (chip_height + gap) : padding;
     candidate_rects_.push_back(RECT{left, top, left + chip_width, top + chip_height});
     if (!expanded_grid) x += chip_width + gap;
-    right_edge = expanded_grid ? padding + static_cast<int>(grid_columns) * chip_width + gap * static_cast<int>(grid_columns - 1) : std::max(right_edge, x - gap);
+    right_edge = expanded_grid ? left + chip_width : std::max(right_edge, x - gap);
   }
+  // A five-column grid owns all five columns even when the current page only
+  // has one, six, or twenty candidates. Deriving the window width from the
+  // final visible candidate clipped columns 4–5 whenever that candidate was
+  // in an earlier column (for example 6 candidates used to look like 3 × 2).
+  // Keep the fixed grid boundary independent from the candidate count.
+  const int grid_right = expanded_grid
+      ? gy::candidate_layout::GridRight(padding, grid_cell_width, gap, grid_columns)
+      : right_edge;
   mode_rect_ = RECT{};
   previous_page_rect_ = RECT{};
   next_page_rect_ = RECT{};
   page_indicator_rect_ = RECT{};
   expand_rect_ = RECT{};
   if (!mode_popup_) {
-    const int control_top = expanded_grid ? candidate_rects_.back().bottom + gap : padding;
-    const int mode_left = expanded_grid ? padding : right_edge + gap;
-    mode_rect_ = RECT{mode_left, control_top, mode_left + mode_width, control_top + chip_height};
-    right_edge = mode_rect_.right;
-    if (has_pages) {
-      const int expand_left = right_edge + gap;
-      expand_rect_ = RECT{expand_left, control_top, expand_left + expand_width, control_top + chip_height};
-      right_edge = expand_rect_.right;
+    const int control_top = expanded_grid ? (candidate_rects_.empty() ? padding : candidate_rects_.back().bottom + gap) : padding;
+    if (expanded_grid) {
+      // Locked order: disclosure first, then mode label.
+      expand_rect_ = RECT{padding, control_top, padding + expand_width, control_top + chip_height};
+      const int mode_left = expand_rect_.right + gap;
+      mode_rect_ = RECT{mode_left, control_top, mode_left + mode_width, control_top + chip_height};
+      const bool has_more_pages = page_start_ > 0 || page_start_ + capacity < candidates_.size();
+      if (has_more_pages) {
+        const int next_left = grid_right - page_button_width;
+        next_page_rect_ = RECT{next_left, control_top, next_left + page_button_width, control_top + chip_height};
+        const int indicator_left = next_page_rect_.left - gap - page_indicator_width;
+        page_indicator_rect_ = RECT{indicator_left, control_top, indicator_left + page_indicator_width, control_top + chip_height};
+        const int previous_left = page_indicator_rect_.left - gap - page_button_width;
+        previous_page_rect_ = RECT{previous_left, control_top, previous_left + page_button_width, control_top + chip_height};
+      }
+    } else {
+      // Locked order: candidates → disclosure → divider → 中 / 繁 / EN.
+      if (can_expand) {
+        const int expand_left = right_edge + gap;
+        expand_rect_ = RECT{expand_left, control_top, expand_left + expand_width, control_top + chip_height};
+        right_edge = expand_rect_.right;
+      }
+      const int mode_left = right_edge + gap;
+      mode_rect_ = RECT{mode_left, control_top, mode_left + mode_width, control_top + chip_height};
+      right_edge = mode_rect_.right;
     }
   } else {
     mode_rect_ = RECT{padding, padding, padding + mode_width, padding + chip_height};
@@ -215,18 +290,21 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   DeleteObject(candidate_font);
   DeleteObject(status_font);
 
-  content_width_ = std::clamp(right_edge + padding, Scale(dpi, 48), max_width);
+  // Do not clamp a normal four-character candidate back into an ellipsis.
+  content_width_ = expanded_grid ? grid_right + padding : std::max(Scale(dpi, 48), right_edge + padding);
   content_height_ = expanded_grid ? mode_rect_.bottom + padding : chip_height + 2 * padding;
   pinyin_rect_ = RECT{};
   candidate_strip_rect_ = RECT{0, 0, content_width_, content_height_};
 }
 void CandidateWindow::Show(const RECT& caret, const std::wstring& pinyin,
-                           const std::vector<std::wstring>& candidates, unsigned selected,
-                           unsigned page_start) {
-  const bool composition_changed = pinyin_ != pinyin;
+                            const std::vector<std::wstring>& candidates, unsigned selected,
+                            unsigned page_start, int input_mode, bool expanded) {
   mode_popup_ = false;
-  english_mode_ = false;
-  if (composition_changed) expanded_ = false;
+  input_mode_ = std::clamp(input_mode, 0, 2);
+  english_mode_ = input_mode_ == 2;
+  // The TSF DLL owns the state. Never let Host-local click state override a
+  // keyboard ↓ expansion requested by the active application.
+  expanded_ = expanded;
   ShowInternal(caret, pinyin, candidates, selected, page_start);
 }
 
@@ -242,12 +320,12 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
     page_start_ = 0;
     selected_ = 0;
   } else {
-    const unsigned last_page = static_cast<unsigned>((candidates_.size() - 1) / kCandidatesPerPage) * kCandidatesPerPage;
+    const unsigned page_size = expanded_ ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
+    const unsigned last_page = static_cast<unsigned>((candidates_.size() - 1) / page_size) * page_size;
     page_start_ = std::min(page_start, last_page);
     selected_ = std::min<unsigned>(selected, static_cast<unsigned>(candidates_.size() - 1));
-  input_mode_ = CandidateInputMode();
-    if (selected_ < page_start_ || selected_ >= page_start_ + kCandidatesPerPage) {
-      page_start_ = selected_ / kCandidatesPerPage * kCandidatesPerPage;
+    if (selected_ < page_start_ || selected_ >= page_start_ + page_size) {
+      page_start_ = selected_ / page_size * page_size;
     }
   }
   candidate_point_size_ = CandidatePointSize();
@@ -273,7 +351,16 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   if (creating) SetWindowPos(hwnd_, HWND_TOPMOST, caret.left, caret.bottom, 1, 1, SWP_NOACTIVATE | SWP_NOREDRAW);
   const UINT dpi = WindowDpi(hwnd_);
   const int monitor_width = static_cast<int>(work_area.right - work_area.left);
-  const int available_width = std::min(Scale(dpi, 520), std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20)));
+  // Product rule: expanded candidates always use a fixed 5 × 5 grid. Screen
+  // size may constrain total width, never the number of columns.
+  expanded_column_target_ = kExpandedColumns;
+  // Expanded mode must stay visually compact. The previous monitor-wide cap
+  // made a 5 × 5 grid stretch across a large display after high-DPI scaling.
+  // Keep five columns, but cap the panel at a comfortable physical width so
+  // the confirmed GY layout is the same on laptop and desktop screens.
+  const int monitor_available = std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20));
+  const int compact_panel_cap = expanded_ ? 820 : 720;
+  const int available_width = std::min(monitor_available, compact_panel_cap);
   Layout(dpi, available_width);
   const int width = content_width_;
   const int height = content_height_;
@@ -295,12 +382,12 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 }
 
-void CandidateWindow::ShowMode(const RECT& caret, bool english_mode) {
+void CandidateWindow::ShowMode(const RECT& caret, int input_mode) {
   mode_popup_ = true;
-  english_mode_ = english_mode;
+  input_mode_ = std::clamp(input_mode, 0, 2);
+  english_mode_ = input_mode_ == 2;
   ShowInternal(caret, L"", {}, 0, 0);
   if (hwnd_) SetTimer(hwnd_, 1, 700, nullptr);
-  input_mode_ = english_mode ? 2 : CandidateInputMode();
 }
 void CandidateWindow::OpenSettings() {
   if (!open_settings_ || !hwnd_) return;
@@ -370,21 +457,24 @@ LRESULT CALLBACK CandidateWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpa
       return 0;
     }
     if (!IsRectEmpty(&self->previous_page_rect_) && PtInRect(&self->previous_page_rect_, point)) {
-      self->choose_(kPreviousPageAction);
+      self->choose_(self->expanded_ ? kPreviousExpandedPageAction : kPreviousPageAction);
       return 0;
     }
     if (!IsRectEmpty(&self->expand_rect_) && PtInRect(&self->expand_rect_, point)) {
       self->expanded_ = !self->expanded_;
       self->ShowInternal(self->caret_rect_, self->pinyin_, self->candidates_, self->selected_, self->page_start_);
+      self->choose_(kToggleExpandedAction);
       return 0;
     }
     if (!IsRectEmpty(&self->next_page_rect_) && PtInRect(&self->next_page_rect_, point)) {
-      self->choose_(kNextPageAction);
+      self->choose_(self->expanded_ ? kNextExpandedPageAction : kNextPageAction);
       return 0;
     }
     for (unsigned i = 0; i < self->candidate_rects_.size(); ++i) {
       if (PtInRect(&self->candidate_rects_[i], point)) {
-        self->choose_(self->page_start_ + i);
+        if (self->choose_(self->page_start_ + i)) {
+          self->expanded_ = false;
+        }
         break;
       }
     }
@@ -396,10 +486,11 @@ LRESULT CALLBACK CandidateWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpa
 void CandidateWindow::Paint(HDC dc) {
   RECT client{};
   GetClientRect(hwnd_, &client);
-  // The website is quiet; the live input surface still needs a clear GY accent.
-  const COLORREF background = visual_style_ == 0 ? RGB(18, 25, 39) : dark_theme_ ? kBrandInk : RGB(252, 252, 251);
-  const COLORREF border = visual_style_ == 0 ? RGB(52, 73, 109) : dark_theme_ ? RGB(52, 57, 67) : RGB(225, 229, 235);
-  const COLORREF muted = visual_style_ == 0 ? RGB(164, 185, 221) : dark_theme_ ? RGB(148, 158, 174) : RGB(96, 108, 122);
+  // Match the official GY surface: near-black, quiet neutral dividers, and
+  // blue only for the active choice or an interactive affordance.
+  const COLORREF background = visual_style_ == 0 ? kBrandInk : dark_theme_ ? kBrandInk : RGB(252, 252, 251);
+  const COLORREF border = visual_style_ == 0 ? RGB(49, 53, 61) : dark_theme_ ? RGB(52, 57, 67) : RGB(225, 229, 235);
+  const COLORREF muted = visual_style_ == 0 ? RGB(151, 157, 169) : dark_theme_ ? RGB(148, 158, 174) : RGB(96, 108, 122);
   const COLORREF text = dark_theme_ ? RGB(246, 248, 252) : kBrandInk;
   const COLORREF selected_background = visual_style_ == 2 ? RGB(72, 81, 96) : kGyBlue;
   const COLORREF selected_text = RGB(255, 255, 255);
@@ -417,12 +508,11 @@ void CandidateWindow::Paint(HDC dc) {
   const HFONT key_font = Font(dpi_, 10, FW_SEMIBOLD);
   const HFONT status_font = Font(dpi_, 12, FW_SEMIBOLD);
   Text(dc, ModeLabel(input_mode_), mode_rect_, kGyBlue, DT_CENTER, status_font);
-  if (!mode_popup_) {
-    const int divider = mode_rect_.right + Scale(dpi_, 2);
-    Fill(dc, RECT{divider, mode_rect_.top + Scale(dpi_, 6), divider + 1,
-                 mode_rect_.bottom - Scale(dpi_, 6)}, border);
+  if (!mode_popup_ && !IsRectEmpty(&expand_rect_)) {
+    const int divider = expand_rect_.right + Scale(dpi_, 1);
+    Fill(dc, RECT{divider, expand_rect_.top + Scale(dpi_, 7), divider + 1,
+                 expand_rect_.bottom - Scale(dpi_, 7)}, border);
   }
-
   for (unsigned i = 0; i < candidate_rects_.size(); ++i) {
     const unsigned candidate_index = page_start_ + i;
     const RECT chip_rect = candidate_rects_[i];
@@ -438,30 +528,38 @@ void CandidateWindow::Paint(HDC dc) {
       DeleteObject(brush);
     }
     RECT key{chip_rect.left + Scale(dpi_, 6), chip_rect.top, chip_rect.left + Scale(dpi_, 19), chip_rect.bottom};
-    Text(dc, std::to_wstring((candidate_index % kCandidatesPerPage) + 1), key, selected ? selected_text : muted, DT_CENTER, key_font);
+    const bool has_shortcut = !expanded_ || i < kCandidatesPerPage;
+    Text(dc, has_shortcut ? std::to_wstring(i + 1) : L"", key, selected ? selected_text : muted, DT_CENTER, key_font);
     RECT word{chip_rect.left + Scale(dpi_, 21), chip_rect.top, chip_rect.right - Scale(dpi_, 5), chip_rect.bottom};
-    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font);
+    // Candidate text is an input decision, not decorative copy. Never turn
+    // it into “…”: Layout reserves enough room for the engine's bounded
+    // phrases, and users can see exactly what Enter or its numeric shortcut
+    // will commit.
+    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, false);
   }
 
   if (!mode_popup_ && !IsRectEmpty(&next_page_rect_)) {
     const bool can_go_previous = page_start_ > 0;
-    const bool can_go_next = page_start_ + kCandidatesPerPage < candidates_.size();
+    const unsigned page_size = expanded_ ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
+    const bool can_go_next = page_start_ + page_size < candidates_.size();
     const HFONT pager_font = Font(dpi_, 18, FW_SEMIBOLD);
-    const unsigned page = page_start_ / kCandidatesPerPage + 1;
-    const unsigned pages = static_cast<unsigned>((candidates_.size() + kCandidatesPerPage - 1) / kCandidatesPerPage);
-    Text(dc, L"‹", previous_page_rect_, can_go_previous ? kGyBlue : muted, DT_CENTER, pager_font);
+    const unsigned page = page_start_ / page_size + 1;
+    const unsigned pages = static_cast<unsigned>((candidates_.size() + page_size - 1) / page_size);
+    Text(dc, L"↑", previous_page_rect_, can_go_previous ? kGyBlue : muted, DT_CENTER, pager_font);
     Text(dc, std::to_wstring(page) + L" / " + std::to_wstring(pages),
          page_indicator_rect_, muted, DT_CENTER, key_font);
-    Text(dc, L"›", next_page_rect_, can_go_next ? kGyBlue : muted, DT_CENTER, pager_font);
+    Text(dc, L"↓", next_page_rect_, can_go_next ? kGyBlue : muted, DT_CENTER, pager_font);
     DeleteObject(pager_font);
   }
   if (!mode_popup_ && !IsRectEmpty(&expand_rect_)) {
-    const HFONT arrow_font = Font(dpi_, 16, FW_SEMIBOLD);
-    Text(dc, expanded_ ? L"⌃" : L"⌄", expand_rect_, kGyBlue, DT_CENTER, arrow_font);
-    DeleteObject(arrow_font);
+    DrawDisclosureChevron(dc, expand_rect_, expanded_, kDisclosureBlue, dpi_);
   }
 
   DeleteObject(candidate_font);
   DeleteObject(key_font);
   DeleteObject(status_font);
 }
+
+
+
+

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Download, ShieldCheck, Check, Copy, Laptop, FileText, ExternalLink } from 'lucide-react';
 import { BRAND_INFO } from '../../data/content';
+import { formatReleaseBytes, formatReleaseDate, useReleaseStatus } from '../../hooks/useReleaseStatus';
 
 interface DownloadModalProps {
   isOpen: boolean;
@@ -10,18 +11,23 @@ interface DownloadModalProps {
 export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const [downloadStarted, setDownloadStarted] = useState(false);
+  const { release, loading } = useReleaseStatus();
+  const windows = release?.platforms.windows;
+  const windowsReady = Boolean(windows?.available);
 
   if (!isOpen) return null;
 
   const handleCopyHash = () => {
-    navigator.clipboard.writeText(BRAND_INFO.sha256);
+    if (!windowsReady) return;
+    navigator.clipboard.writeText(windows.sha256);
     setCopiedHash(true);
     setTimeout(() => setCopiedHash(false), 2000);
   };
 
   const handleTriggerDownload = () => {
+    if (!windowsReady || !windows?.downloadUrl) return;
     setDownloadStarted(true);
-    window.location.assign(BRAND_INFO.downloadUrl);
+    window.location.assign(windows.downloadUrl);
   };
 
   return (
@@ -40,10 +46,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                 GY输入法 for Windows
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  {BRAND_INFO.version}
+                  {windows ? `v${windows.version}` : loading ? '读取中' : '验证中'}
                 </span>
               </h3>
-              <p className="text-xs text-slate-500">官方安装包 · Windows 10 / 11 (64-bit)</p>
+              <p className="text-xs text-slate-500">官方预览安装包 · Windows 10 / 11 (64-bit)</p>
             </div>
           </div>
           <button
@@ -61,27 +67,33 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
           <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-semibold text-slate-900">GYShurufa_Setup_x64.exe</p>
+                <p className="text-sm font-semibold text-slate-900">{windows?.filename ?? 'Windows 安装包验证中'}</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
-                  <span>文件大小：{BRAND_INFO.fileSize}</span>
+                  <span>文件大小：{formatReleaseBytes(windows?.bytes)}</span>
                   <span>•</span>
-                  <span>更新日期：{BRAND_INFO.releaseDate}</span>
+                  <span>更新日期：{formatReleaseDate(release?.publishedAtUtc)}</span>
                 </div>
               </div>
 
               <button
                 onClick={handleTriggerDownload}
-                className="inline-flex items-center justify-center px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-medium text-sm transition-all shadow-lg shadow-blue-600/20 gap-2 shrink-0"
+                disabled={!windowsReady}
+                className="inline-flex items-center justify-center px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed text-white font-medium text-sm transition-all shadow-lg shadow-blue-600/20 gap-2 shrink-0"
               >
                 <Download className="w-4 h-4" />
-                {downloadStarted ? '重新下载' : '立即免费下载'}
+                {windowsReady ? (downloadStarted ? '重新下载' : '立即免费下载') : '安装包验证中'}
               </button>
             </div>
 
+            {!windows && (
+              <div className="p-3 rounded-lg bg-amber-50 text-amber-800 border border-amber-200/60 text-xs">
+                当前没有可验证的 Windows 安装包。为避免混装，下载入口会保持关闭。
+              </div>
+            )}
             {downloadStarted && (
               <div className="p-3 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200/60 text-xs flex items-center gap-2 animate-fadeIn">
                 <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>下载已触发！如提示安全警告，请选择“保留”或“信任发布者 GSYEN”。</span>
+                <span>下载已触发。请仅从 shurufa.wang 下载，并在安装前核对下方 SHA-256。</span>
               </div>
             )}
           </div>
@@ -91,10 +103,11 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-blue-600" />
-                安装包安全签名校验 (SHA-256)
+                安装包完整性校验 (SHA-256)
               </span>
               <button
                 onClick={handleCopyHash}
+                disabled={!windows?.sha256}
                 className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
               >
                 {copiedHash ? (
@@ -111,7 +124,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               </button>
             </div>
             <div className="p-3 rounded-lg bg-slate-900 text-slate-300 font-mono text-xs break-all leading-relaxed select-all">
-              {BRAND_INFO.sha256}
+              {windows?.sha256 ?? '发布验证中'}
             </div>
           </div>
 
@@ -155,3 +168,5 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     </div>
   );
 };
+
+

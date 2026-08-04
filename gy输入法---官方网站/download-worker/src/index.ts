@@ -3,6 +3,7 @@ interface R2ObjectLike {
   httpEtag: string;
   body: ReadableStream;
   writeHttpMetadata(headers: Headers): void;
+  text(): Promise<string>;
 }
 interface R2Bucket {
   get(key: string): Promise<R2ObjectLike | null>;
@@ -11,28 +12,32 @@ interface Env {
   RELEASES: R2Bucket;
 }
 
-const files: Record<string, { key: string; name: string; type: string }> = {
-  "/latest.exe": {
-    key: "releases/0.9.15/GYInputSetup-0.9.15.exe",
-    name: "GYInputSetup-0.9.15.exe",
-    type: "application/vnd.microsoft.portable-executable",
-  },
-  "/latest.zip": {
-    key: "releases/0.9.15/GYInput-0.9.15.zip",
-    name: "GYInput-0.9.15.zip",
-    type: "application/zip",
-  },
-  "/latest.pkg": {
-    key: "releases/0.9.15/GYInput-0.9.15-arm64.pkg",
-    name: "GYInput-0.9.15-arm64.pkg",
-    type: "application/octet-stream",
-  },
-  "/latest.pkg.sha256": {
-    key: "releases/0.9.15/GYInput-0.9.15-arm64.pkg.sha256",
-    name: "GYInput-0.9.15-arm64.pkg.sha256",
-    type: "text/plain; charset=utf-8",
-  },
-};
+type Artifact = { key: string; name: string; type: string; sha256?: string };
+type ReleaseManifest = { version: string; channel?: string; artifacts: Record<string, Artifact> };
+
+async function readManifest(env: Env, key: string): Promise<ReleaseManifest | null> {
+  const object = await env.RELEASES.get(key);
+  if (!object) return null;
+  try {
+    const manifest = JSON.parse(await object.text()) as ReleaseManifest;
+    if (!manifest.version || !manifest.artifacts) return null;
+    return manifest;
+  } catch {
+    return null;
+  }
+}
+
+function artifactResponse(request: Request, file: Artifact, object: R2ObjectLike): Response {
+  const headers = new Headers();
+  headers.set("Content-Type", file.type);
+  headers.set("Content-Length", String(object.size));
+  headers.set("Content-Disposition", `attachment; filename="${file.name}"`);
+  headers.set("X-Content-Type-Options", "nosniff");
+  object.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("ETag", object.httpEtag);
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -40,21 +45,27 @@ export default {
       return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
     }
     const url = new URL(request.url);
-    const file = files[url.pathname];
+    const candidate = url.pathname.match(/^\/download\/candidate\/(\d+\.\d+\.\d+)\/(.+)$/);
+    if (candidate) {
+      const [, version] = candidate;
+      const manifest = await readManifest(env, `releases/${version}/release.json`);
+      if (!manifest || manifest.version !== version || manifest.channel !== "candidate") {
+        return new Response("Candidate release unavailable", { status: 404 });
+      }
+      const file = manifest.artifacts[url.pathname];
+      if (!file) return new Response("Not Found", { status: 404 });
+      const object = await env.RELEASES.get(file.key);
+      if (!object) return new Response("Release unavailable", { status: 404 });
+      return artifactResponse(request, file, object);
+    }
+
+    const manifest = await readManifest(env, "releases/latest.json");
+    if (!manifest) return new Response("Release manifest unavailable", { status: 503 });
+    const file = manifest.artifacts[url.pathname];
     if (!file) return new Response("Not Found", { status: 404 });
 
     const object = await env.RELEASES.get(file.key);
     if (!object) return new Response("Release unavailable", { status: 404 });
-
-    const headers = new Headers();
-    headers.set("Content-Type", file.type);
-    headers.set("Content-Length", String(object.size));
-    headers.set("Content-Disposition", `attachment; filename="${file.name}"`);
-    // "latest" must never continue serving a previous installer after a release switch.
-    headers.set("X-Content-Type-Options", "nosniff");
-    object.writeHttpMetadata(headers);
-    headers.set("Cache-Control", "no-store");
-    headers.set("ETag", object.httpEtag);
-    return new Response(request.method === "HEAD" ? null : object.body, { headers });
+    return artifactResponse(request, file, object);
   },
 };

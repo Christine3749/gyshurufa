@@ -18,6 +18,9 @@ try {
   $statePath = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $hostPath))) 'install-state.json'
   $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
   $coreVersion = if ($state) { [string]$state.coreVersion } else { '' }
+  if ($state -and $state.requiresClientReload -eq $true) {
+    Write-Host '[提示] 新版 TSF 核心已注册，但已打开的应用可能仍加载旧 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。' -ForegroundColor Yellow
+  }
   Check (-not [string]::IsNullOrWhiteSpace($coreVersion)) "当前核心版本：$coreVersion" '没有找到当前核心版本状态。'
   Check ($hostVersion -eq $coreVersion) "Host / 核心版本一致：$hostVersion" "Host / 核心版本不一致：Host=$hostVersion，Core=$coreVersion。请重新安装同一版本。"
   Check (-not [string]::IsNullOrWhiteSpace($hostVersion)) "当前 Host 版本：$hostVersion" '没有找到当前 Host 版本注册。'

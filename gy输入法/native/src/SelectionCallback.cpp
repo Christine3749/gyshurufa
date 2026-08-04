@@ -1,4 +1,4 @@
-#include "SelectionCallback.h"
+﻿#include "SelectionCallback.h"
 
 #include "HostProtocol.h"
 
@@ -59,7 +59,7 @@ bool ParseIndex(const std::wstring& value, unsigned* index) {
 }
 }  // namespace
 
-SelectionCallback::SelectionCallback(HINSTANCE module, std::function<void(unsigned)> on_select)
+SelectionCallback::SelectionCallback(HINSTANCE module, std::function<bool(unsigned)> on_select)
     : module_(module), on_select_(std::move(on_select)) {}
 
 SelectionCallback::~SelectionCallback() { Stop(); }
@@ -128,8 +128,11 @@ void SelectionCallback::Run() {
       std::wstring response = L"error";
       if (gy::host::ReadMessage(pipe, &type, &payload) && type == gy::host::MessageType::SelectCandidate) {
         unsigned index = 0;
-        if (ParseIndex(payload, &index) && hwnd_ && PostMessageW(hwnd_, kSelectMessage, index, 0)) {
-          response = L"ok";
+        if (ParseIndex(payload, &index) && hwnd_) {
+          DWORD_PTR handled = 0;
+          const LRESULT delivered = SendMessageTimeoutW(hwnd_, kSelectMessage, index, 0,
+              SMTO_ABORTIFHUNG | SMTO_BLOCK, 350, &handled);
+          if (delivered != 0 && handled != 0) response = L"ok";
         }
       }
       gy::host::WriteMessage(pipe, gy::host::MessageType::SelectCandidate, response);
@@ -147,8 +150,10 @@ LRESULT CALLBACK SelectionCallback::WindowProc(HWND hwnd, UINT message, WPARAM w
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
   }
   if (self && message == kSelectMessage) {
-    if (self->on_select_) self->on_select_(static_cast<unsigned>(wparam));
-    return 0;
+    return self->on_select_ && self->on_select_(static_cast<unsigned>(wparam)) ? 1 : 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
+
+
+

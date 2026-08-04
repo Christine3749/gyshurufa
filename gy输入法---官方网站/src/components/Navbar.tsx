@@ -171,7 +171,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <span className="flex items-center gap-2">
                 <HardDrive className="w-4 h-4 text-slate-600" />
-                查看更新日志 ({BRAND_INFO.version})
+                查看更新日志
               </span>
               <ChevronRight className="w-4 h-4 text-slate-400" />
             </button>

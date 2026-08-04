@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 
@@ -12,7 +12,7 @@
 // therefore remains the only component that can request an edit session.
 class SelectionCallback {
 public:
-  SelectionCallback(HINSTANCE module, std::function<void(unsigned)> on_select);
+  SelectionCallback(HINSTANCE module, std::function<bool(unsigned)> on_select);
   ~SelectionCallback();
   SelectionCallback(const SelectionCallback&) = delete;
   SelectionCallback& operator=(const SelectionCallback&) = delete;
@@ -30,7 +30,8 @@ private:
   HWND hwnd_ = nullptr;
   HANDLE ready_event_ = nullptr;
   std::wstring endpoint_;
-  std::function<void(unsigned)> on_select_;
+  std::function<bool(unsigned)> on_select_;
   std::atomic_bool running_{false};
   std::thread worker_;
 };
+

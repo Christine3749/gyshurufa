@@ -5,16 +5,9 @@ export const BRAND_INFO = {
   englishName: 'GY Shurufa',
   parentBrand: 'GSYEN',
   domain: 'shurufa.wang',
-  slogan: '让每一次输入，成为更好的开始。',
+  slogan: 'GY输入法，AI时代的输入法。',
   subSlogan: 'GY输入法，GSYEN 智能工作生态的一部分。',
-  platform: 'Windows 10 / Windows 11',
-  version: 'v0.9.15',
-  releaseDate: '2026年8月3日',
-  fileSize: '9.58 MB',
-  architecture: 'x64 / ARM64 原生架构',
-  sha256: '77DCFF6819A3316C8DB25563F2C24D13554371FF6DF56C5173D4FE37949CBC1E',
-  // Keep the public download under the official site; Vercel proxies this path to the R2-backed Worker.
-  downloadUrl: '/download/latest.exe'
+  platform: 'Windows / macOS / Android / iOS / Linux'
 };
 
 export const TYPING_SCENARIOS: TypingScenario[] = [
@@ -25,7 +18,7 @@ export const TYPING_SCENARIOS: TypingScenario[] = [
     rawInputDisplay: 'gy shurufa',
     candidates: [
       { id: 1, word: 'GY输入法', tag: '品牌词库', description: '快捷输出精美品牌名' },
-      { id: 2, word: '让每一次输入，成为更好的开始。', tag: 'Slogan长句', description: '一键自动联想完整标语' },
+      { id: 2, word: 'GY输入法，AI时代的输入法。', tag: 'Slogan长句', description: '一键自动联想完整标语' },
       { id: 3, word: '工业级本地轻量引擎', tag: '本地计算' },
       { id: 4, word: '高频专业词汇补全', tag: '本地智能' },
       { id: 5, word: '给予输入法', tag: '拼音候选' }
@@ -265,3 +258,5 @@ export const CHANGELOG_HISTORY: VersionInfo[] = [
     ]
   }
 ];
+
+

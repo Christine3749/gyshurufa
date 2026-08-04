@@ -9,7 +9,30 @@ if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-set(GY_VERSION "dev" CACHE STRING "GY engine host version")
+# The Windows source is used both inside the local multi-project workspace and
+# as the root of the standalone gyshurufa GitHub repository. Prefer the
+# workspace manifest when present, then fall back to the repository manifest.
+get_filename_component(GY_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+get_filename_component(GY_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(GY_RELEASE_MANIFEST "${GY_WORKSPACE_ROOT}/release/release.json")
+if(NOT EXISTS "${GY_RELEASE_MANIFEST}")
+  set(GY_RELEASE_MANIFEST "${GY_REPOSITORY_ROOT}/release/release.json")
+endif()
+if(NOT EXISTS "${GY_RELEASE_MANIFEST}")
+  message(FATAL_ERROR "Canonical release manifest is missing: ${GY_RELEASE_MANIFEST}")
+endif()
+file(READ "${GY_RELEASE_MANIFEST}" GY_RELEASE_MANIFEST_JSON)
+string(JSON GY_MANIFEST_VERSION GET "${GY_RELEASE_MANIFEST_JSON}" windows version)
+string(JSON GY_MANIFEST_CORE_VERSION GET "${GY_RELEASE_MANIFEST_JSON}" windows coreVersion)
+string(JSON GY_MANIFEST_HOST_VERSION GET "${GY_RELEASE_MANIFEST_JSON}" windows hostVersion)
+if(NOT GY_MANIFEST_VERSION STREQUAL GY_MANIFEST_CORE_VERSION OR NOT GY_MANIFEST_VERSION STREQUAL GY_MANIFEST_HOST_VERSION)
+  message(FATAL_ERROR "release.json Windows package/core/host versions must match exactly")
+endif()
+if(DEFINED GY_VERSION AND NOT GY_VERSION STREQUAL "dev" AND NOT GY_VERSION STREQUAL GY_MANIFEST_VERSION)
+  message(FATAL_ERROR "-DGY_VERSION=${GY_VERSION} conflicts with canonical release.json version ${GY_MANIFEST_VERSION}")
+endif()
+set(GY_VERSION "${GY_MANIFEST_VERSION}" CACHE STRING "GY engine host version" FORCE)
+message(STATUS "GY canonical release version: ${GY_VERSION}")
 
 if(NOT WIN32)
   message(FATAL_ERROR "GY 输入法只能在 Windows 上构建。")
@@ -21,9 +44,19 @@ set(GY_RIME_RUNTIME_ROOT "${GY_RIME_ROOT}" CACHE PATH "Bundled GY Rime data root
 if(NOT EXISTS "${GY_RIME_ROOT}/include/rime_api.h" OR NOT EXISTS "${GY_RIME_ROOT}/lib/rime.lib" OR NOT EXISTS "${GY_RIME_ROOT}/lib/rime.dll")
   message(FATAL_ERROR "The bundled librime runtime is incomplete under ${GY_RIME_ROOT}.")
 endif()
-if(NOT EXISTS "${GY_RIME_RUNTIME_ROOT}/shared/build/luna_pinyin.table.bin")
-  message(FATAL_ERROR "The bundled luna-pinyin dictionary is incomplete under ${GY_RIME_RUNTIME_ROOT}/shared/build.")
-endif()
+set(GY_RIME_BUILD_ROOT "${GY_RIME_RUNTIME_ROOT}/shared/build")
+set(GY_REQUIRED_RIME_DATA
+  "default.yaml"
+  "luna_pinyin.schema.yaml"
+  "luna_pinyin.table.bin"
+  "luna_pinyin.reverse.bin"
+  "luna_pinyin.prism.bin"
+)
+foreach(GY_RIME_DATA_FILE IN LISTS GY_REQUIRED_RIME_DATA)
+  if(NOT EXISTS "${GY_RIME_BUILD_ROOT}/${GY_RIME_DATA_FILE}")
+    message(FATAL_ERROR "The bundled luna-pinyin runtime is incomplete: missing ${GY_RIME_BUILD_ROOT}/${GY_RIME_DATA_FILE}.")
+  endif()
+endforeach()
 
 # The TSF DLL remains a small, stable compatibility layer inside each target
 # app. It talks to GyImeHost over a local named pipe for lookup/ranking work.
@@ -56,7 +89,7 @@ add_executable(GyImeHost WIN32
   src/PinyinEngine.cpp
 )
 target_compile_features(GyImeHost PRIVATE cxx_std_20)
-target_compile_definitions(GyImeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_HOST_VERSION=\"${GY_VERSION}\")
+target_compile_definitions(GyImeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_HOST_VERSION=\"${GY_VERSION}\" GY_RELEASE_VERSION=\"${GY_VERSION}\")
 target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include")
 target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
@@ -69,6 +102,7 @@ endif()
 add_custom_command(TARGET GyImeHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyImeHost>/rime.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyImeHost>/rime-data/shared"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyImeHost>/rime-data/shared/build/luna_pinyin.schema.yaml"
 )
 
 
@@ -76,9 +110,9 @@ add_custom_command(TARGET GyImeHost POST_BUILD
 # engine and data, but intentionally has no Host mutex, tray, pipe, or UI.
 add_executable(GyImeHealth src/HealthCheck.cpp src/PinyinEngine.cpp)
 target_compile_features(GyImeHealth PRIVATE cxx_std_20)
-target_compile_definitions(GyImeHealth PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS)
+target_compile_definitions(GyImeHealth PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_RELEASE_VERSION=\"${GY_VERSION}\")
 target_include_directories(GyImeHealth PRIVATE src "${GY_RIME_ROOT}/include")
-target_link_libraries(GyImeHealth PRIVATE "${GY_RIME_ROOT}/lib/rime.lib")
+target_link_libraries(GyImeHealth PRIVATE advapi32 "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
   target_compile_options(GyImeHealth PRIVATE /W4 /permissive- /utf-8)
 endif()
@@ -86,6 +120,7 @@ set_target_properties(GyImeHealth PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_B
 add_custom_command(TARGET GyImeHealth POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyImeHealth>/rime.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyImeHealth>/rime-data/shared"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyImeHealth>/rime-data/shared/build/luna_pinyin.schema.yaml"
 )
 
 # Development-only protocol verification. It starts a private Host instance,
@@ -155,6 +190,25 @@ if(GY_BUILD_HOST_SMOKE)
   set_target_properties(GyHostProtocolSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_test(NAME GyHostProtocolSmoke COMMAND $<TARGET_FILE:GyHostProtocolSmoke>)
   set_tests_properties(GyHostProtocolSmoke PROPERTIES TIMEOUT 10 LABELS "native;ipc;protocol")
+  add_executable(GyCandidateLayoutSmoke src/CandidateLayoutSmoke.cpp)
+  target_compile_features(GyCandidateLayoutSmoke PRIVATE cxx_std_20)
+  target_include_directories(GyCandidateLayoutSmoke PRIVATE src)
+  if(MSVC)
+    target_compile_options(GyCandidateLayoutSmoke PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyCandidateLayoutSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  add_test(NAME GyCandidateLayoutSmoke COMMAND $<TARGET_FILE:GyCandidateLayoutSmoke>)
+  set_tests_properties(GyCandidateLayoutSmoke PROPERTIES TIMEOUT 10 LABELS "native;candidate-layout;regression")
+  add_executable(GyCandidateContractSmoke src/CandidateContractSmoke.cpp)
+  target_compile_features(GyCandidateContractSmoke PRIVATE cxx_std_20)
+  target_compile_definitions(GyCandidateContractSmoke PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_include_directories(GyCandidateContractSmoke PRIVATE src)
+  if(MSVC)
+    target_compile_options(GyCandidateContractSmoke PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyCandidateContractSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  add_test(NAME GyCandidateContractSmoke COMMAND $<TARGET_FILE:GyCandidateContractSmoke>)
+  set_tests_properties(GyCandidateContractSmoke PROPERTIES TIMEOUT 10 LABELS "native;candidate-layout;contract;regression")
   find_program(GY_POWERSHELL_EXECUTABLE NAMES powershell.exe pwsh.exe)
   if(GY_POWERSHELL_EXECUTABLE)
     add_test(NAME GyInstallerSmoke
@@ -174,9 +228,9 @@ if(GY_BUILD_RIME_SMOKE)
     src/PinyinEngine.cpp
   )
   target_compile_features(GyPinyinEngineSmoke PRIVATE cxx_std_20)
-  target_compile_definitions(GyPinyinEngineSmoke PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS)
+  target_compile_definitions(GyPinyinEngineSmoke PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_RELEASE_VERSION=\"${GY_VERSION}\")
   target_include_directories(GyPinyinEngineSmoke PRIVATE src "${GY_RIME_ROOT}/include")
-  target_link_libraries(GyPinyinEngineSmoke PRIVATE "${GY_RIME_ROOT}/lib/rime.lib")
+  target_link_libraries(GyPinyinEngineSmoke PRIVATE advapi32 "${GY_RIME_ROOT}/lib/rime.lib")
   if(MSVC)
     target_compile_options(GyPinyinEngineSmoke PRIVATE /W4 /permissive- /utf-8)
   endif()
@@ -184,12 +238,12 @@ if(GY_BUILD_RIME_SMOKE)
   add_custom_command(TARGET GyPinyinEngineSmoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_ROOT}/lib/rime.dll" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${GY_RIME_RUNTIME_ROOT}/shared" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime-data/shared"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GY_RIME_RUNTIME_ROOT}/shared/luna_pinyin.schema.yaml" "$<TARGET_FILE_DIR:GyPinyinEngineSmoke>/rime-data/shared/build/luna_pinyin.schema.yaml"
   )
 endif()
 if(GY_BUILD_RIME_SMOKE)
   add_test(NAME GyPinyinEngineSmoke COMMAND $<TARGET_FILE:GyPinyinEngineSmoke>)
   set_tests_properties(GyPinyinEngineSmoke PROPERTIES TIMEOUT 45 LABELS "native;rime;offline")
 endif()
-
 
 

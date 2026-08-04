@@ -1,18 +1,8 @@
 {
-  "name": "gy-shurufa-download",
+  "name": "gy-shurufa-download-legacy-disabled",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-02",
-  "workers_dev": true,
-  "routes": [
-    {
-      "pattern": "shurufa.wang/download/*",
-      "zone_name": "shurufa.wang"
-    },
-    {
-      "pattern": "www.shurufa.wang/download/*",
-      "zone_name": "shurufa.wang"
-    }
-  ],
+  "workers_dev": false,
   "r2_buckets": [
     {
       "binding": "RELEASES",

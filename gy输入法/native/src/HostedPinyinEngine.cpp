@@ -80,12 +80,20 @@ bool StartHost(const std::wstring& path) {
   return true;
 }
 
+
+bool IsExpectedHostStatus(const std::wstring& payload, const std::wstring& expected_version) {
+  gy::host::HostStatus status{};
+  if (!gy::host::DecodeStatus(payload, &status)) return false;
+  return (expected_version.empty() || status.host_version == expected_version) &&
+      status.protocol_version == gy::host::kProtocolVersion;
+}
+
 bool WaitForHostVersion(const std::wstring& expected_version, DWORD timeout_ms) {
   const ULONGLONG deadline = GetTickCount64() + timeout_ms;
   do {
-    std::wstring actual_version;
-    if (SendRequest(gy::host::MessageType::Status, L"", &actual_version) &&
-        (expected_version.empty() || actual_version == expected_version)) return true;
+    std::wstring status;
+    if (SendRequest(gy::host::MessageType::Status, L"", &status) &&
+        IsExpectedHostStatus(status, expected_version)) return true;
     Sleep(15);
   } while (GetTickCount64() < deadline);
   return false;
@@ -115,9 +123,9 @@ struct HostedPinyinEngine::Impl {
 
   bool EnsureHost() {
     const std::wstring expected_version = HostVersion();
-    std::wstring actual_version;
-    if (SendRequest(gy::host::MessageType::Status, L"", &actual_version)) {
-      if (expected_version.empty() || actual_version == expected_version) return true;
+    std::wstring status;
+    if (SendRequest(gy::host::MessageType::Status, L"", &status)) {
+      if (IsExpectedHostStatus(status, expected_version)) return true;
       // A versioned Host is single-instance. During a Host-only update, wait
       // until the old owner has really released the pipe before starting the
       // new binary; otherwise the first composition can race the old mutex.
@@ -193,7 +201,7 @@ std::wstring HostedPinyinEngine::Diagnostic() const {
   return impl_ ? impl_->diagnostic : L"hosted engine implementation is unavailable";
 }
 void HostedPinyinEngine::ShowCandidates(const RECT& caret, const std::vector<std::wstring>& candidates,
-                                        unsigned selected, unsigned page_start, const std::wstring& callback_pipe) {
+                                        unsigned selected, unsigned page_start, int input_mode, bool expanded, const std::wstring& callback_pipe) {
   if (!impl_ || candidates.empty()) { HideCandidates(); return; }
   std::scoped_lock lock(impl_->mutex);
   gy::host::CandidateUiState state{};
@@ -201,6 +209,8 @@ void HostedPinyinEngine::ShowCandidates(const RECT& caret, const std::vector<std
   state.candidates = candidates;
   state.selected = selected;
   state.page_start = page_start;
+  state.input_mode = static_cast<unsigned>(input_mode < 0 ? 0 : input_mode > 2 ? 2 : input_mode);
+  state.expanded = expanded;
   state.callback_pipe = callback_pipe;
   if (!impl_->SendUi(gy::host::MessageType::ShowCandidates, gy::host::EncodeCandidateUi(state), true)) {
     impl_->diagnostic = L"GY Host candidate UI is unavailable";
@@ -213,13 +223,14 @@ void HostedPinyinEngine::HideCandidates() {
   impl_->SendUi(gy::host::MessageType::HideCandidates, L"", false);
 }
 
-void HostedPinyinEngine::ShowMode(const RECT& caret, bool english_mode) {
+void HostedPinyinEngine::ShowMode(const RECT& caret, int input_mode) {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);
   gy::host::CandidateUiState state{};
   state.caret = caret;
-  state.selected = english_mode ? 1u : 0u;
-  state.candidates = {english_mode ? L"EN" : L"中"};
+  state.input_mode = static_cast<unsigned>(input_mode < 0 ? 0 : input_mode > 2 ? 2 : input_mode);
+  state.selected = state.input_mode;
+  state.candidates = {state.input_mode == 2 ? L"EN" : (state.input_mode == 1 ? L"繁" : L"中")};
   if (!impl_->SendUi(gy::host::MessageType::ShowMode, gy::host::EncodeCandidateUi(state), true)) {
     impl_->diagnostic = L"GY Host mode UI is unavailable";
   }

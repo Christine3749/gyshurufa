@@ -6,6 +6,9 @@ macos_root="$root/macos"
 derived_data="$macos_root/.build/DerivedData"
 configuration="${GY_CONFIGURATION:-Release}"
 identity="${GY_DEVELOPER_IDENTITY:-}"
+release_version="${GY_RELEASE_VERSION:-0.0.0}"
+if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "GY_RELEASE_VERSION must use major.minor.patch" >&2; exit 1; fi
+build_number="${release_version//./}"
 
 "$macos_root/scripts/bootstrap-rime-arm64.sh"
 "$macos_root/scripts/configure-m1.sh"
@@ -18,6 +21,8 @@ xcodebuild \
   -arch arm64 \
   -derivedDataPath "$derived_data" \
   CODE_SIGNING_ALLOWED=NO \
+  MARKETING_VERSION="$release_version" \
+  CURRENT_PROJECT_VERSION="$build_number" \
   build
 
 app="$derived_data/Build/Products/$configuration/GYInput.app"

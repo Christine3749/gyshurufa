@@ -19,8 +19,11 @@ private:
   void ImportBackup();
   bool Hit(const RECT& rect, POINT point) const;
 
+  enum class Page { General, Input, Appearance, Account };
+
   HWND hwnd_ = nullptr;
   int width_ = 520;
+  int height_ = 680;
   HWND account_edit_ = nullptr;
   HWND phrases_edit_ = nullptr;
   HBRUSH edit_brush_ = nullptr;
@@ -29,7 +32,9 @@ private:
   UINT dpi_ = 96;
   int theme_ = 0;
   int size_index_ = 1;
+  Page page_ = Page::General;
   RECT input_mode_rects_[3]{};
+  RECT nav_rects_[4]{};
   bool phrases_expanded_ = false;
   RECT account_rect_{};
   RECT theme_rects_[3]{};
@@ -38,6 +43,7 @@ private:
   RECT clear_rect_{};
   RECT export_rect_{};
   RECT import_rect_{};
+  RECT ai_preview_rect_{};
   RECT done_rect_{};
   RECT close_rect_{};
 };

@@ -1,1 +1,26 @@
-{"rewrites":[{"source":"/download/latest.exe","destination":"https://gy-shurufa-download.lihouyi7586.workers.dev/latest.exe"},{"source":"/download/latest.zip","destination":"https://gy-shurufa-download.lihouyi7586.workers.dev/latest.zip"}]}
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/releases/:path*",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/:path*"
+    },
+    {
+      "source": "/api/releases/latest",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest"
+    },
+    {
+      "source": "/download/latest.exe",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/latest.exe"
+    },
+    {
+      "source": "/download/latest.zip",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/latest.zip"
+    },
+    {
+      "source": "/download/candidate/:path*",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/download/candidate/:path*"
+    }
+  ]
+}
