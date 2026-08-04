@@ -116,10 +116,6 @@
   _activeClient = client; GYTrace(@"text-event"); GYRecordInputRouteEvidence();
   NSEventModifierFlags blocked = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagFunction;
   if ((modifiers & blocked) != 0) return NO;
-  if ((keyCode == kVK_Shift || keyCode == kVK_RightShift) && string.length == 0) {
-    GYInputMode mode = [GYInputModeStore.sharedStore cycleMode]; [self clearComposition];
-    GYTrace([NSString stringWithFormat:@"mode=%@", GYInputModeLabel(mode)]); return YES;
-  }
   if (!GYInputModeUsesChinese(GYInputModeStore.sharedStore.mode)) { if (_rime.preedit.length) [self clearComposition]; return NO; }
   if (keyCode == kVK_Escape && _rime.preedit.length) { [self clearComposition]; return YES; }
   if (keyCode == kVK_Delete) { if (![_rime deleteBackward]) return NO; [self applyRimeResult]; return YES; }
@@ -137,12 +133,16 @@
   for (NSNumber *value in @[@(GYInputModeSimplified), @(GYInputModeTraditional), @(GYInputModeEnglish)]) {
     GYInputMode mode = value.integerValue;
     NSMenuItem *item = [menu addItemWithTitle:GYInputModeLabel(mode) action:@selector(selectMode:) keyEquivalent:@""];
-    item.representedObject = value; item.state = GYInputModeStore.sharedStore.mode == mode ? NSControlStateValueOn : NSControlStateValueOff;
+    item.target = self; item.representedObject = value; item.state = GYInputModeStore.sharedStore.mode == mode ? NSControlStateValueOn : NSControlStateValueOff;
   }
   return menu;
 }
 
-- (void)selectMode:(NSMenuItem *)item { [GYInputModeStore.sharedStore setMode:[(NSNumber *)item.representedObject integerValue]]; [self clearComposition]; }
+- (void)selectMode:(NSMenuItem *)item {
+  GYInputMode mode = [(NSNumber *)item.representedObject integerValue];
+  [GYInputModeStore.sharedStore setMode:mode]; [self clearComposition];
+  GYTrace([NSString stringWithFormat:@"mode=%@", GYInputModeLabel(mode)]);
+}
 - (void)inputControllerWillClose { [self clearComposition]; [super inputControllerWillClose]; }
 
 @end

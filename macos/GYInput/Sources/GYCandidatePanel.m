@@ -96,7 +96,7 @@ static NSString *GYModeText(GYInputMode mode) { return mode == GYInputModeTradit
 }
 @end
 
-@implementation GYCandidatePanel { GYCandidateWindow *_window; GYCandidateSurface *_surface; }
+@implementation GYCandidatePanel { GYCandidateWindow *_window; GYCandidateSurface *_surface; NSRect _lastCaret; BOOL _hasLastCaret; }
 - (instancetype)initWithActionHandler:(GYCandidateActionHandler)handler {
   if ((self = [super init])) {
     _surface = [[GYCandidateSurface alloc] initWithHandler:handler];
@@ -108,12 +108,21 @@ static NSString *GYModeText(GYInputMode mode) { return mode == GYInputModeTradit
 }
 - (void)showCandidates:(NSArray<NSString *> *)candidates selection:(NSInteger)selection mode:(GYInputMode)mode expanded:(BOOL)expanded expandable:(BOOL)expandable previous:(BOOL)previous next:(BOOL)next client:(id)client {
   [_surface configure:candidates selection:selection mode:mode expanded:expanded expandable:expandable previous:previous next:next]; NSSize size = _surface.preferredSize;
-  NSRect caret = NSMakeRect(NSEvent.mouseLocation.x, NSEvent.mouseLocation.y, 1, 18);
-  if ([client respondsToSelector:@selector(firstRectForCharacterRange:actualRange:)]) caret = [client firstRectForCharacterRange:NSMakeRange(0, 0) actualRange:NULL];
-  NSScreen *screen = NSScreen.mainScreen; for (NSScreen *item in NSScreen.screens) if (NSPointInRect(caret.origin, item.visibleFrame)) screen = item;
-  NSRect visible = screen.visibleFrame; CGFloat x = MIN(MAX(NSMinX(caret), NSMinX(visible)), NSMaxX(visible) - size.width), y = NSMaxY(caret) + 5;
-  if (y + size.height > NSMaxY(visible)) y = NSMinY(caret) - size.height - 5;
-  y = MIN(MAX(y, NSMinY(visible)), NSMaxY(visible) - size.height);
+  NSRect caret = NSZeroRect;
+  if ([client respondsToSelector:@selector(selectedRange)] && [client respondsToSelector:@selector(firstRectForCharacterRange:actualRange:)]) {
+    NSRange selected = [client selectedRange];
+    if (selected.location != NSNotFound) caret = [client firstRectForCharacterRange:selected actualRange:NULL];
+  }
+  if (NSHeight(caret) > 0 && !NSEqualRects(caret, NSZeroRect)) { _lastCaret = caret; _hasLastCaret = YES; }
+  else if (_hasLastCaret) caret = _lastCaret;
+  else { [self hide]; return; }
+  NSScreen *screen = NSScreen.mainScreen;
+  for (NSScreen *item in NSScreen.screens) if (NSIntersectsRect(caret, item.visibleFrame)) { screen = item; break; }
+  NSRect visible = screen.visibleFrame;
+  CGFloat maxX = MAX(NSMinX(visible), NSMaxX(visible) - size.width), maxY = MAX(NSMinY(visible), NSMaxY(visible) - size.height);
+  CGFloat x = MIN(MAX(NSMinX(caret), NSMinX(visible)), maxX), y = NSMinY(caret) - size.height - 5;
+  if (y < NSMinY(visible)) y = NSMaxY(caret) + 5;
+  y = MIN(MAX(y, NSMinY(visible)), maxY);
   if ([client respondsToSelector:@selector(windowLevel)]) _window.level = [client windowLevel] + 1;
   [_window setFrame:NSMakeRect(x, y, size.width, size.height) display:YES]; [_window orderFront:nil];
 }
