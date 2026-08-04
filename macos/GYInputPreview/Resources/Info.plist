@@ -10,8 +10,8 @@
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>GY 输入法 2.0 Preview</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0.2</string>
-  <key>CFBundleVersion</key><string>3</string>
+  <key>CFBundleShortVersionString</key><string>2.0.3</string>
+  <key>CFBundleVersion</key><string>4</string>
   <key>ComponentInputModeDict</key>
   <dict><key>tsInputModeListKey</key><dict>
     <key>wang.shurufa.inputmethod.GYInputPreview.pinyin</key>

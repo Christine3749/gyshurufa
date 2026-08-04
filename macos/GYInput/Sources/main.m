@@ -10,7 +10,9 @@ static int RegisterInputSource(void) {
   if (bundleURL == nil || TISRegisterInputSource((__bridge CFURLRef)bundleURL) != noErr) return 1;
   NSString *modeID = [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".pinyin"];
   NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID: modeID};
-  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
+  // A newly registered source is disabled. Include disabled sources here so
+  // this first-run path can find and enable the new mode.
+  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
   if (sources == nil || CFArrayGetCount(sources) != 1) { if (sources) CFRelease(sources); return 2; }
   TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
   OSStatus status = TISEnableInputSource(source); CFRelease(sources);
