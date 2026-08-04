@@ -1,4 +1,5 @@
 #import "GYRimeSession.h"
+#import "GYCandidateQuality.h"
 #import "GYRimeRuntime.h"
 
 static const int GYRimeBackspace = 0xff08;
@@ -6,15 +7,6 @@ static const int GYRimePageUp = 0xff55;
 static const int GYRimePageDown = 0xff56;
 
 static NSString *GYString(const char *value) { return value ? [[NSString alloc] initWithUTF8String:value] ?: @"" : @""; }
-
-static BOOL GYAcceptableCandidate(NSString *text) {
-  if (text.length == 0 || text.length > 12) return NO;
-  for (NSUInteger index = 0; index < text.length; index++) {
-    unichar c = [text characterAtIndex:index];
-    if (!((c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF))) return NO;
-  }
-  return YES;
-}
 
 @implementation GYRimeSession {
   GYRimeRuntime *_runtime;
@@ -67,27 +59,32 @@ static BOOL GYAcceptableCandidate(NSString *text) {
 - (void)readCommitLocked:(RimeApi *)api {
   RIME_STRUCT(RimeCommit, commit);
   if (api->get_commit(_session, &commit)) {
-    _commitText = GYString(commit.text);
+    _commitText = GYNormalizeCandidate(GYString(commit.text), _mode);
     api->free_commit(&commit);
   }
 }
 
 - (void)refreshLocked:(RimeApi *)api {
   RIME_STRUCT(RimeContext, context);
-  if (!api->get_context(_session, &context)) { _preedit = @""; _candidates = @[]; return; }
+  if (!api->get_context(_session, &context)) { _preedit = @""; _candidates = @[]; _hasNextPage = _hasPreviousPage = NO; return; }
   _preedit = GYString(context.composition.preedit);
   _page = context.menu.page_no;
   _hasPreviousPage = _page > 0;
-  _hasNextPage = !context.menu.is_last_page;
-  NSMutableArray *candidates = [NSMutableArray array];
-  NSMutableArray *indices = [NSMutableArray array];
+  NSMutableArray *candidates = [NSMutableArray array]; NSMutableArray *indices = [NSMutableArray array];
+  NSString *fallback = nil; NSNumber *fallbackIndex = nil; NSUInteger minimumLength = 1;
   for (int index = 0; index < context.menu.num_candidates; index++) {
-    NSString *candidate = GYString(context.menu.candidates[index].text);
-    if (GYAcceptableCandidate(candidate) && ![candidates containsObject:candidate]) {
+    NSString *candidate = GYNormalizeCandidate(GYString(context.menu.candidates[index].text), _mode);
+    BOOL primary = context.menu.page_no == 0 && fallback == nil;
+    if (primary && GYCandidateIsTrusted(candidate, 1, YES)) {
+      fallback = candidate; fallbackIndex = @(index); minimumLength = candidate.length;
+    }
+    if (GYCandidateIsTrusted(candidate, minimumLength, NO) && ![candidates containsObject:candidate]) {
       [candidates addObject:candidate]; [indices addObject:@(index)];
     }
   }
+  if (candidates.count == 0 && fallback) { [candidates addObject:fallback]; [indices addObject:fallbackIndex]; }
   _candidates = candidates; _rawIndices = indices;
+  _hasNextPage = !context.menu.is_last_page && candidates.count == 25;
   api->free_context(&context);
 }
 
@@ -131,8 +128,8 @@ static BOOL GYAcceptableCandidate(NSString *text) {
   }
 }
 
-- (BOOL)nextPage { return [self turnPageWithKey:GYRimePageDown]; }
-- (BOOL)previousPage { return [self turnPageWithKey:GYRimePageUp]; }
+- (BOOL)nextPage { return _hasNextPage && [self turnPageWithKey:GYRimePageDown]; }
+- (BOOL)previousPage { return _hasPreviousPage && [self turnPageWithKey:GYRimePageUp]; }
 
 - (BOOL)selectCandidateAtIndex:(NSInteger)index {
   if (!self.ready || index < 0 || (NSUInteger)index >= _rawIndices.count) return NO;
@@ -154,7 +151,8 @@ static BOOL GYAcceptableCandidate(NSString *text) {
 BOOL GYRunRimeSelfTest(void) {
   GYRimeSession *session = [GYRimeSession new];
   if (!session.ready || ![session processText:@"nihao" mode:GYInputModeSimplified]) return NO;
-  if (![session.candidates containsObject:@"你好"]) return NO;
+  if (![session.candidates.firstObject isEqual:@"你好"] || [session.candidates containsObject:@"妳好"] ||
+      [session.candidates containsObject:@"逆号"] || [session.candidates containsObject:@"拟好"]) return NO;
   [session clear];
   if (![session processText:@"zhongguo" mode:GYInputModeTraditional]) return NO;
   return [session.candidates containsObject:@"中國"];

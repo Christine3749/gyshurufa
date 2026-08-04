@@ -9,6 +9,13 @@ command="${1:-status}"
 version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null; }
 valid_app() { [[ -x "$1/Contents/MacOS/GYInput" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" == 'wang.shurufa.inputmethod.GYInput' ]]; }
 read_status() { /usr/bin/defaults read "$status" "$1" 2>/dev/null || true; }
+route_version() {
+  local user home route
+  user="$(/usr/bin/stat -f '%Su' /dev/console)"; [[ "$user" == root || "$user" == loginwindow ]] && return 0
+  home="${GY_INPUT_BASELINE_HOME:-$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')}"
+  route="$home/Library/Application Support/GYInput/core-route.plist"
+  /usr/bin/defaults read "$route" version 2>/dev/null || true
+}
 register_current() {
   local user; user="$(/usr/bin/stat -f '%Su' /dev/console)"
   [[ "$user" == root || "$user" == loginwindow ]] && return 0
@@ -20,7 +27,9 @@ require_root() { [[ "$EUID" == 0 ]] || { echo "Run with sudo: sudo $0 $command" 
 case "$command" in
   status)
     valid_app "$app_path" || { echo "GYInput.app is not installed at $app_path" >&2; exit 1; }
-    printf 'installed=%s\nactivation=%s\nknown-good=%s\nrollback=%s\n' "$(version "$app_path")" "$(read_status activationState)" "$(read_status knownGoodVersion)" "$(read_status rollbackAppPath)"
+    installed="$(version "$app_path")"; activation="$(read_status activationState)"; route="$(route_version)"
+    [[ "$route" != "$installed" ]] || activation=active
+    printf 'installed=%s\nactivation=%s\nroute-verified=%s\nknown-good=%s\nrollback=%s\n' "$installed" "$activation" "$route" "$(read_status knownGoodVersion)" "$(read_status rollbackAppPath)"
     ;;
   repair)
     valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }; register_current

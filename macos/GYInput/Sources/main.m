@@ -23,12 +23,23 @@ static int PreviewCandidates(BOOL expanded) {
   return 0;
 }
 
+static int DumpCandidates(const char *code) {
+  GYRimeSession *session = [GYRimeSession new];
+  NSString *input = [NSString stringWithUTF8String:code] ?: @"";
+  if (!session.ready || ![session processText:input mode:GYInputModeSimplified]) return 1;
+  for (NSString *candidate in session.candidates) {
+    printf("%s\n", candidate.UTF8String);
+  }
+  return session.candidates.count ? 0 : 1;
+}
+
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     if (argc == 2 && strcmp(argv[1], "--register-input-source") == 0) return RegisterInputSource();
     if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return GYRunRimeSelfTest() ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "--preview-collapsed") == 0) return PreviewCandidates(NO);
     if (argc == 2 && strcmp(argv[1], "--preview-expanded") == 0) return PreviewCandidates(YES);
+    if (argc == 3 && strcmp(argv[1], "--dump-candidates") == 0) return DumpCandidates(argv[2]);
     if (argc != 1) return 64;
 
     NSBundle *bundle = NSBundle.mainBundle;

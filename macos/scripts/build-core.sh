@@ -47,12 +47,24 @@ cp "$recovery" "$app/Contents/Resources/GYRecovery.sh"
 xcrun clang++ -fobjc-arc -mmacosx-version-min=13.0 -I "$rime_prefix/include" \
   -framework Cocoa -framework Carbon -framework InputMethodKit \
   "$root/GYInput/Sources/main.m" "$root/GYInput/Sources/GYInputController.m" \
-  "$root/GYInput/Sources/GYCandidatePanel.m" \
-  "$root/GYInput/Sources/GYDiagnostics.m" "$root/GYInput/Sources/GYInputMode.m" \
+  "$root/GYInput/Sources/GYCandidatePanel.m" "$root/GYInput/Sources/GYCandidateQuality.m" \
+  "$root/GYInput/Sources/GYActivationEvidence.m" "$root/GYInput/Sources/GYDiagnostics.m" "$root/GYInput/Sources/GYInputMode.m" \
   "$root/GYInput/Sources/GYRimeRuntime.mm" "$root/GYInput/Sources/GYRimeSession.mm" \
   "$rime_prefix/lib/librime.1.dylib" -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/GYInput"
 
 cp -L "$rime_prefix/lib/librime.1.dylib" "$app/Contents/Frameworks/librime.1.dylib"
+workspace="$(mktemp -d)"
+GY_RIME_USER_DATA_DIR="$workspace/rime" "$app/Contents/MacOS/GYInput" --self-test
+for file in default.yaml luna_pinyin.prism.bin luna_pinyin.reverse.bin luna_pinyin.table.bin; do
+  [[ -f "$workspace/rime/build/$file" ]] || { echo "Rime did not generate $file." >&2; exit 1; }
+done
+[[ -f "$workspace/rime/build/gy_pinyin.schema.yaml" ]] || { echo 'Rime did not generate the GY schema.' >&2; exit 1; }
+mkdir -p "$app/Contents/Resources/Rime/shared/build"
+for file in default.yaml luna_pinyin.prism.bin luna_pinyin.reverse.bin luna_pinyin.table.bin; do
+  cp "$workspace/rime/build/$file" "$app/Contents/Resources/Rime/shared/build/$file"
+done
+cp "$workspace/rime/build/gy_pinyin.schema.yaml" "$app/Contents/Resources/Rime/shared/build/gy_pinyin.schema.yaml"
+
 install_name_tool -id '@rpath/librime.1.dylib' "$app/Contents/Frameworks/librime.1.dylib"
 codesign --force --sign "$identity" --timestamp=none "$app/Contents/Frameworks/librime.1.dylib"
 codesign --force --sign "$identity" --timestamp=none "$app"

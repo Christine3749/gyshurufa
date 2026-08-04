@@ -1,5 +1,6 @@
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
+#import "GYActivationEvidence.h"
 #import "GYDiagnostics.h"
 #import "GYCandidatePanel.h"
 #import "GYInputMode.h"
@@ -112,7 +113,7 @@
 }
 
 - (BOOL)inputText:(NSString *)string key:(NSInteger)keyCode modifiers:(NSUInteger)modifiers client:(id)client {
-  _activeClient = client; GYTrace(@"text-event");
+  _activeClient = client; GYTrace(@"text-event"); GYRecordInputRouteEvidence();
   NSEventModifierFlags blocked = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagFunction;
   if ((modifiers & blocked) != 0) return NO;
   if ((keyCode == kVK_Shift || keyCode == kVK_RightShift) && string.length == 0) {

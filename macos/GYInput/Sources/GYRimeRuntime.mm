@@ -1,5 +1,29 @@
 #import "GYRimeRuntime.h"
 
+static NSURL *GYUserDataDirectory(void) {
+  const char *override = getenv("GY_RIME_USER_DATA_DIR");
+  if (override && *override) return [NSURL fileURLWithPath:@(override) isDirectory:YES];
+  NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
+                                                           inDomains:NSUserDomainMask].firstObject;
+  return [[support URLByAppendingPathComponent:@"GYInput" isDirectory:YES]
+      URLByAppendingPathComponent:@"rime" isDirectory:YES];
+}
+
+static BOOL GYRefreshGeneratedWorkspace(NSURL *shared, NSURL *user, NSError **error) {
+  NSURL *source = [shared URLByAppendingPathComponent:@"build" isDirectory:YES];
+  if (![[NSFileManager defaultManager] fileExistsAtPath:source.path]) return YES;
+  NSURL *destination = [user URLByAppendingPathComponent:@"build" isDirectory:YES];
+  NSFileManager *files = NSFileManager.defaultManager;
+  if (![files createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+  for (NSString *name in @[@"default.yaml", @"gy_pinyin.schema.yaml", @"luna_pinyin.prism.bin", @"luna_pinyin.reverse.bin", @"luna_pinyin.table.bin"]) {
+    NSURL *from = [source URLByAppendingPathComponent:name]; NSURL *to = [destination URLByAppendingPathComponent:name];
+    if (![files fileExistsAtPath:from.path]) { if (error) *error = [NSError errorWithDomain:@"GYInput" code:1 userInfo:nil]; return NO; }
+    [files removeItemAtURL:to error:nil];
+    if (![files copyItemAtURL:from toURL:to error:error]) return NO;
+  }
+  return YES;
+}
+
 @implementation GYRimeRuntime {
   RimeApi *_api;
   BOOL _ready;
@@ -26,13 +50,14 @@
     _diagnostic = @"bundled Rime data is missing";
     return;
   }
-  NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
-                                                           inDomains:NSUserDomainMask].firstObject;
-  NSURL *user = [[support URLByAppendingPathComponent:@"GYInput" isDirectory:YES]
-      URLByAppendingPathComponent:@"rime" isDirectory:YES];
+  NSURL *user = GYUserDataDirectory();
   NSError *error;
   if (![[NSFileManager defaultManager] createDirectoryAtURL:user withIntermediateDirectories:YES attributes:nil error:&error]) {
     _diagnostic = error.localizedDescription ?: @"cannot create local Rime data";
+    return;
+  }
+  if (!GYRefreshGeneratedWorkspace(shared, user, &error)) {
+    _diagnostic = error.localizedDescription ?: @"cannot refresh generated Rime data";
     return;
   }
   _api = rime_get_api();
