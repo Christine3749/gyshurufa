@@ -7,7 +7,14 @@
 
 static int RegisterInputSource(void) {
   NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
-  return bundleURL != nil && TISRegisterInputSource((__bridge CFURLRef)bundleURL) == noErr ? 0 : 1;
+  if (bundleURL == nil || TISRegisterInputSource((__bridge CFURLRef)bundleURL) != noErr) return 1;
+  NSString *modeID = [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".pinyin"];
+  NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID: modeID};
+  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
+  if (sources == nil || CFArrayGetCount(sources) != 1) { if (sources) CFRelease(sources); return 2; }
+  TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
+  OSStatus status = TISEnableInputSource(source); CFRelease(sources);
+  return status == noErr ? 0 : 3;
 }
 
 static int PreviewCandidates(BOOL expanded) {

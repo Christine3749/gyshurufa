@@ -14,8 +14,14 @@ require_equal 'CFBundleIdentifier' 'wang.shurufa.inputmethod.GYInputPreview'
 require_equal 'CFBundleExecutable' 'GYInputPreview'
 require_equal 'TISInputSourceID' 'wang.shurufa.inputmethod.GYInputPreview'
 require_equal 'ComponentInputModeDict:tsInputModeListKey:wang.shurufa.inputmethod.GYInputPreview.pinyin:TISInputSourceID' 'wang.shurufa.inputmethod.GYInputPreview.pinyin'
+require_equal 'ComponentInputModeDict:tsVisibleInputModeOrderedArrayKey:0' 'wang.shurufa.inputmethod.GYInputPreview.pinyin'
 require_equal 'InputMethodConnectionName' 'wang.shurufa.inputmethod.GYInputPreview.Connection'
 require_equal 'InputMethodServerControllerClass' 'GYInputController'
 require_equal 'InputMethodServerDelegateClass' 'GYInputController'
 require_equal 'GYApplicationSupportFolder' 'GYInputPreview'
+main_source="$root/GYInput/Sources/main.m"
+[[ -f "$main_source" ]] || { echo "Preview entry point is missing: $main_source" >&2; exit 2; }
+/usr/bin/grep -F -q 'TISEnableInputSource(source)' "$main_source" || {
+  echo 'Preview input-source violation: registration must enable the Preview mode.' >&2; exit 1;
+}
 echo "Preview input-source contract is valid: $plist"
