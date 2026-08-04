@@ -19,6 +19,9 @@
 ./macos/scripts/package-core.sh
 ```
 
+候选窗的视觉验收无需安装输入法：先构建，再运行
+`./macos/scripts/preview-candidate-panel.sh collapsed` 或 `expanded`。预览不会注册、选择或覆盖系统输入源。
+
 安装候选包后必须运行实体键盘门禁：
 
 ```bash
