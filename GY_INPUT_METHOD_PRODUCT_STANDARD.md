@@ -66,6 +66,8 @@ GY 是原生系统输入法，不是网页输入框、浏览器插件或聊天�
 
 ## 5. 平台实现边界
 
+所有平台首先遵守“黄金上屏链路”：在当前焦点文本框中持续输入和提交文字的链路，不得被候选 UI、词库、设置、登录、同步、AI 或更新阻塞、替换或降级；完整故障边界见 [韧性输入法架构契约](release/ARCHITECTURE_CONTRACT.md)。
+
 ### Windows
 
 - Windows 采用稳定 TSF Bridge、Session Guard、双完整 Engine Slot、独立 Candidate UI 与 Data/Agent 的韧性架构。
