@@ -20,6 +20,12 @@ int main() {
   static_assert(gy::candidate_layout::ExpandedRows(26) == 5);
 
   static_assert(gy::candidate_layout::ExpandedCapacity() == 25);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(12, 0, 25, 1) == 10);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(12, 0, 25, 3) == 12);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(12, 0, 25, 5) == 14);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(31, 25, 75, 1) == 30);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(31, 25, 75, 5) == 34);
+  static_assert(gy::candidate_layout::ExpandedDigitCandidate(8, 0, 9, 5) == 9);
   static_assert(gy::candidate_layout::MoveExpandedDown(1, 0, 25) == 6);
   static_assert(gy::candidate_layout::MoveExpandedDown(21, 0, 25) == 21);
   static_assert(gy::candidate_layout::MoveExpandedDown(21, 0, 75) == 26);

@@ -39,7 +39,8 @@ switches:
     states: [ 。，, ．， ]
 
 menu:
-  page_size: 20
+  # The Host filters this raw pool down to the visible 5 × 5 panel.
+  page_size: 96
 
 engine:
   processors:

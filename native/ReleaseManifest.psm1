@@ -1,8 +1,18 @@
 Set-StrictMode -Version Latest
 
 function Get-GYReleaseManifestPath {
+  # Local development keeps native/ under gy输入法/, while the GitHub release
+  # repository has native/ directly under its root. Resolve both layouts so
+  # local builds and clean GitHub clones share one canonical manifest.
   $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-  Join-Path $workspaceRoot 'release\release.json'
+  $workspaceManifest = Join-Path $workspaceRoot 'release\release.json'
+  if (Test-Path -LiteralPath $workspaceManifest) { return $workspaceManifest }
+
+  $repositoryRoot = Split-Path -Parent $PSScriptRoot
+  $repositoryManifest = Join-Path $repositoryRoot 'release\release.json'
+  if (Test-Path -LiteralPath $repositoryManifest) { return $repositoryManifest }
+
+  return $workspaceManifest
 }
 
 function Get-GYReleaseManifest {

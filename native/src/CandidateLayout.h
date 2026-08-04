@@ -22,6 +22,24 @@ constexpr unsigned ExpandedPageEnd(unsigned page_start, unsigned candidate_count
   return page_start + (remaining < ExpandedCapacity() ? remaining : ExpandedCapacity());
 }
 
+// In the expanded grid the number row follows the currently highlighted
+// visual row. For example, with item 13 highlighted, key 1 selects item 11
+// and key 5 selects item 15. Returning candidate_count is an explicit
+// invalid sentinel for a missing cell in a partial final row.
+constexpr unsigned ExpandedDigitCandidate(unsigned selected, unsigned page_start,
+                                          unsigned candidate_count,
+                                          unsigned one_based_column) noexcept {
+  const unsigned page_end = ExpandedPageEnd(page_start, candidate_count);
+  if (one_based_column == 0 || one_based_column > ExpandedColumns() ||
+      selected < page_start || selected >= page_end) {
+    return candidate_count;
+  }
+  const unsigned row_start = page_start +
+      ((selected - page_start) / ExpandedColumns()) * ExpandedColumns();
+  const unsigned candidate = row_start + one_based_column - 1;
+  return candidate < page_end ? candidate : candidate_count;
+}
+
 // Keyboard movement follows the visual five-column grid. When ↓ reaches the
 // last visible row it continues on the next 5 × 5 page in the same column;
 // ↑ performs the exact inverse. PageUp/PageDown remain explicit full-page

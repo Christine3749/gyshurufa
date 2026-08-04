@@ -212,7 +212,19 @@ public:
       return RequestEdit({EditActionKind::CommitCandidate, 0, selected_});
     }
     if (gy::keys::IsRawTextCommitKey(key)) return RequestEdit({EditActionKind::CommitRaw});
-    if (key >= '1' && key <= '5') return RequestEdit({EditActionKind::CommitCandidate, 0, page_start_ + static_cast<unsigned>(key - '1')});
+    if (key >= '1' && key <= '5') {
+      unsigned candidate_index = page_start_ + static_cast<unsigned>(key - '1');
+      if (expanded_candidates_) {
+        candidate_index = gy::candidate_layout::ExpandedDigitCandidate(
+            selected_, page_start_, static_cast<unsigned>(candidates_.size()),
+            static_cast<unsigned>(key - '0'));
+      }
+      // The short final row has no hidden candidate behind a missing column.
+      // Keep the digit consumed while composition is active, but never commit
+      // a different item than the user asked for.
+      if (candidate_index >= candidates_.size()) return S_OK;
+      return RequestEdit({EditActionKind::CommitCandidate, 0, candidate_index});
+    }
     if (key == VK_PRIOR) { MovePage(-1, PageSizeForCurrentView()); ShowCandidates(context_, nullptr); return S_OK; }
     if (key == VK_UP) {
       if (expanded_candidates_) {
