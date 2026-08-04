@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+target_root="${3%/}"
+app="$target_root/Library/Input Methods/GYInputPreview.app"
+login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
+
+if [[ "$login_user" != root && "$login_user" != loginwindow ]]; then
+  user_uid="$(/usr/bin/id -u "$login_user")"
+  /usr/bin/pkill -TERM -u "$user_uid" -x GYInputPreview 2>/dev/null || true
+fi
+
+if [[ -d "$app" ]]; then
+  /bin/rm -rf "$app"
+fi

@@ -9,6 +9,23 @@ status="$state_root/update-status.plist"
 version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null; }
 login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
 
+purge_old_bundle() {
+  local app_dir="$1"
+  if [[ ! -d "$app_dir" ]]; then
+    return
+  fi
+  /bin/rm -rf "$app_dir"
+}
+
+kill_old_process() {
+  if [[ "$login_user" == root || "$login_user" == loginwindow ]]; then
+    return
+  fi
+  local user_uid
+  user_uid="$(/usr/bin/id -u "$login_user")"
+  /usr/bin/pkill -TERM -u "$user_uid" -x GYInput 2>/dev/null || true
+}
+
 mkdir -p "$state_root/rollback"
 backup=''
 if [[ -d "$app_path" && -f "$status" ]]; then
@@ -19,4 +36,7 @@ if [[ -d "$app_path" && -f "$status" ]]; then
     [[ -d "$backup" ]] || /usr/bin/ditto "$app_path" "$backup"
   fi
 fi
+
+kill_old_process
+purge_old_bundle "$app_path"
 printf '%s\n' "$backup" > "$pending"
