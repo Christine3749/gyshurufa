@@ -31,10 +31,10 @@ function info(manifest) {
   };
 }
 
-function headers(manifest, object) {
+function headers(manifest, object, immutable) {
   const value = new Headers({
     "content-type": "application/vnd.apple.installer+xml", "content-disposition": `attachment; filename="${manifest.packageFile}"`,
-    "content-length": String(object.size), "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff",
+    "content-length": String(object.size), "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store", "x-content-type-options": "nosniff",
     "x-gy-release-platform": "macos", "x-gy-release-channel": "preview", "x-gy-release-version": manifest.version
   });
   if (object.httpEtag) value.set("etag", object.httpEtag);
@@ -51,10 +51,11 @@ export default {
     if (["/sha256", "/download/macos/preview/latest/sha256"].includes(path)) {
       return new Response(`${manifest.sha256}  ${manifest.packageFile}\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
     }
+    const versioned = path === `/download/macos/preview/${manifest.version}`;
     if (!["/download", "/download/macos/preview/latest", `/download/macos/preview/${manifest.version}`].includes(path)) return json({ error: "not_found" }, 404);
     const object = await env.RELEASES.get(manifest.objectKey);
     if (!object) return json({ error: "release_not_found" }, 404);
     if (object.size !== manifest.bytes) return json({ error: "invalid_preview", message: "R2 byte size does not match manifest" }, 503);
-    return new Response(request.method === "HEAD" ? null : object.body, { headers: headers(manifest, object) });
+    return new Response(request.method === "HEAD" ? null : object.body, { headers: headers(manifest, object, versioned) });
   }
 };

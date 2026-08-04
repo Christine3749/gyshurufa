@@ -19,8 +19,14 @@ test("preview info is explicitly macOS-only and candidate", async () => {
   assert.equal(response.status, 200); assert.equal(body.platform, "macos"); assert.equal(body.pkgSigned, false);
 });
 
-test("download streams only the immutable macOS preview object", async () => {
+test("latest download avoids stale browser caching", async () => {
   const response = await worker.fetch(new Request("https://mac-preview.shurufa.wang/download"), env());
   assert.equal(response.status, 200); assert.equal(response.headers.get("x-gy-release-channel"), "preview");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(await response.text(), "pkg");
+});
+
+test("versioned download can be cached forever", async () => {
+  const response = await worker.fetch(new Request("https://mac-preview.shurufa.wang/download/macos/preview/2.0.0"), env());
+  assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable");
 });
