@@ -27,6 +27,7 @@
 ## 防复发
 
 - 只有通过真实文本验收的版本才可写入 `knownGoodVersion`。
+- 安装器只能备份 `functionalBaselineVersion`；它不得根据旧状态、进程存活或物理文件存在推断“已知良好”。
 - 回退验收至少覆盖 `nihao`、`zhongguo`、`changduan`、候选数字选择、简繁切换和英文直出。
 - 事件路由日志、控制器激活、进程存活均只算诊断信号，不能算功能成功。
 - 完成三层拆分前，macOS Bundle 更新仍需明确提示注销；拆分后才允许 Engine 热更新和 Engine 级 LKG 回退。

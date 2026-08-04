@@ -16,10 +16,7 @@ rollback_path="$(cat "$pending" 2>/dev/null || true)"
 /usr/bin/defaults write "$status" activationState -string 'logout-required'
 /usr/bin/defaults write "$status" installedAt -string "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 [[ -z "$rollback_path" ]] || /usr/bin/defaults write "$status" rollbackAppPath -string "$rollback_path"
-if [[ -n "$rollback_path" ]]; then
-  rollback_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$rollback_path/Contents/Info.plist")"
-  /usr/bin/defaults write "$status" knownGoodVersion -string "$rollback_version"
-fi
+[[ -n "$rollback_path" ]] || /usr/bin/defaults delete "$status" rollbackAppPath 2>/dev/null || true
 /bin/chmod 644 "$status"
 
 if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
@@ -27,4 +24,4 @@ if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwin
   # Existing clients may retain their old event route until logout.
   /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source
 fi
-echo "GY 输入法已安装；保存工作后注销再登录，才可确认新核心已激活。"
+echo "GY 输入法已安装；注销并完成真实输入验收后，才能标记为可回退版本。"

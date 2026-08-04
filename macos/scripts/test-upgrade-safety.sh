@@ -10,16 +10,15 @@ version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/C
 sandbox="$(mktemp -d)"; trap 'rm -rf "$sandbox"' EXIT
 input_root="$sandbox/Library/Input Methods"
 state_root="$sandbox/Library/Application Support/GYInput"
-user_home="$sandbox/user"
-baseline="$user_home/Library/Application Support/GYInput/physical-baseline.plist"
-mkdir -p "$input_root" "$state_root" "$(dirname "$baseline")"
+mkdir -p "$input_root" "$state_root"
 /usr/bin/ditto "$app" "$input_root/GYInput.app"
-/usr/bin/defaults write "$baseline" version -string "$(version "$app")"
-GY_INPUT_BASELINE_HOME="$user_home" "$root/scripts/preinstall" ignored '/Library/Input Methods' "$sandbox"
+/usr/bin/defaults write "$state_root/update-status.plist" knownGoodVersion -string "$(version "$app")"
+/usr/bin/defaults write "$state_root/update-status.plist" functionalBaselineVersion -string "$(version "$app")"
+"$root/scripts/preinstall" ignored '/Library/Input Methods' "$sandbox"
 backup="$state_root/rollback/GYInput-$(version "$app").app"
 [[ -x "$backup/Contents/MacOS/GYInput" ]] || { echo 'Known-good app was not snapshotted.' >&2; exit 1; }
 "$root/scripts/postinstall" ignored '/Library/Input Methods' "$sandbox" >/dev/null
 [[ "$(/usr/bin/stat -f '%Lp' "$state_root/update-status.plist")" == 644 ]] || { echo 'Upgrade status must be user-readable.' >&2; exit 1; }
 status="$(GY_INPUT_ROOT="$sandbox" "$root/scripts/GYRecovery.sh" status)"
-[[ "$status" == *'activation=logout-required'* && "$status" == *"known-good=$(version "$app")"* && "$status" == *"rollback=$backup"* ]] || { echo 'Upgrade status is incomplete.' >&2; exit 1; }
-echo 'PASS: upgrade preserves the known-good GY core and requires logout activation.'
+[[ "$status" == *'activation=logout-required'* && "$status" == *"functional-baseline=$(version "$app")"* && "$status" == *"rollback=$backup"* ]] || { echo 'Upgrade status is incomplete.' >&2; exit 1; }
+echo 'PASS: upgrade snapshots only a functionally accepted GY core and requires logout activation.'

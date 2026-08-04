@@ -9,6 +9,12 @@ command="${1:-status}"
 version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null; }
 valid_app() { [[ -x "$1/Contents/MacOS/GYInput" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" == 'wang.shurufa.inputmethod.GYInput' ]]; }
 read_status() { /usr/bin/defaults read "$status" "$1" 2>/dev/null || true; }
+run_self_test() {
+  local user; user="$(/usr/bin/stat -f '%Su' /dev/console)"
+  [[ "$user" != root && "$user" != loginwindow ]] || return 1
+  if [[ "$EUID" == 0 ]]; then /usr/bin/sudo -u "$user" "$app_path/Contents/MacOS/GYInput" --self-test
+  else "$app_path/Contents/MacOS/GYInput" --self-test; fi
+}
 route_version() {
   local user home route
   user="$(/usr/bin/stat -f '%Su' /dev/console)"; [[ "$user" == root || "$user" == loginwindow ]] && return 0
@@ -29,7 +35,7 @@ case "$command" in
     valid_app "$app_path" || { echo "GYInput.app is not installed at $app_path" >&2; exit 1; }
     installed="$(version "$app_path")"; activation="$(read_status activationState)"; route="$(route_version)"
     [[ "$route" != "$installed" ]] || activation=active
-    printf 'installed=%s\nactivation=%s\nroute-verified=%s\nknown-good=%s\nrollback=%s\n' "$installed" "$activation" "$route" "$(read_status knownGoodVersion)" "$(read_status rollbackAppPath)"
+    printf 'installed=%s\nactivation=%s\nroute-verified=%s\nknown-good=%s\nfunctional-baseline=%s\nrollback=%s\n' "$installed" "$activation" "$route" "$(read_status knownGoodVersion)" "$(read_status functionalBaselineVersion)" "$(read_status rollbackAppPath)"
     ;;
   repair)
     valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }; register_current
@@ -37,7 +43,9 @@ case "$command" in
     ;;
   mark-known-good)
     require_root; valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }
+    run_self_test || { echo 'Input self-test failed; refusing to mark this version as recoverable.' >&2; exit 1; }
     mkdir -p "$state_root"; /usr/bin/defaults write "$status" knownGoodVersion -string "$(version "$app_path")"
+    /usr/bin/defaults write "$status" functionalBaselineVersion -string "$(version "$app_path")"
     /usr/bin/defaults write "$status" activationState -string active
     echo "Marked $(version "$app_path") as the rollback baseline."
     ;;
@@ -45,6 +53,7 @@ case "$command" in
     require_root; valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }
     backup="$(read_status rollbackAppPath)"; case "$backup" in "$state_root"/rollback/*) ;; *) echo 'No known-good rollback snapshot is available.' >&2; exit 1;; esac
     valid_app "$backup" || { echo 'Rollback snapshot is invalid.' >&2; exit 1; }
+    [[ "$(version "$backup")" == "$(read_status functionalBaselineVersion)" ]] || { echo 'Rollback snapshot has not passed functional acceptance.' >&2; exit 1; }
     current="$(version "$app_path")"; restored="$(version "$backup")"; mkdir -p "$state_root/failed"
     stage="$(/usr/bin/mktemp -d "$target_root/Library/Input Methods/.gy-rollback.XXXXXX")"
     /usr/bin/ditto "$backup" "$stage/GYInput.app"; valid_app "$stage/GYInput.app" || exit 1
