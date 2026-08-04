@@ -4,13 +4,13 @@
 
 ## 0. 2.0.0 的关键节点（不可降级）
 
-`2.0.0` 不是给当前 Bundle 改一个版本号；它是本契约首次完整落地的发布节点。只有同时满足以下条件，任何平台才可使用 2.0.0 名称：
+`2.0` 不是给当前 Bundle 改一个版本号；它是本契约在**各平台独立落地**的发布节点。某平台只有满足以下适用于自己的条件，才可使用 2.0 名称：
 
 1. 共享 `SessionSnapshot v1` 和 `Session Guard` 已独立编译，并以故障注入证明：Engine A 在未上屏拼音期间失效时，Engine B 能收到同一完整快照；旧响应不能覆盖后续按键。
 2. Mac 的 InputMethodKit Bridge 与 Windows 的 TSF Bridge 都只负责系统接键、预编辑和上屏，并都已接入 Guard；Rime、Panel、词库和账号不再位于 Bridge。
 3. 两个完整、可验证的 Engine Slot 使用隔离数据；新 Slot 失败或超时会自动回到 LKG，且真实宿主文本结果不丢字、不英文直出、不要求注销。
 4. Candidate UI 失效时，原生简化候选、Space、Enter 和数字选词仍可上屏；候选不足时少显示，绝不以低质量词凑至 75 个。
-5. TextEdit、Terminal、WebKit/Electron 与 Windows 目标宿主的连续输入、选词、简繁、EN、升级和故障注入验收全部通过。
+5. 该平台的真实目标宿主连续输入、选词、简繁、EN、升级和故障注入验收全部通过；Mac 至少覆盖 TextEdit、Terminal、WebKit/Electron，Windows 覆盖其 TSF 目标宿主。
 
 当前仅完成第 1 条的独立核心与 smoke test，尚未接入任一系统 Bridge；因此当前任何可安装包仍是 `1.x`，不得宣称为 2.0 或作为 2.0 回退基线。
 
@@ -18,10 +18,9 @@
 
 本文件是 Windows、macOS、Android、iOS 与 Linux 的**唯一共同契约**。上传位置、安装包、签名方式、系统 API 和 Native Bridge 可以不同；黄金上屏链路、SessionSnapshot、A/B 回退、候选质量、模式语义、隐私边界与验收门槛不能不同。
 
-- Windows 和 macOS 可以使用独立 Git 分支、独立 R2 预览路径和独立平台验收。Mac 预览不等待 Windows，Windows 预览也不等待 Mac；两者仍必须实现本文件相同的语义和故障边界。
-- 平台预览必须标记为 `2.0-macos-preview` 或 `2.0-windows-preview`，只能服务该平台，不能改写正式 `latest`，也不能伪装成跨平台正式 2.0。
-- 跨平台 `2.0.0-alpha`、beta 与正式版才需要同一语义版本、同一发布清单和所有已支持平台的共同验收；R2 中可有多个平台文件，但不能有两套版本真相。
-- Android、iOS、Linux 可在后续加入发布矩阵；加入前可以没有下载包，加入后必须实现本契约，不能另建“移动版/ Linux 版例外”。
+- Windows、macOS、Android、iOS、Linux 都使用独立 Git 分支、独立 R2 路径、独立版本指针和独立平台验收。任何平台不等待另一平台发布；上传、回滚或升级一个平台绝不能改写另一个平台的下载入口。
+- 每个平台的预览、beta 和正式包必须清楚标明平台、架构、版本、哈希与验收状态；它只能声称符合本契约的共同语义，不能冒充另一个平台的已验证包。
+- Android、iOS、Linux 加入时采用相同的独立发布规则；它们不需要等待已有平台，也不能另建“移动版/ Linux 版例外”。
 
 ## 1. 黄金上屏链路（不可破坏）
 
