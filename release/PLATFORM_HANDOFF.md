@@ -11,7 +11,7 @@
 | 发布真相 | `release/release.json` | 一个版本号、一个 Windows EXE、一个 Mac ARM64 PKG、各自 SHA-256。 |
 | 发布校验 | `release/verify-release-manifest.mjs` | 先校验，再上传；只有双端完整才可以切换 `latest.json`。 |
 | 账户与同步契约 | `release/ACCOUNT_CONTRACT.md` | 两端同一 GY 账户；令牌分别放 DPAPI / Keychain。 |
-| 三层架构与更新 | `release/ARCHITECTURE_CONTRACT.md` | 稳定 Core、可更新 Engine、独立 Account Agent；输入路径零网络。 |
+| 韧性架构与更新 | `release/ARCHITECTURE_CONTRACT.md` | 稳定 Bridge、Session Guard、双完整 Engine、独立 Panel 与 Account Agent；输入路径零网络。 |
 
 ## 不共享的部分
 

@@ -2,7 +2,7 @@
 
 本目录是 [GY 产品标准](../GY_INPUT_METHOD_PRODUCT_STANDARD.md) 的 macOS 外壳：键盘接入使用 InputMethodKit；拼音解析、候选质量、简繁转换和学习使用与 Windows 相同的 Rime schema 与 `native/runtime/rime/shared` 数据。
 
-目标架构是 [稳定 Bridge + 可更新 Engine + 独立 Account Agent](../release/ARCHITECTURE_CONTRACT.md)。在完成拆分前，覆盖 `GYInput.app` 仍是 Core 更新，不能用于频繁日常迭代。
+目标架构是 [稳定 Bridge + Session Guard + 双完整 Engine + 可选 Panel + Data/Agent](../release/ARCHITECTURE_CONTRACT.md)。在完成拆分前，覆盖 `GYInput.app` 仍是 Core 更新，不能用于频繁日常迭代。
 
 ## 共同输入体验
 

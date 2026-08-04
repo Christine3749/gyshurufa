@@ -2,7 +2,7 @@
 
 The planned account domain is `account.shurufa.wang`. HalfSphere Supabase Auth is the intended identity provider, but no production endpoint, key, or redirect URI is stored in this repository until the owner supplies and verifies them.
 
-完整架构边界见 [三层架构契约](ARCHITECTURE_CONTRACT.md)。本文件只定义账户和同步数据；账户能力由独立 Agent 实现，不能进入输入 Core 或 Engine 的按键路径。
+完整架构边界见 [韧性输入法架构契约](ARCHITECTURE_CONTRACT.md)。本文件只定义账户和同步数据；账户能力由独立 Agent 实现，不能进入 Bridge、Session Guard 或 Engine 的按键路径。
 
 ## Identity boundary
 

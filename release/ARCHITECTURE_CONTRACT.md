@@ -1,87 +1,99 @@
-# GY 三层架构与更新契约
+# GY 韧性输入法架构契约（v2）
 
-状态：**已确认的跨端架构基线**。本文件约束 Windows、macOS、账户、同步、AI 与更新；平台只可替换原生实现，不可改变边界。
+状态：**目标架构，尚未由当前 macOS 单体实现满足。** 1.0.11 仅是恢复中文输入的临时修复，不是此架构的发布证明。
 
-## 1. 不可妥协的边界
+## 1. 发布门槛
 
-1. 打字必须离线可用。按键、预编辑、候选、选词、上屏路径零网络、零账户依赖。
-2. 系统输入接入层极小且稳定；身份、事件入口和 IPC 协议视为兼容性契约。
-3. 词库、排序、学习、候选 UI、设置、账户、同步和 AI 不进入系统输入核心。
-4. 任一 Engine、Agent、网络或云端故障不得阻塞文字直出；更新保留最后已验证的本地 Engine。
-5. 用户名不是身份主键、设备 ID、文件夹名或加密密钥；它只是可修改的资料字段。
+“稍微更新就不能中文”是 Stop-Ship 问题。以下任一情况都不得发布：
 
-## 2. 统一三层
+1. 修改词库、候选、UI、学习、设置、账号或同步需要替换系统输入 Bundle/DLL。
+2. 只有一个可运行中文引擎，或所谓回退版本未通过完整中文验收。
+3. Engine、候选 UI、Agent 崩溃会丢失当前拼音、卡住应用或静默上屏英文。
+4. 进程存活、控制器激活或收到按键被当作“输入正常”的证据。
+
+输入必须离线；原始按键、预编辑和候选不得经过网络或 Account Agent。
+
+## 2. 五个独立故障域
 
 ```text
-原生应用的文字输入 API
-        │
-        ▼
-稳定 Core ── 本地版本化 IPC ── 可更新 Engine ── 本地 IPC ── Account & Sync Agent
-                                                                 │
-                                                                 ▼
-                                                    Auth / 同步库 / 加密 Relay
+原生应用
+   │
+   ▼
+① Native Bridge ─ ② Session Guard ─┬─ ③ Engine Slot A（当前）
+ TSF / IMK            组合态与重放   └─ ③ Engine Slot B（LKG）
+   │                                      │
+   │                                      ▼
+   └────────── ④ 可选 Candidate UI    ⑤ Local Data Plane
+                                             ▲
+                                    Control Agent（账号/更新/同步）
 ```
 
-| 层 | Windows | macOS | 允许职责 | 明确禁止 |
+| 域 | Windows | macOS | 唯一职责 | 绝对禁止 |
 | --- | --- | --- | --- | --- |
-| Core | `GyIme.dll`（TSF） | `GYInput.app` 的 InputMethodKit Bridge | 键盘接入、预编辑、上屏、模式、稳定 IPC | 网络、账号、Rime、词库、学习、AI |
-| Engine | `GyImeHost` / `GYInputEngine` | 每用户 `GYInputEngine` 服务 | Rime、排序、用户词库、候选与本地 UI | 账户凭证、云端直接调用 |
-| Agent | `GYAgent.exe` | 每用户 `GYAccountAgent` | 登录、设备、同步、设置、显式 AI、更新协调 | 键盘截获、同步原始按键 |
+| ① Native Bridge | `GyIme.dll`（TSF） | `GYInputBridge.app`（InputMethodKit） | 受系统调用、冻结身份、交给 Guard | Rime、词库、Panel、网络、更新逻辑 |
+| ② Session Guard | DLL 内极小会话机 | Bridge 内极小会话机 | 序号、组合快照、超时、重放、槽位切换 | 账号、学习、候选排序 |
+| ③ Engine Slot | 每用户 `GYEngine` A/B | 每用户 `GYEngine` A/B | 完整 Rime、排序、简繁、选词 | 系统注册、凭证、云端调用 |
+| ④ Candidate UI | `GYPanel` | `GYPanel` | 纯渲染与鼠标操作 | 保存唯一组合态、阻塞上屏 |
+| ⑤ Data / Agent | `GYAgent` + Local Store | `GYAgent` + Local Store | 词库快照、学习日志、账号、同步、更新 | 截获按键、参与单次按键决策 |
 
-候选面板可留在 Engine，或作为 Engine 启动的独立 Panel；它绝不属于 Core。Core 只传递光标锚点、状态和用户选择。
+Bridge 的身份是兼容性 ABI：Windows TSF Profile/CLSID；macOS `CFBundleIdentifier`、`TISInputSourceID`、`InputMethodConnectionName` 和唯一事件入口。它们只能在独立、显式的迁移中修改。
 
-## 3. Core 兼容性与更新
+## 3. 中文输入的强保证
 
-以下字段、入口和消息版本是 Core 契约：
+每个输入会话由 Guard 保存一个有界 `SessionSnapshot`：模式、拼音预编辑、已选词、光标锚点和严格递增序号。每次发给 Engine 的是完整快照而不是不可重放的增量。
 
-- Windows 的 TSF Profile/CLSID 与 DLL 到 Engine 的本地 IPC；
-- macOS 的 `CFBundleIdentifier`、`TISInputSourceID`、`InputMethodConnectionName` 与唯一 InputMethodKit 事件入口；
-- `CoreRequest vN` 与 `EngineState vN` 的本地、可校验、带会话 ID 和序号的协议。
+1. Guard 先向活跃 Slot 请求候选；响应携带相同序号才可显示或上屏。
+2. 超时或崩溃时，Guard 保留 marked text 与快照，连接已预热的 LKG Slot，重放同一快照。
+3. 新 Slot 必须给出相同会话序号的完整候选状态；用户已输入的拼音不得消失或变成英文。
+4. Candidate UI 失败时，Guard 仍保留键盘数字选词，并使用原生简化候选视图；UI 不在提交链路上。
+5. 两个 Engine 均不可用时，明确显示恢复状态，不伪造“正常”。系统中文输入源必须保留为用户的独立逃生路径；不得静默改变用户输入源。
 
-Core 只能在兼容性迁移时更新。此类更新必须新建版本、保留可回退快照、停止受影响客户端或明确要求注销；不得宣称已激活。普通 Engine/Agent 更新使用并存版本、健康检查、原子切换和最后已知良好版本回退，不更换 Core。
+Guard 的本地请求与响应必须版本化、可校验、幂等，且每会话串行。目标预算：常规响应 12 ms，超时探测 40 ms，LKG 切换不超过 150 ms；超时预算不得阻塞宿主应用主线程。
 
-> 过渡期说明：当前 Mac 尚未完成 Bridge/Engine 拆分。因此覆盖 `GYInput.app` 仍属于 Core 更新，可能需要注销。未完成拆分前，禁止把它当作日常迭代渠道。
+## 4. Engine、数据与候选
 
-## 4. 本地协议与降级
+每个 Slot 都是**完整可输入**的 Engine：同版本 Rime 二进制、只读基础词典、简繁转换数据和兼容协议。LKG 不是旧 `.app`、不是“能启动”的进程，也不是只会 `nihao → 你好` 的演示表。
 
-Core 向 Engine 仅发送本地输入请求：模式、会话、编辑动作、预编辑序号和光标锚点。Engine 返回候选、预编辑、选择状态和已确认提交文本。协议必须有超时、版本协商和重复请求保护。
+- Rime 决定候选顺序、分页与原始索引；产品代码不得用未经语料验证的词频/长度规则删除候选。
+- 用户学习以追加事件日志写入 Local Data Plane；Engine 使用可回滚快照，两个 Slot 不直接竞争同一 Rime 写目录。
+- 数据迁移必须向后兼容；新数据快照在影子目录构建、校验后原子切换。
+- `GYPanel` 只渲染 Engine 返回的模型。它可重启、替换、关闭，不能影响 Space、Enter、数字键和上屏。
 
-- Engine 更新前保留旧进程，旧进程健康、协议兼容后才切换新进程。
-- 更新失败或 Engine 不可用时，Core 连接最后已知良好 Engine；无法连接时取消组合并让应用原样接收按键，不能卡住应用。
-- Agent 只能消费已选择的词条聚合、设置变更和用户显式 AI 请求；它不能订阅原始按键流。
+## 5. 更新与自动回退
 
-## 5. 账户、用户名与设备
+普通更新永远不替换 Bridge/DLL：
 
-| 记录 | 规则 |
-| --- | --- |
-| `user_id` | Auth 提供的不可变 UUID；所有数据与权限的唯一归属。 |
-| `handle` | 可选、大小写规范化后的唯一用户名；可改，改名不迁移数据。 |
-| `display_name` | 可选显示昵称；不要求唯一。 |
-| `device_id` | 每次设备注册随机生成；附平台、公开标签、公钥、最后在线与撤销时间。 |
+1. 下载并验证新 Engine 到未使用槽位，校验签名、哈希、协议版本和数据格式。
+2. 在隔离用户数据目录跑语料、简繁、候选选择、分页、英文直出、延迟和崩溃重启测试。
+3. 新 Slot 预热成功后，只在当前组合态为空时原子切换；旧 Slot 至少保留到新 Slot 经真实会话健康窗口验证。
+4. 失败、重复超时或协议不一致时自动回到 LKG，记录诊断但不上传输入内容。
+5. `functionalBaselineVersion` 只能在自动测试和人工真实输入都通过后写入；安装器、版本号、进程存活和日志都不能单独提升基线。
 
-首次安装创建纯本地匿名配置，立即可输入。登录仅在设置/Agent 中进行；推荐首版邮件 Magic Link，后续再加 Passkey。登出不破坏本地输入，用户可选择保留或清除本机同步副本。新设备、撤销设备、导出与删除必须由用户可见地确认。
+Bridge 更新属于罕见兼容性发布：必须新建版本、保留可验证 Bridge 回退包、明确要求关闭客户端或注销。当前 Mac 因仍是单体 Bundle，任何覆盖安装都属于这种高风险发布；在完成拆分前不得用于日常试验。
 
-## 6. 凭证、同步与隐私
+## 6. 账户、同步与安全
 
-- Windows 刷新令牌和设备私钥只进 DPAPI/Credential Manager；macOS 只进 Keychain。
-- 客户端不得保存密码、Supabase Service Role Key、R2/GCP 凭证或管理员 API Key。
-- `profiles`、`devices`、`input_preferences`、`phrase_entries`、`lexicon_events` 必须按 `auth.uid()` 做 RLS。
-- 短语、设置、学习同步默认关闭并逐项授权；学习同步是聚合词条事件，不是按键历史。
-- GY Link 剪贴板独立授权、端到端加密、带 TTL；服务端只保存密文。撤销设备后轮换设备组密钥。
-- AI 只由 Agent 在用户显式操作后调用；输入内容、候选、剪贴板正文不写入上传日志或分析。
+`GYAgent` 是唯一可联网组件。输入在 Agent 未启动、登出、断网或服务端故障时完全可用。
 
-## 7. 发布与验收
+- `user_id` 是不可变归属；`handle`、昵称和设备标签都可改，绝不能做数据目录、加密密钥或权限主键。
+- Windows 令牌/私钥使用 DPAPI；macOS 使用 Keychain。客户端不保存管理密钥或服务端凭证。
+- 设置、短语、学习同步逐项 opt-in；学习事件不是原始按键历史。所有云端表按 `auth.uid()` RLS。
+- 更新由 Agent 协调，但 Agent 只能提出新 Engine 槽位；它没有替换 Bridge 的权限。
 
-1. `release/release.json` 是版本真相；Core、Engine、Agent 都记录兼容矩阵与 SHA-256。
-2. Core 发布需真实升级/回退测试；Engine 发布需热切换、离线、协议回退和延迟测试；Agent 发布需登录、登出、撤销、断网测试。
-3. 所有平台必须验证：未登录、登录、登出、网络断开、Agent 崩溃、Engine 回退和多设备冲突。
-4. 公共发布仍需 Windows 可信签名，以及 macOS Developer ID、公证和 stapling。
-5. “已知良好”必须通过真实输入验收：常用拼音、候选选择、简繁、英文直出和提交文本；控制器启动或收到按键不能单独作为健康结论。
+## 7. 现实实施顺序
 
-## 8. 实施顺序
+1. 冻结当前 `GYInput.app` / `GyIme.dll` 的身份与事件入口；停止向其中加入 Rime、UI、恢复或账户功能。
+2. 先实现跨平台 `SessionSnapshot v1` 与可执行的双 Slot Engine 测试器，杀死活跃 Engine 后验证未上屏拼音仍可恢复。
+3. 建立只读基础词典 + 版本化 Local Data Plane，完成影子迁移与 LKG 槽位切换。
+4. 将 macOS Bridge、Windows DLL 接入 Guard；这一步才需要一次明确的系统核心迁移。
+5. 抽出 Candidate UI，随后再接学习、设置、Account Agent、同步与 AI。
 
-1. 固定并缩小 Windows DLL 与 macOS Bridge；冻结身份、事件入口和 IPC v1。
-2. 将 Rime、候选、学习和 Panel 从 Mac Bridge 移至 Engine；只在独立候选环境验证 Engine。
-3. 建立本地词库与最后已知良好 Engine 回退。
-4. 实现 Account Agent、账户资料和设备列表，不开启自动同步。
-5. 经隐私与密钥评审后，逐项开启设置/短语/学习同步；最后才是 GY Link 与 AI。
+在第 2 步的故障注入测试通过前，GY 只能是开发候选输入法；日常工作应保留系统中文输入法作为独立后备。
+
+## 8. 必测故障注入
+
+- 输入 `nihao`、`changduan`、长句组合中杀掉 Engine A；预编辑、候选和选择必须由 B 恢复。
+- 选中第 2/3/5 个候选后切换 Engine；上屏词不得改变。
+- 杀掉 Candidate UI、Agent、网络，输入与数字选词仍正常。
+- 更新期间持续在 TextEdit、Terminal、WebKit/Electron 输入；不得要求注销或丢失组合态。
+- 仅 Bridge 迁移时才测试注销；迁移后验证旧 Bridge 回退、TIS 注册和真实文本输入。

@@ -4,19 +4,18 @@
 
 当前工程是 React/Vite 的交互原型，不是 Windows 输入法。它不能接收系统按键、创建编辑会话或向 Word、浏览器、微信等程序提交文字。
 
-正式产品使用 [三层架构契约](release/ARCHITECTURE_CONTRACT.md)，拆分为三个边界明确的模块：
+正式产品使用 [韧性输入法架构契约](release/ARCHITECTURE_CONTRACT.md)，拆分为五个独立故障域：
 
 ```text
 Windows 应用程序
         │ TSF 编辑会话
         ▼
-GYTSF.dll  ───────────►  GYInputEngine / GyImeHost
-（按键、预编辑、上屏）          （分词、候选、排序、学习、候选窗）
-                                       │
-                                       └── 本地 SQLite / 词频库
-                                                │ 本地 IPC
-                                                ▼
-                                   GYAgent.exe（账户、同步、更新、显式 AI）
+GYTSF.dll + Session Guard ───────►  GYEngine A / GYEngine B
+（按键、预编辑、快照、重放）       （完整 Rime、候选、排序、简繁）
+        │                                  │
+        ├── GYPanel（可重启的候选 UI）      └── Local Data Plane（词库快照/学习日志）
+        │                                                │
+        └─────────────────────────────────────── GYAgent.exe（账户、同步、更新、显式 AI）
 ```
 
 ## 不可妥协的产品原则
