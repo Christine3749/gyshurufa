@@ -12,9 +12,7 @@
 
 ## 构建与测试
 
-首次仅需在开发机安装 `brew install librime`。构建脚本会将 arm64 `librime`、其动态依赖和共享 Rime 数据复制到 app bundle；最终用户不需要 Homebrew。
-
-Homebrew 当前提供的 `librime` 在本机标记为 macOS 26.0，因此它只能用于本机开发验证；`package-core.sh` 默认拒绝将其做成发布包。正式包必须用 macOS 13.0 为目标从源码构建 Rime 及依赖。
+构建脚本从固定版本的 Rime、Boost 源码构建 arm64 macOS 13 运行库，并把 `librime`、OpenCC 数据和共享 Rime 数据复制到 app bundle。它不链接 Homebrew 动态库；最终用户不需要 Homebrew。
 
 ```bash
 ./macos/scripts/test-core.sh

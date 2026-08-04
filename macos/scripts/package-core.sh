@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$root/build/GYInput.app"
 [[ -d "$app" ]] || { echo "Run build-core.sh first." >&2; exit 1; }
 "$root/scripts/verify-input-source-contract.sh" "$app/Contents/Info.plist"
+"$root/scripts/verify-bundled-runtime.sh" "$app"
 runtime="$app/Contents/Frameworks/librime.1.dylib"
 minimum="$(otool -l "$runtime" | awk '/LC_BUILD_VERSION/{found=1; next} found && $1 == "minos" {print $2; exit}')"
 major="${minimum%%.*}"
