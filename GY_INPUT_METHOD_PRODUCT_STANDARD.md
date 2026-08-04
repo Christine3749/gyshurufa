@@ -68,17 +68,20 @@ GY 是原生系统输入法，不是网页输入框、浏览器插件或聊天�
 
 ### Windows
 
-- Windows 采用 TSF 核心 DLL + 独立 Host 架构。
-- TSF DLL 保持小而稳定：键盘接入、模式读取、预编辑、文本提交和与 Host 通讯。
-- 候选质量、词库、学习、设置、AI、同步、诊断等持续演进功能放入 Host 或独立服务。
+- Windows 采用稳定 TSF Core、可更新 Engine、独立 Account & Sync Agent 三层架构。
+- TSF DLL 保持小而稳定：键盘接入、模式读取、预编辑、文本提交和与 Engine 通讯。
+- 候选质量、词库、学习和候选 UI 放入 Engine；账户、同步、AI 和更新协调放入 Agent。
 - 不得强行从其他应用进程卸载已加载的 DLL；核心更新应明确提示关闭受影响应用，必要时注销或重启 Windows。
 
 ### macOS
 
 - macOS 必须是原生 InputMethodKit 输入法，不复制 Windows TSF DLL、命名管道、注册表或安装器代码。
-- Mac 复用 GY 的产品语义、Rime 数据、候选质量规则、模式规则、VI、账户与同步契约；用 macOS 原生输入源、钥匙串和签名/公证实现。
+- Mac 采用稳定 InputMethodKit Bridge、可更新 Engine、独立 Account & Sync Agent 三层架构；复用 GY 的产品语义、Rime 数据、候选质量规则、模式规则、VI、账户与同步契约。
+- Bridge 只做键盘接入、预编辑、上屏和本地 IPC；Rime、候选、学习和 Panel 不进入 Bridge；令牌与设备私钥只进 Keychain。
 - 第一阶段可使用系统候选窗确保兼容性；定制 GY 面板前，必须保证相同的五候选、模式、选词和分页语义。
 - macOS 核心 Bundle 被运行中应用加载时也不可强制热替换；核心更新应提示退出受影响应用或注销，不能假装已激活。
+
+完整职责、协议、账户和更新规则以 [三层架构契约](release/ARCHITECTURE_CONTRACT.md) 为准。
 
 ### Android、iOS、Linux
 

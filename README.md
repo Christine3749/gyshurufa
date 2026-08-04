@@ -2,6 +2,10 @@
 
 GY 输入法现在包含可安装的 Windows 原生 TSF 输入法核心，而不是网页输入模拟器。
 
+## 架构契约
+
+跨端实现遵循 [GY 产品标准](GY_INPUT_METHOD_PRODUCT_STANDARD.md) 与 [三层架构契约](release/ARCHITECTURE_CONTRACT.md)：稳定系统 Core、可更新本地 Engine、独立 Account & Sync Agent。输入路径离线且零网络；账户、同步和 AI 不得进入系统输入核心。
+
 ## 使用真正的输入法
 
 在 PowerShell 运行：

@@ -11,12 +11,13 @@
 | 发布真相 | `release/release.json` | 一个版本号、一个 Windows EXE、一个 Mac ARM64 PKG、各自 SHA-256。 |
 | 发布校验 | `release/verify-release-manifest.mjs` | 先校验，再上传；只有双端完整才可以切换 `latest.json`。 |
 | 账户与同步契约 | `release/ACCOUNT_CONTRACT.md` | 两端同一 GY 账户；令牌分别放 DPAPI / Keychain。 |
+| 三层架构与更新 | `release/ARCHITECTURE_CONTRACT.md` | 稳定 Core、可更新 Engine、独立 Account Agent；输入路径零网络。 |
 
 ## 不共享的部分
 
 | Windows | macOS |
 | --- | --- |
-| TSF DLL、Host、注册表、Inno Setup、命名管道 | InputMethodKit、Input Source、Keychain、Developer ID、notarization |
+| TSF DLL、Engine/Agent、注册表、Inno Setup、命名管道 | InputMethodKit Bridge、Engine/Agent、Keychain、Developer ID、notarization |
 | x64 EXE | Apple Silicon arm64 PKG |
 | 关闭/重新打开输入应用以激活 DLL | 退出使用输入法的应用/必要时注销以激活 Bundle |
 
@@ -31,17 +32,10 @@
 5. 两端都运行共享发布校验，再由 Windows 发布机最后切换 R2 的 `releases/latest.json`。
 6. 官网只请求 `/api/releases/latest`；只有 Worker 返回已验证的 Windows 和 macOS 元数据时显示下载按钮。
 
-## 当前 0.9.33 的真实状态
+## 当前发布状态
 
-`0.9.33` 仍是 `candidate/draft`：本地存在 Windows EXE，但 canonical manifest 还没有最终哈希；此电脑没有已签名、公证的 Mac PKG。因此它不能成为跨平台 `latest`，也不应被官网标为“正式可下载”。
+以 `release/release.json` 为准。候选构建、未签名 Windows 包或未公证的 Mac PKG 都不能成为跨平台 `latest`，也不应被官网标为“正式可下载”。
 
 ## GitHub 共同仓库
 
-本地仓库当前没有配置 `origin`。得到正确 GitHub URL 后，仅执行一次：
-
-```powershell
-git remote add origin <你的-GitHub-仓库-URL>
-git push -u origin main
-```
-
-Mac 和 Windows 都只从该仓库同步；每次工作前拉取，完成后走独立提交。不要用压缩包、U 盘副本或“同版本覆盖”来同步源码或发布物。
+Mac 和 Windows 都只从配置好的 GitHub 仓库同步；每次工作前拉取，完成后走独立提交。不要用压缩包、U 盘副本或“同版本覆盖”来同步源码或发布物。

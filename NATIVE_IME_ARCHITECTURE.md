@@ -4,18 +4,19 @@
 
 当前工程是 React/Vite 的交互原型，不是 Windows 输入法。它不能接收系统按键、创建编辑会话或向 Word、浏览器、微信等程序提交文字。
 
-正式产品应拆分为三个边界明确的进程/模块：
+正式产品使用 [三层架构契约](release/ARCHITECTURE_CONTRACT.md)，拆分为三个边界明确的模块：
 
 ```text
 Windows 应用程序
         │ TSF 编辑会话
         ▼
-GYTSF.dll  ───────────►  GYInputEngine.dll
-（按键、预编辑、候选窗）       （分词、候选、排序、学习）
-        │                            │
-        │                             └── 本地 SQLite / 加密词频库
-        ▼
-GYSettings.exe  ─────►  GYAgent.exe（可选；更新、显式 AI 请求）
+GYTSF.dll  ───────────►  GYInputEngine / GyImeHost
+（按键、预编辑、上屏）          （分词、候选、排序、学习、候选窗）
+                                       │
+                                       └── 本地 SQLite / 词频库
+                                                │ 本地 IPC
+                                                ▼
+                                   GYAgent.exe（账户、同步、更新、显式 AI）
 ```
 
 ## 不可妥协的产品原则
@@ -35,6 +36,7 @@ GYSettings.exe  ─────►  GYAgent.exe（可选；更新、显式 AI �
 | 自有能力 | GY 用户学习、上下文排序、短语、领域词典 | 这是最终差异化，而不是重写成熟基础拼音解析。 |
 | 存储 | SQLite + DPAPI 加密敏感设置 | 本地、可迁移、可清除；不把输入记录写进日志。 |
 | 候选窗 | Win32 / DirectWrite / Direct2D | 低延迟、DPI 正确、可贴合文本光标。 |
+| 账户与同步 | `GYAgent.exe` + Supabase Auth | 登录、设备和网络与输入 Host 隔离；令牌只存 DPAPI。 |
 | 设置应用 | WinUI 3 或 Tauri 2 | 与 TSF DLL 隔离；当前 React 原型可以迁移为设置页面，而不能作为输入前端。 |
 | 安装与更新 | MSIX 或签名 MSI + 独立更新器 | 输入法需要管理员级安装体验、卸载和版本回滚。 |
 
