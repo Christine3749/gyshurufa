@@ -47,7 +47,7 @@ cp "$recovery" "$app/Contents/Resources/GYRecovery.sh"
 xcrun clang++ -fobjc-arc -mmacosx-version-min=13.0 -I "$rime_prefix/include" \
   -framework Cocoa -framework Carbon -framework InputMethodKit \
   "$root/GYInput/Sources/main.m" "$root/GYInput/Sources/GYInputController.m" \
-  "$root/GYInput/Sources/GYCandidatePanel.m" "$root/GYInput/Sources/GYCandidateQuality.m" \
+  "$root/GYInput/Sources/GYCandidateLayout.m" "$root/GYInput/Sources/GYCandidatePanel.m" "$root/GYInput/Sources/GYCandidateQuality.m" \
   "$root/GYInput/Sources/GYActivationEvidence.m" "$root/GYInput/Sources/GYDiagnostics.m" "$root/GYInput/Sources/GYInputMode.m" \
   "$root/GYInput/Sources/GYRimeRuntime.mm" "$root/GYInput/Sources/GYRimeSession.mm" \
   "$rime_prefix/lib/librime.1.dylib" -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/GYInput"

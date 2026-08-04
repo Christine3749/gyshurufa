@@ -22,7 +22,7 @@ for size in 16 32 128 256 512; do sips -z "$size" "$size" "$iconset/icon_512x512
 for size in 16 32 128 256; do doubled=$((size * 2)); sips -z "$doubled" "$doubled" "$iconset/icon_512x512@2x.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null; done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/GYIcon.icns"
 xcrun clang++ -fobjc-arc -mmacosx-version-min=13.0 -I "$rime_prefix/include" -framework Cocoa -framework Carbon -framework InputMethodKit \
-  "$root/GYInput/Sources/main.m" "$root/GYInput/Sources/GYInputController.m" "$root/GYInput/Sources/GYCandidatePanel.m" "$root/GYInput/Sources/GYCandidateQuality.m" \
+  "$root/GYInput/Sources/main.m" "$root/GYInput/Sources/GYInputController.m" "$root/GYInput/Sources/GYCandidateLayout.m" "$root/GYInput/Sources/GYCandidatePanel.m" "$root/GYInput/Sources/GYCandidateQuality.m" \
   "$root/GYInput/Sources/GYActivationEvidence.m" "$root/GYInput/Sources/GYDiagnostics.m" "$root/GYInput/Sources/GYInputMode.m" "$root/GYInput/Sources/GYRimeRuntime.mm" "$root/GYInput/Sources/GYRimeSession.mm" \
   "$rime_prefix/lib/librime.1.dylib" -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/GYInputPreview"
 cp -L "$rime_prefix/lib/librime.1.dylib" "$app/Contents/Frameworks/librime.1.dylib"

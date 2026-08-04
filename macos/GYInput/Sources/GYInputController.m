@@ -1,13 +1,11 @@
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
 #import "GYActivationEvidence.h"
+#import "GYCandidateLayout.h"
 #import "GYDiagnostics.h"
 #import "GYCandidatePanel.h"
 #import "GYInputMode.h"
 #import "GYRimeSession.h"
-
-static const NSUInteger GYCandidatePoolLimit = 75;
-static const NSUInteger GYCandidatesPerPage = 25;
 
 @interface GYInputController : IMKInputController
 @end
@@ -16,9 +14,7 @@ static const NSUInteger GYCandidatesPerPage = 25;
   __weak id _activeClient;
   GYRimeSession *_rime;
   GYCandidatePanel *_candidatePanel;
-  NSInteger _selection;
-  NSUInteger _candidatePage;
-  BOOL _expanded;
+  GYCandidateLayout _layout;
   BOOL _hasMarkedText;
 }
 
@@ -32,10 +28,14 @@ static const NSUInteger GYCandidatesPerPage = 25;
       if (action == GYCandidateActionSelect) {
         [strongSelf selectVisibleCandidateAtIndex:index]; [strongSelf applyRimeResult]; return;
       }
-      if (action == GYCandidateActionToggle) { strongSelf->_expanded = !strongSelf->_expanded; strongSelf->_candidatePage = 0; }
-      else if (action == GYCandidateActionPrevious) [strongSelf previousCandidatePage];
-      else if (action == GYCandidateActionNext) [strongSelf nextCandidatePage];
-      strongSelf->_selection = 0; [strongSelf refreshCandidates];
+      if (action == GYCandidateActionToggle) {
+        GYSetCandidateLayoutExpanded(&strongSelf->_layout, strongSelf.candidateCount, !strongSelf->_layout.expanded);
+      } else if (action == GYCandidateActionPrevious) {
+        GYMoveCandidateLayout(&strongSelf->_layout, strongSelf.candidateCount, GYCandidateMovementPreviousPage);
+      } else if (action == GYCandidateActionNext) {
+        GYMoveCandidateLayout(&strongSelf->_layout, strongSelf.candidateCount, GYCandidateMovementNextPage);
+      }
+      [strongSelf refreshCandidates];
     }];
     GYTrace(_rime.ready ? @"controller-init rime=ready" : @"controller-init rime=failed");
   }
@@ -47,30 +47,18 @@ static const NSUInteger GYCandidatesPerPage = 25;
 - (id)currentClient { return _activeClient ?: self.client; }
 
 - (NSUInteger)candidateCount { return MIN(GYCandidatePoolLimit, _rime.candidates.count); }
-- (NSUInteger)candidateOffset { return _expanded ? _candidatePage * GYCandidatesPerPage : 0; }
-- (void)normalizeCandidatePage {
-  if (!_expanded || self.candidateCount == 0) { _candidatePage = 0; return; }
-  _candidatePage = MIN(_candidatePage, (self.candidateCount - 1) / GYCandidatesPerPage);
-}
+- (void)normalizeCandidateLayout { GYNormalizeCandidateLayout(&_layout, self.candidateCount); }
 - (NSArray<NSString *> *)visibleCandidates {
-  [self normalizeCandidatePage]; NSUInteger offset = self.candidateOffset;
-  NSUInteger limit = _expanded ? GYCandidatesPerPage : 5;
-  NSUInteger length = MIN(limit, self.candidateCount - offset);
-  return [_rime.candidates subarrayWithRange:NSMakeRange(offset, length)];
+  [self normalizeCandidateLayout]; NSUInteger count = self.candidateCount;
+  NSUInteger length = GYCandidateVisibleCount(_layout, count);
+  return length ? [_rime.candidates subarrayWithRange:NSMakeRange(_layout.pageStart, length)] : @[];
 }
 - (BOOL)hasNextCandidatePage {
-  return _expanded && self.candidateOffset + GYCandidatesPerPage < self.candidateCount;
-}
-- (BOOL)nextCandidatePage {
-  if (![self hasNextCandidatePage]) return NO;
-  _candidatePage++; _selection = 0; return YES;
-}
-- (BOOL)previousCandidatePage {
-  if (!_expanded || _candidatePage == 0) return NO;
-  _candidatePage--; _selection = 0; return YES;
+  [self normalizeCandidateLayout];
+  return _layout.pageStart + GYCandidatePageSize(_layout.expanded) < self.candidateCount;
 }
 - (BOOL)selectVisibleCandidateAtIndex:(NSInteger)index {
-  NSInteger absoluteIndex = (NSInteger)self.candidateOffset + index;
+  NSInteger absoluteIndex = (NSInteger)_layout.pageStart + index;
   if (index < 0 || absoluteIndex >= (NSInteger)self.candidateCount) return NO;
   return [_rime selectCandidateAtIndex:absoluteIndex];
 }
@@ -87,14 +75,13 @@ static const NSUInteger GYCandidatesPerPage = 25;
 - (void)refreshCandidates {
   NSArray *visible = self.visibleCandidates;
   if (visible.count == 0) { [_candidatePanel hide]; return; }
-  _selection = MIN(_selection, (NSInteger)visible.count - 1);
-  [_candidatePanel showCandidates:visible selection:_selection mode:GYInputModeStore.sharedStore.mode expanded:_expanded
-                       expandable:self.candidateCount > 5 previous:_candidatePage > 0
+  [_candidatePanel showCandidates:visible selection:_layout.selection mode:GYInputModeStore.sharedStore.mode expanded:_layout.expanded
+                       expandable:self.candidateCount > GYCandidateColumns previous:_layout.pageStart > 0
                              next:self.hasNextCandidatePage client:self.currentClient];
 }
 
 - (void)clearComposition {
-  [_candidatePanel hide]; [_rime clear]; _selection = 0; _candidatePage = 0; _expanded = NO;
+  [_candidatePanel hide]; [_rime clear]; _layout = (GYCandidateLayout){0};
   id client = self.currentClient;
   if (_hasMarkedText && [client respondsToSelector:@selector(unmarkText)]) [client unmarkText];
   _hasMarkedText = NO;
@@ -111,28 +98,16 @@ static const NSUInteger GYCandidatesPerPage = 25;
 - (void)commitComposition:(id)sender { (void)sender; [_rime commitDefault]; [self applyRimeResult]; }
 
 - (BOOL)moveSelectionForKey:(NSInteger)keyCode {
-  NSArray *visible = self.visibleCandidates;
-  if (visible.count == 0) return NO;
-  if (keyCode == kVK_DownArrow && !_expanded && self.candidateCount > 5) { _expanded = YES; _selection = 0; [self refreshCandidates]; return YES; }
-  if (keyCode == kVK_PageDown && _expanded) { if ([self nextCandidatePage]) [self refreshCandidates]; return YES; }
-  if (keyCode == kVK_PageUp && _expanded) { if ([self previousCandidatePage]) [self refreshCandidates]; return YES; }
-  if (keyCode == kVK_UpArrow && _selection < 5 && _expanded) {
-    NSInteger column = _selection;
-    if ([self previousCandidatePage]) {
-      NSArray *previous = self.visibleCandidates; NSInteger rowStart = MAX(0, (NSInteger)previous.count - 5) / 5 * 5;
-      _selection = MIN(rowStart + column, (NSInteger)previous.count - 1); [self refreshCandidates]; return YES;
-    }
-    _expanded = NO; _selection = 0; [self refreshCandidates]; return YES;
-  }
-  NSInteger delta = keyCode == kVK_LeftArrow ? -1 : keyCode == kVK_RightArrow ? 1 : keyCode == kVK_UpArrow ? -5 : keyCode == kVK_DownArrow ? 5 : 0;
-  NSInteger target = _selection + delta;
-  if (delta == 0 || target < 0 || target >= (NSInteger)visible.count) {
-    if (_expanded && keyCode == kVK_DownArrow && [self nextCandidatePage]) {
-      NSArray *next = self.visibleCandidates; _selection = MIN(_selection % 5, (NSInteger)next.count - 1); [self refreshCandidates]; return YES;
-    }
-    return delta != 0;
-  }
-  _selection = target; [self refreshCandidates]; return YES;
+  GYCandidateMovement movement;
+  if (keyCode == kVK_UpArrow) movement = GYCandidateMovementUp;
+  else if (keyCode == kVK_DownArrow) movement = GYCandidateMovementDown;
+  else if (keyCode == kVK_LeftArrow) movement = GYCandidateMovementLeft;
+  else if (keyCode == kVK_RightArrow) movement = GYCandidateMovementRight;
+  else if (keyCode == kVK_PageUp) movement = GYCandidateMovementPreviousPage;
+  else if (keyCode == kVK_PageDown) movement = GYCandidateMovementNextPage;
+  else return NO;
+  if (!GYMoveCandidateLayout(&_layout, self.candidateCount, movement)) return NO;
+  [self refreshCandidates]; return YES;
 }
 
 - (BOOL)selectNumberForKey:(NSInteger)keyCode {
@@ -151,7 +126,7 @@ static const NSUInteger GYCandidatesPerPage = 25;
   if (keyCode == kVK_Delete) { if (![_rime deleteBackward]) return NO; [self applyRimeResult]; return YES; }
   if ([self moveSelectionForKey:keyCode] || [self selectNumberForKey:keyCode]) return YES;
   if ((keyCode == kVK_Space || keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter) && _rime.preedit.length) {
-    [self selectVisibleCandidateAtIndex:_selection]; [self applyRimeResult]; return YES;
+    [self selectVisibleCandidateAtIndex:_layout.selection]; [self applyRimeResult]; return YES;
   }
   if ([_rime processText:string mode:GYInputModeStore.sharedStore.mode]) { [self applyRimeResult]; return YES; }
   if (_rime.preedit.length) { [_rime commitDefault]; [self applyRimeResult]; }

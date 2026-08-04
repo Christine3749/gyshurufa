@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
+#import "GYCandidateLayout.h"
 #import "GYCandidatePanel.h"
 #import "GYRimeSession.h"
 #import <string.h>
@@ -17,6 +18,17 @@ static int RegisterInputSource(void) {
   return status == noErr ? 0 : 3;
 }
 
+@interface GYPreviewTextClient : NSObject @end
+@implementation GYPreviewTextClient
+- (NSRange)markedRange { return NSMakeRange(0, 1); }
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+  (void)range; if (actualRange) *actualRange = NSMakeRange(0, 1);
+  NSRect visible = NSScreen.mainScreen.visibleFrame;
+  return NSMakeRect(NSMidX(visible) - 1, NSMidY(visible), 2, 20);
+}
+- (NSInteger)windowLevel { return NSNormalWindowLevel; }
+@end
+
 static int PreviewCandidates(BOOL expanded) {
   NSApplication *application = NSApplication.sharedApplication;
   application.activationPolicy = NSApplicationActivationPolicyRegular;
@@ -24,8 +36,9 @@ static int PreviewCandidates(BOOL expanded) {
   GYCandidatePanel *panel = [[GYCandidatePanel alloc] initWithActionHandler:^(GYCandidateAction action, NSInteger index) {
     NSLog(@"GY preview action=%ld index=%ld", (long)action, (long)index);
   }];
+  GYPreviewTextClient *client = [GYPreviewTextClient new];
   [panel showCandidates:expanded ? words : [words subarrayWithRange:NSMakeRange(0, 5)] selection:0
-                   mode:GYInputModeSimplified expanded:expanded expandable:YES previous:NO next:expanded client:nil];
+                   mode:GYInputModeSimplified expanded:expanded expandable:YES previous:NO next:expanded client:client];
   [application activateIgnoringOtherApps:YES]; [application run];
   return 0;
 }
@@ -43,7 +56,8 @@ static int DumpCandidates(const char *code) {
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     if (argc == 2 && strcmp(argv[1], "--register-input-source") == 0) return RegisterInputSource();
-    if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return GYRunRimeSelfTest() ? 0 : 1;
+    if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return GYRunRimeSelfTest() && GYRunCandidateLayoutSelfTest() ? 0 : 1;
+    if (argc == 2 && strcmp(argv[1], "--layout-self-test") == 0) return GYRunCandidateLayoutSelfTest() ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "--preview-collapsed") == 0) return PreviewCandidates(NO);
     if (argc == 2 && strcmp(argv[1], "--preview-expanded") == 0) return PreviewCandidates(YES);
     if (argc == 3 && strcmp(argv[1], "--dump-candidates") == 0) return DumpCandidates(argv[2]);
