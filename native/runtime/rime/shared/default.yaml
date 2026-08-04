@@ -4,4 +4,5 @@ config_version: '2.1'
 schema_list:
   - schema: luna_pinyin
 menu:
-  page_size: 20
+  # Keep a larger engine page than the 5 × 5 visual panel; GY filters it down.
+  page_size: 96

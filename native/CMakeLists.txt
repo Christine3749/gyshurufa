@@ -9,8 +9,15 @@ if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+# The Windows source is used both inside the local multi-project workspace and
+# as the root of the standalone gyshurufa GitHub repository. Prefer the
+# workspace manifest when present, then fall back to the repository manifest.
 get_filename_component(GY_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+get_filename_component(GY_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(GY_RELEASE_MANIFEST "${GY_WORKSPACE_ROOT}/release/release.json")
+if(NOT EXISTS "${GY_RELEASE_MANIFEST}")
+  set(GY_RELEASE_MANIFEST "${GY_REPOSITORY_ROOT}/release/release.json")
+endif()
 if(NOT EXISTS "${GY_RELEASE_MANIFEST}")
   message(FATAL_ERROR "Canonical release manifest is missing: ${GY_RELEASE_MANIFEST}")
 endif()
@@ -37,9 +44,19 @@ set(GY_RIME_RUNTIME_ROOT "${GY_RIME_ROOT}" CACHE PATH "Bundled GY Rime data root
 if(NOT EXISTS "${GY_RIME_ROOT}/include/rime_api.h" OR NOT EXISTS "${GY_RIME_ROOT}/lib/rime.lib" OR NOT EXISTS "${GY_RIME_ROOT}/lib/rime.dll")
   message(FATAL_ERROR "The bundled librime runtime is incomplete under ${GY_RIME_ROOT}.")
 endif()
-if(NOT EXISTS "${GY_RIME_RUNTIME_ROOT}/shared/build/luna_pinyin.table.bin")
-  message(FATAL_ERROR "The bundled luna-pinyin dictionary is incomplete under ${GY_RIME_RUNTIME_ROOT}/shared/build.")
-endif()
+set(GY_RIME_BUILD_ROOT "${GY_RIME_RUNTIME_ROOT}/shared/build")
+set(GY_REQUIRED_RIME_DATA
+  "default.yaml"
+  "luna_pinyin.schema.yaml"
+  "luna_pinyin.table.bin"
+  "luna_pinyin.reverse.bin"
+  "luna_pinyin.prism.bin"
+)
+foreach(GY_RIME_DATA_FILE IN LISTS GY_REQUIRED_RIME_DATA)
+  if(NOT EXISTS "${GY_RIME_BUILD_ROOT}/${GY_RIME_DATA_FILE}")
+    message(FATAL_ERROR "The bundled luna-pinyin runtime is incomplete: missing ${GY_RIME_BUILD_ROOT}/${GY_RIME_DATA_FILE}.")
+  endif()
+endforeach()
 
 # The TSF DLL remains a small, stable compatibility layer inside each target
 # app. It talks to GyImeHost over a local named pipe for lookup/ranking work.
@@ -228,6 +245,5 @@ if(GY_BUILD_RIME_SMOKE)
   add_test(NAME GyPinyinEngineSmoke COMMAND $<TARGET_FILE:GyPinyinEngineSmoke>)
   set_tests_properties(GyPinyinEngineSmoke PROPERTIES TIMEOUT 45 LABELS "native;rime;offline")
 endif()
-
 
 

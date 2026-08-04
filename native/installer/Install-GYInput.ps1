@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$Uninstall,
   [switch]$Rollback,
   [switch]$Elevated

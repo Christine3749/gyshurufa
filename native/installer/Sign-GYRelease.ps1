@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess)]
+﻿[CmdletBinding(SupportsShouldProcess)]
 param(
   [string]$Version,
   [Parameter(Mandatory)][string]$CertificateThumbprint,
