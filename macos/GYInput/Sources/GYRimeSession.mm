@@ -71,20 +71,14 @@ static NSString *GYString(const char *value) { return value ? [[NSString alloc] 
   _page = context.menu.page_no;
   _hasPreviousPage = _page > 0;
   NSMutableArray *candidates = [NSMutableArray array]; NSMutableArray *indices = [NSMutableArray array];
-  NSString *fallback = nil; NSNumber *fallbackIndex = nil; NSUInteger minimumLength = 1;
   for (int index = 0; index < context.menu.num_candidates; index++) {
     NSString *candidate = GYNormalizeCandidate(GYString(context.menu.candidates[index].text), _mode);
-    BOOL primary = context.menu.page_no == 0 && fallback == nil;
-    if (primary && GYCandidateIsTrusted(candidate, 1, YES)) {
-      fallback = candidate; fallbackIndex = @(index); minimumLength = candidate.length;
-    }
-    if (GYCandidateIsTrusted(candidate, minimumLength, NO) && ![candidates containsObject:candidate]) {
+    if (candidate.length && ![candidates containsObject:candidate]) {
       [candidates addObject:candidate]; [indices addObject:@(index)];
     }
   }
-  if (candidates.count == 0 && fallback) { [candidates addObject:fallback]; [indices addObject:fallbackIndex]; }
   _candidates = candidates; _rawIndices = indices;
-  _hasNextPage = !context.menu.is_last_page && candidates.count == 25;
+  _hasNextPage = !context.menu.is_last_page;
   api->free_context(&context);
 }
 
@@ -151,8 +145,7 @@ static NSString *GYString(const char *value) { return value ? [[NSString alloc] 
 BOOL GYRunRimeSelfTest(void) {
   GYRimeSession *session = [GYRimeSession new];
   if (!session.ready || ![session processText:@"nihao" mode:GYInputModeSimplified]) return NO;
-  if (![session.candidates.firstObject isEqual:@"你好"] || [session.candidates containsObject:@"妳好"] ||
-      [session.candidates containsObject:@"逆号"] || [session.candidates containsObject:@"拟好"]) return NO;
+  if (![session.candidates.firstObject isEqual:@"你好"] || session.candidates.count < 2) return NO;
   [session clear];
   if (![session processText:@"zhongguo" mode:GYInputModeTraditional]) return NO;
   return [session.candidates containsObject:@"中國"];
