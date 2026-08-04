@@ -64,4 +64,4 @@
 
 ## 7. 当前第一项实现工作
 
-已创建 `shared/session/` 中可独立编译的 `SessionSnapshot v1`、`SessionGuard` 与 Engine A/B 故障注入测试；它不链接 Rime 或平台框架。通过后才把 macOS 和 Windows 接入稳定 Bridge；候选外观改造排在该输入恢复能力之后。
+已创建 `shared/session/` 中可独立编译的 `SessionSnapshot v1`、`SessionGuard`、CandidatePool 与故障注入测试；它们不链接 Rime 或平台框架。CandidatePool 只接收 Engine 明确标为合格的真实候选，最多 75 个且不补位。通过后才把 macOS 和 Windows 接入稳定 Bridge；候选外观改造排在该输入恢复能力之后。
