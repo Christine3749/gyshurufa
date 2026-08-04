@@ -21,6 +21,10 @@
     {
       "source": "/download/candidate/:path*",
       "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/download/candidate/:path*"
+    },
+    {
+      "source": "/download/:path*",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/download/:path*"
     }
   ]
 }

@@ -7,6 +7,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# PS 5.1 turns any native stderr line (for example wrangler proxy warnings)
+# into a terminating NativeCommandError while Stop is in effect. Run native
+# CLI calls under Continue and rely on explicit $LASTEXITCODE checks instead.
+function Invoke-ReleaseNative {
+  param([scriptblock]$Command)
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $Command } finally { $ErrorActionPreference = $previousPreference }
+}
 Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $manifest = Get-GYReleaseManifest
@@ -30,7 +40,7 @@ try {
   $prefix = "releases/$Version/windows"
   function Assert-R2ObjectAbsent([string]$ObjectKey) {
     $probe = Join-Path $tempRoot ([IO.Path]::GetRandomFileName())
-    & npx wrangler r2 object get "$BucketName/$ObjectKey" --file "$probe" --remote 2>$null
+    Invoke-ReleaseNative { & npx wrangler r2 object get "$BucketName/$ObjectKey" --file "$probe" --remote 2>$null }
     if ($LASTEXITCODE -eq 0) { throw "Refusing to overwrite immutable published object: $ObjectKey" }
     Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
   }
@@ -41,7 +51,7 @@ try {
       $wranglerArgs = @('wrangler','r2','object','put',"$BucketName/$ObjectKey",'--file',$LocalPath)
       if ($ContentType) { $wranglerArgs += @('--content-type',$ContentType) }
       $wranglerArgs += '--remote'
-      & npx @wranglerArgs
+      Invoke-ReleaseNative { & npx @wranglerArgs }
       if ($LASTEXITCODE -ne 0) { throw "R2 upload failed: $ObjectKey" }
     }
   }
@@ -53,7 +63,7 @@ try {
   Put-Immutable $packageManifest "releases/$Version/release.json" 'application/json; charset=utf-8'
   if ($PSCmdlet.ShouldProcess("$BucketName/$prefix/$($manifest.windows.setupFile)", 'Download and hash-verify uploaded Windows release')) {
     $remoteWindows = Join-Path $tempRoot $manifest.windows.setupFile
-    & npx wrangler r2 object get "$BucketName/$prefix/$($manifest.windows.setupFile)" --file "$remoteWindows" --remote
+    Invoke-ReleaseNative { & npx wrangler r2 object get "$BucketName/$prefix/$($manifest.windows.setupFile)" --file "$remoteWindows" --remote }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $remoteWindows -PathType Leaf)) {
       throw 'Verified Windows package is not present in R2; latest remains unchanged.'
     }
@@ -63,7 +73,7 @@ try {
     }
   }
   if ($PSCmdlet.ShouldProcess("$BucketName/releases/latest.json", 'Atomically advance verified cross-platform latest pointer')) {
-    & npx wrangler r2 object put "$BucketName/releases/latest.json" --file "$manifestPath" --content-type 'application/json; charset=utf-8' --remote
+    Invoke-ReleaseNative { & npx wrangler r2 object put "$BucketName/releases/latest.json" --file "$manifestPath" --content-type 'application/json; charset=utf-8' --remote }
     if ($LASTEXITCODE -ne 0) { throw 'Unable to advance releases/latest.json.' }
   }
   Write-Host "Published verified Windows release $Version and atomically advanced releases/latest.json. macOS state remains exactly as recorded in the contract." -ForegroundColor Green
