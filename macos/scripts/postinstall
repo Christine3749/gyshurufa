@@ -1,18 +1,25 @@
 #!/bin/bash
 set -euo pipefail
 
-app_path="${2%/}/GYInput.app"
-[[ -x "$app_path/Contents/MacOS/GYInput" ]] || app_path="/Library/Input Methods/GYInput.app"
+target_root="${3%/}"
+app_path="$target_root${2%/}/GYInput.app"
+[[ -x "$app_path/Contents/MacOS/GYInput" ]] || app_path="$target_root/Library/Input Methods/GYInput.app"
+state_root="$target_root/Library/Application Support/GYInput"
+status="$state_root/update-status.plist"
+pending="$state_root/pending-rollback-path"
 login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
 
-if [[ "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
-  # The package build rejects identity changes. Registering here refreshes the
-  # normal install path; it is not a substitute for an identity migration.
+mkdir -p "$state_root"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")"
+rollback_path="$(cat "$pending" 2>/dev/null || true)"
+/usr/bin/defaults write "$status" installedVersion -string "$version"
+/usr/bin/defaults write "$status" activationState -string 'logout-required'
+/usr/bin/defaults write "$status" installedAt -string "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
+[[ -z "$rollback_path" ]] || /usr/bin/defaults write "$status" rollbackAppPath -string "$rollback_path"
+
+if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
+  # Register the input source, but never kill/relaunch an active IMK process.
+  # Existing clients may retain their old event route until logout.
   /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source
-  /usr/bin/sudo -u "$login_user" /usr/bin/pkill -x GYInput || true
-  for _ in 1 2 3; do
-    /usr/bin/pgrep -x GYInput >/dev/null || break
-    /bin/sleep 1
-  done
-  /usr/bin/sudo -u "$login_user" /usr/bin/open "$app_path"
 fi
+echo "GY 输入法已安装；保存工作后注销再登录，才可确认新核心已激活。"

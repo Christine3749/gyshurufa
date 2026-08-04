@@ -8,7 +8,7 @@
 - Bundle 图标由 Windows 的唯一源文件 `native/installer/assets/gy-tray-icon.svg` 生成；深墨黑背景和白色 GY 标准字不在 Mac 端重绘。
 - 简体／繁体／EN 三模式由 GY 保存；EN 除切换键外完全直通应用。
 - Rime 用户学习仅落在本机 `~/Library/Application Support/GYInput/rime`；输入路径不联网、不读取剪贴板。
-- 当前候选 UI 使用系统 5 列面板作为兼容阶段：默认最多 5 个，`↓` 展开最多 5×5，支持方向键、分页、1–5 和鼠标选词。
+- 当前候选 UI 是原生 GY 面板：默认最多 5 个，`↓` 展开最多 5×5，支持方向键、分页、1–5 和鼠标选词；颜色、箭头和模式顺序与 Windows 共用 VI。
 
 ## 构建与测试
 
@@ -26,6 +26,8 @@
 ```
 
 它会打开 TextEdit；请用实体键盘输入 `nihao` + 空格，确认提交“你好”。升级、注销条件与回退规则见 [事故报告](INCIDENTS/2026-08-04-hot-upgrade-event-route.md)。
+
+升级后先运行 `GYRecovery.sh status`。状态为 `logout-required` 时，不会假装新核心已启用：保存工作、注销再登录、通过实体键盘门禁后，以 `sudo GYRecovery.sh mark-known-good` 标记为下一次的安全回退基线。`repair` 只重建 GY 注册；`rollback` 只恢复该基线，不触碰其他输入法或系统缓存。
 
 ## 发布边界
 

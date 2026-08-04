@@ -69,3 +69,4 @@ if (( event_count < 6 )); then
 fi
 
 printf 'PASS: physical-keyboard smoke test observed %s text-event records.\n' "$event_count"
+printf 'Mark this version as a rollback baseline: sudo %q mark-known-good\n' "$app/Contents/Resources/GYRecovery.sh"

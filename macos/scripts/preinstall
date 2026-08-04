@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+target_root="${3%/}"
+app_path="$target_root/Library/Input Methods/GYInput.app"
+state_root="$target_root/Library/Application Support/GYInput"
+pending="$state_root/pending-rollback-path"
+status="$state_root/update-status.plist"
+version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null; }
+
+mkdir -p "$state_root/rollback"
+backup=''
+if [[ -d "$app_path" && -f "$status" ]]; then
+  current="$(version "$app_path")"
+  known_good="$(/usr/bin/defaults read "$status" knownGoodVersion 2>/dev/null || true)"
+  if [[ "$current" =~ ^[0-9A-Za-z._-]+$ && "$current" == "$known_good" ]]; then
+    backup="$state_root/rollback/GYInput-$current.app"
+    [[ -d "$backup" ]] || /usr/bin/ditto "$app_path" "$backup"
+  fi
+fi
+printf '%s\n' "$backup" > "$pending"
