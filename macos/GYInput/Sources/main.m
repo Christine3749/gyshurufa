@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
+#import "GYComposition.h"
 #import <string.h>
 
 static int RegisterInputSource(void) {
@@ -11,6 +12,7 @@ static int RegisterInputSource(void) {
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     if (argc == 2 && strcmp(argv[1], "--register-input-source") == 0) return RegisterInputSource();
+    if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return GYRunInputCoreSelfTest() ? 0 : 1;
     if (argc != 1) return 64;
 
     NSBundle *bundle = NSBundle.mainBundle;

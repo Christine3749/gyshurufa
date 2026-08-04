@@ -3,11 +3,16 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$root/build/GYInput.app"
+manifest="$root/../release/release.json"
 identity="${GY_DEVELOPMENT_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
   identity="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:.*\)"/\1/p' | head -1)"
 fi
 [[ -n "$identity" ]] || { echo "Apple Development certificate not found." >&2; exit 1; }
+[[ -f "$manifest" ]] || { echo "Release manifest not found: $manifest" >&2; exit 1; }
+release_version="$(/usr/bin/plutil -extract version raw -o - "$manifest")"
+plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$root/GYInput/Resources/Info.plist")"
+[[ "$release_version" == "$plist_version" ]] || { echo "Info.plist version must match release/release.json." >&2; exit 1; }
 "$root/scripts/verify-input-source-contract.sh" "$root/GYInput/Resources/Info.plist"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
@@ -16,8 +21,11 @@ cp "$root/GYInput/Resources/Info.plist" "$app/Contents/Info.plist"
 xcrun clang -fobjc-arc -mmacosx-version-min=13.0 \
   -framework Cocoa -framework Carbon -framework InputMethodKit \
   "$root/GYInput/Sources/main.m" "$root/GYInput/Sources/GYInputController.m" \
+  "$root/GYInput/Sources/GYComposition.m" "$root/GYInput/Sources/GYDiagnostics.m" \
+  "$root/GYInput/Sources/GYInputMode.m" "$root/GYInput/Sources/GYLearningStore.m" \
+  "$root/GYInput/Sources/GYLexicon.m" \
   -o "$app/Contents/MacOS/GYInput"
 codesign --force --sign "$identity" --timestamp=none "$app"
 plutil -lint "$app/Contents/Info.plist"
 codesign --verify --strict --verbose=2 "$app"
-echo "Built minimal GY input core: $app"
+echo "Built GY macOS input core $release_version: $app"

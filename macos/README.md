@@ -1,32 +1,35 @@
-# GY 输入法：最小启动核
+# GY 输入法 macOS 原生核心
 
-这是一次从零开始的 InputMethodKit 重构，不是公开版本，也不含 Rime、候选窗、简繁／EN、Shift、设置、学习、网络或自动更新。
+本目录实现 [产品标准](../GY_INPUT_METHOD_PRODUCT_STANDARD.md) 的 macOS 适配层。它是
+InputMethodKit 输入法，不复制 Windows TSF、注册表、命名管道或安装器。
 
-唯一的端到端验收：在 TextEdit 选择 GY 输入法后，输入 `nihao` 再按空格，必须提交 `你好`。其他字母按空格原样提交。
+## 当前能力
 
-最小条件：
+- 本地拼音候选与学习：无网络调用；只将用户实际选择的“拼音码 → 候选”偏好保存在本机。
+- 简体／繁体／EN 三模式：单按 Shift 循环切换；模式由本地偏好保存并在应用切换后保持。
+- EN 真直通：除模式切换键外，不拦截字母、数字、标点、Enter、Tab、删除、粘贴或应用快捷键。
+- 系统候选窗兼容阶段：默认展示最多 5 个候选，`↓` 展开为最多 5 列 × 5 行；方向键、PageUp、PageDown、1–5 和鼠标可选词。
+- 安全升级：输入源身份和 `inputText:key:modifiers:client:` 路由由构建门禁锁定；普通升级绝不改协议。
 
-1. `.app` 有唯一的 bundle ID 和可选的 `.pinyin` 输入源。
-2. 安装时调用 `GYInput --register-input-source`；正常服务启动绝不重新注册。
-3. 服务仅创建一个 `IMKServer`。
-4. 控制器只使用 InputMethodKit 的 `inputText:key:modifiers:client:` 文本事件入口。
-5. 控制器只对活跃客户端设置 marked text 或插入 committed text；异常键永远交回目标 App。
+视觉语义以 [GY VI](../GY_VISUAL_IDENTITY.md) 为准。当前使用系统候选窗保障兼容；在自定义 GY 面板上线前，不改变候选数量、模式或选择语义。
 
-## 构建与发布门禁
-
-构建前，`./scripts/verify-input-source-contract.sh` 会锁定已经发布过的输入源身份：bundle ID、输入源 ID、`InputMethodConnectionName` 和控制器类名。它们不是普通配置；改变其中任一个都可能让旧用户看到“已选中 GY”，但按键永远到不了控制器。
-
-```bash
-./scripts/build-core.sh
-./scripts/package-core.sh
-```
-
-安装新包后必须执行：
+## 本地验证
 
 ```bash
-./scripts/smoke-test-core.sh
+./macos/scripts/test-core.sh
+./macos/scripts/package-core.sh
 ```
 
-这个测试会选中 GY 并打开 TextEdit，但必须由测试者用**实体键盘**输入 `nihao` + 空格、确认提交“你好”。脚本随后检查新增的六条 `text-event` 日志。自动化注入文字不能替代此测试，因为它可能绕过 macOS 到 InputMethodKit 的真实按键路由。若发布包含事件入口或输入源身份迁移，必须另行完成注销登录后的升级矩阵测试。
+安装包后必须执行真实键盘验收：
 
-完整事故记录、升级兼容性契约与支持排障流程见 [INCIDENTS/2026-08-04-hot-upgrade-event-route.md](INCIDENTS/2026-08-04-hot-upgrade-event-route.md)。
+```bash
+./macos/scripts/smoke-test-core.sh
+```
+
+它会选择 GY 并打开 TextEdit；请用实体键盘输入 `nihao` + 空格，确认提交“你好”。脚本检查新产生的 `text-event` trace；自动化文字注入不能替代该测试。
+
+## 发布边界
+
+`release/release.json` 是跨端唯一版本真相。当前 macOS 包只是 `0.9.34` 候选实现；未完成 Developer ID 签名、公证、stapling 和真实键盘升级矩阵前，不能更新 manifest 中 macOS 的验证状态或公开发布。
+
+完整的热升级事故、注销条件和回退要求见 [事故报告](INCIDENTS/2026-08-04-hot-upgrade-event-route.md)。
