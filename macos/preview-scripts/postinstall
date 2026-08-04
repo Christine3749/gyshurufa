@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+app='/Library/Input Methods/GYInputPreview.app'
+user="$(/usr/bin/stat -f '%Su' /dev/console)"
+if [[ "$user" != root && "$user" != loginwindow && -x "$app/Contents/MacOS/GYInputPreview" ]]; then
+  /usr/bin/sudo -u "$user" "$app/Contents/MacOS/GYInputPreview" --register-input-source || true
+fi
+echo 'GY 输入法 2.0 Mac Preview 已安装。请从输入法菜单选择“GY 输入法 2.0 Preview”；它不会覆盖正式 GY。'

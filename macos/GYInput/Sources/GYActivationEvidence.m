@@ -7,7 +7,8 @@ void GYRecordInputRouteEvidence(void) {
   dispatch_once(&once, ^{
     NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
                                                              inDomains:NSUserDomainMask].firstObject;
-    NSURL *directory = [support URLByAppendingPathComponent:@"GYInput" isDirectory:YES];
+    NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"GYApplicationSupportFolder"] ?: @"GYInput";
+    NSURL *directory = [support URLByAppendingPathComponent:folder isDirectory:YES];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     if (![[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]) return;
     NSURL *file = [directory URLByAppendingPathComponent:@"core-route.plist"];

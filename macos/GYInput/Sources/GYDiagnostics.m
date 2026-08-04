@@ -6,7 +6,9 @@ void GYTrace(NSString *event) {
   static int handle = -1;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    handle = open("/tmp/GYInput-core.trace", O_WRONLY | O_APPEND | O_CREAT, 0600);
+    NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"GYApplicationSupportFolder"] ?: @"GYInput";
+    NSString *path = [@"/tmp/" stringByAppendingFormat:@"%@-core.trace", folder];
+    handle = open(path.fileSystemRepresentation, O_WRONLY | O_APPEND | O_CREAT, 0600);
     if (handle < 0) return;
     NSBundle *bundle = NSBundle.mainBundle;
     NSString *build = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";

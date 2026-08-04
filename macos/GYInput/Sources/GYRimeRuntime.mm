@@ -3,9 +3,10 @@
 static NSURL *GYUserDataDirectory(void) {
   const char *override = getenv("GY_RIME_USER_DATA_DIR");
   if (override && *override) return [NSURL fileURLWithPath:@(override) isDirectory:YES];
+  NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"GYApplicationSupportFolder"] ?: @"GYInput";
   NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
                                                            inDomains:NSUserDomainMask].firstObject;
-  return [[support URLByAppendingPathComponent:@"GYInput" isDirectory:YES]
+  return [[support URLByAppendingPathComponent:folder isDirectory:YES]
       URLByAppendingPathComponent:@"rime" isDirectory:YES];
 }
 

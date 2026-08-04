@@ -1,0 +1,6 @@
+{
+  "name": "gy-shurufa-macos-preview-service",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test" }
+}
