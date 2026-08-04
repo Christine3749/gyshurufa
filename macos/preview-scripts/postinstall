@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -u
 
 target_root="${3%/}"
 app="$target_root${2%/}/GYInputPreview.app"
@@ -7,6 +7,15 @@ app="$target_root${2%/}/GYInputPreview.app"
 user="$(/usr/bin/stat -f '%Su' /dev/console)"
 
 if [[ "$target_root" == '' && "$user" != root && "$user" != loginwindow ]]; then
-  /usr/bin/sudo -u "$user" "$app/Contents/MacOS/GYInputPreview" --register-input-source
+  user_uid="$(/usr/bin/id -u "$user")"
+  /usr/bin/pkill -TERM -u "$user_uid" -x GYInputPreview 2>/dev/null || true
 fi
-echo 'GY 输入法 2.0 Mac Preview 已注册。请从输入法菜单选择“GY 输入法 2.0 Preview”；它不会覆盖正式 GY。'
+
+# Register and enable for the signed-in user after PackageKit has atomically
+# placed the bundle. Text Services may rebuild asynchronously, so this helper
+# is deliberately best-effort and can never fail the installation.
+if [[ "$target_root" == '' && "$user" != root && "$user" != loginwindow && -x "$app/Contents/MacOS/GYInputPreview" ]]; then
+  /usr/bin/sudo -u "$user" "$app/Contents/MacOS/GYInputPreview" --register-input-source || true
+fi
+echo 'GY 输入法 2.0 Mac Preview 已安装。请从输入法菜单选择“GY 输入法 2.0 Preview”；它不会覆盖正式 GY。'
+exit 0

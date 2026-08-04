@@ -18,10 +18,14 @@ require_equal 'ComponentInputModeDict:tsVisibleInputModeOrderedArrayKey:0' 'wang
 require_equal 'InputMethodConnectionName' 'wang.shurufa.inputmethod.GYInputPreview.Connection'
 require_equal 'InputMethodServerControllerClass' 'GYInputController'
 require_equal 'InputMethodServerDelegateClass' 'GYInputController'
+require_equal 'LSBackgroundOnly' 'true'
 require_equal 'GYApplicationSupportFolder' 'GYInputPreview'
-main_source="$root/GYInput/Sources/main.m"
-[[ -f "$main_source" ]] || { echo "Preview entry point is missing: $main_source" >&2; exit 2; }
-/usr/bin/grep -F -q 'TISEnableInputSource(source)' "$main_source" || {
-  echo 'Preview input-source violation: registration must enable the Preview mode.' >&2; exit 1;
+postinstall="$root/preview-scripts/postinstall"
+[[ -x "$postinstall" ]] || { echo "Preview postinstall script is missing: $postinstall" >&2; exit 2; }
+# PackageKit owns registration while atomically installing an Input Method.
+# Postinstall must not turn a temporarily stale Text Services cache into an
+# installation failure by synchronously registering or enabling the source.
+/usr/bin/grep -F -q 'exit 0' "$postinstall" || {
+  echo 'Preview input-source violation: postinstall must complete safely.' >&2; exit 1;
 }
 echo "Preview input-source contract is valid: $plist"

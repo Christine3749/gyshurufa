@@ -116,7 +116,8 @@ static NSScreen *GYScreenForCaret(NSRect caret) {
 
 static BOOL GYCaretIsUsable(NSRect caret) {
   return isfinite(NSMinX(caret)) && isfinite(NSMinY(caret)) && isfinite(NSHeight(caret)) &&
-      NSHeight(caret) > 0 && !NSEqualRects(caret, NSZeroRect);
+      NSHeight(caret) > 0 && !NSEqualRects(caret, NSZeroRect) &&
+      !(fabs(NSMinX(caret)) < 1 && fabs(NSMinY(caret)) < 1);
 }
 
 @implementation GYCandidatePanel { GYCandidateWindow *_window; GYCandidateSurface *_surface; NSUInteger _generation; }
@@ -144,6 +145,14 @@ static BOOL GYCaretIsUsable(NSRect caret) {
   NSRange range = GYCaretRange(client);
   NSRect caret = range.location == NSNotFound ? NSZeroRect : [client firstRectForCharacterRange:range actualRange:NULL];
   NSScreen *screen = GYCaretIsUsable(caret) ? GYScreenForCaret(caret) : nil;
+  if (screen == nil) {
+    GYTrace([NSString stringWithFormat:@"candidate-anchor=unusable client=%@ range=%lu,%lu x=%.0f y=%.0f w=%.0f h=%.0f",
+             NSStringFromClass([client class]), (unsigned long)range.location, (unsigned long)range.length,
+             NSMinX(caret), NSMinY(caret), NSWidth(caret), NSHeight(caret)]);
+    NSPoint mouse = [NSEvent mouseLocation];
+    caret = NSMakeRect(mouse.x, mouse.y, 1, 20);
+    screen = GYScreenForCaret(caret) ?: NSScreen.mainScreen;
+  }
   if (screen == nil) { GYTrace(@"candidate-anchor=unavailable"); [self hide]; return; }
   NSSize size = _surface.preferredSize;
   GYTrace([NSString stringWithFormat:@"candidate-anchor client=%@ x=%.0f y=%.0f h=%.0f", NSStringFromClass([client class]), NSMinX(caret), NSMinY(caret), NSHeight(caret)]);

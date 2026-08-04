@@ -3,7 +3,6 @@
 #import "GYActivationEvidence.h"
 #import "GYCandidateLayout.h"
 #import "GYDiagnostics.h"
-#import "GYCandidatePanel.h"
 #import "GYInputMode.h"
 #import "GYRimeSession.h"
 
@@ -13,7 +12,7 @@
 @implementation GYInputController {
   __weak id _activeClient;
   GYRimeSession *_rime;
-  GYCandidatePanel *_candidatePanel;
+  IMKCandidates *_candidatePanel;
   GYCandidateLayout _layout;
   BOOL _hasMarkedText;
 }
@@ -22,21 +21,12 @@
   self = [super initWithServer:server delegate:delegate client:client];
   if (self) {
     _activeClient = client; _rime = [GYRimeSession new];
-    __weak GYInputController *weakSelf = self;
-    _candidatePanel = [[GYCandidatePanel alloc] initWithActionHandler:^(GYCandidateAction action, NSInteger index) {
-      GYInputController *strongSelf = weakSelf; if (!strongSelf) return;
-      if (action == GYCandidateActionSelect) {
-        [strongSelf selectVisibleCandidateAtIndex:index]; [strongSelf applyRimeResult]; return;
-      }
-      if (action == GYCandidateActionToggle) {
-        GYSetCandidateLayoutExpanded(&strongSelf->_layout, strongSelf.candidateCount, !strongSelf->_layout.expanded);
-      } else if (action == GYCandidateActionPrevious) {
-        GYMoveCandidateLayout(&strongSelf->_layout, strongSelf.candidateCount, GYCandidateMovementPreviousPage);
-      } else if (action == GYCandidateActionNext) {
-        GYMoveCandidateLayout(&strongSelf->_layout, strongSelf.candidateCount, GYCandidateMovementNextPage);
-      }
-      [strongSelf refreshCandidates];
-    }];
+    _candidatePanel = [[IMKCandidates alloc] initWithServer:server panelType:kIMKScrollingGridCandidatePanel];
+    [_candidatePanel setDismissesAutomatically:NO];
+    [_candidatePanel setAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
+      NSForegroundColorAttributeName: NSColor.labelColor,
+      NSBackgroundColorDocumentAttribute: NSColor.windowBackgroundColor,
+      IMKCandidatesSendServerKeyEventFirst: @YES}];
     GYTrace(_rime.ready ? @"controller-init rime=ready" : @"controller-init rime=failed");
   }
   return self;
@@ -75,9 +65,9 @@
 - (void)refreshCandidates {
   NSArray *visible = self.visibleCandidates;
   if (visible.count == 0) { [_candidatePanel hide]; return; }
-  [_candidatePanel showCandidates:visible selection:_layout.selection mode:GYInputModeStore.sharedStore.mode expanded:_layout.expanded
-                       expandable:self.candidateCount > GYCandidateColumns previous:_layout.pageStart > 0
-                             next:self.hasNextCandidatePage client:self.currentClient];
+  [_candidatePanel updateCandidates]; [_candidatePanel show:kIMKLocateCandidatesBelowHint];
+  NSInteger identifier = [_candidatePanel candidateStringIdentifier:visible[(NSUInteger)_layout.selection]];
+  if (identifier != NSNotFound) [_candidatePanel selectCandidateWithIdentifier:identifier];
 }
 
 - (void)clearComposition {
@@ -93,9 +83,20 @@
   if (_rime.preedit.length) { [self showComposition]; [self refreshCandidates]; } else [self clearComposition];
 }
 
+- (NSArray *)candidates:(id)sender { (void)sender; return self.visibleCandidates; }
 - (id)composedString:(id)sender { (void)sender; return _rime.preedit; }
 - (NSAttributedString *)originalString:(id)sender { (void)sender; return [[NSAttributedString alloc] initWithString:_rime.preedit]; }
 - (void)commitComposition:(id)sender { (void)sender; [_rime commitDefault]; [self applyRimeResult]; }
+
+- (void)candidateSelected:(NSAttributedString *)candidateString {
+  NSInteger index = [self.visibleCandidates indexOfObject:candidateString.string];
+  if (index != NSNotFound) { [self selectVisibleCandidateAtIndex:index]; [self applyRimeResult]; }
+}
+
+- (void)candidateSelectionChanged:(NSAttributedString *)candidateString {
+  NSInteger index = [self.visibleCandidates indexOfObject:candidateString.string];
+  if (index != NSNotFound) _layout.selection = index;
+}
 
 - (BOOL)moveSelectionForKey:(NSInteger)keyCode {
   GYCandidateMovement movement;

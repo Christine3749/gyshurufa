@@ -10,6 +10,12 @@ pending="$state_root/pending-rollback-path"
 login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
 
 mkdir -p "$state_root"
+
+if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwindow ]]; then
+  user_uid="$(/usr/bin/id -u "$login_user")"
+  /usr/bin/pkill -TERM -u "$user_uid" -x GYInput 2>/dev/null || true
+fi
+
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
 rollback_path="$(cat "$pending" 2>/dev/null || true)"
 /usr/bin/defaults write "$status" installedVersion -string "$version"
@@ -20,8 +26,13 @@ rollback_path="$(cat "$pending" 2>/dev/null || true)"
 /bin/chmod 644 "$status"
 
 if [[ "$target_root" == '' && "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
-  # Register the input source, but never kill/relaunch an active IMK process.
+  # Register the input source, but keep the route migration conservative.
   # Existing clients may retain their old event route until logout.
-  /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source
+  # TIS registration is session-scoped and can be temporarily unavailable while
+  # PackageKit is atomically replacing the bundle. Installation must remain
+  # successful in that case; the user can select GY from the input menu or run
+  # the recovery tool after the transaction completes.
+  /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source || \
+    echo 'GY registration will be completed by macOS after this installation.'
 fi
 echo "GY 输入法已安装；注销并完成真实输入验收后，才能标记为可回退版本。"

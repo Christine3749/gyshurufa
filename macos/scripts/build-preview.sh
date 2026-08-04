@@ -27,6 +27,11 @@ xcrun clang++ -fobjc-arc -mmacosx-version-min=13.0 -I "$rime_prefix/include" -fr
   "$rime_prefix/lib/librime.1.dylib" -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/GYInputPreview"
 cp -L "$rime_prefix/lib/librime.1.dylib" "$app/Contents/Frameworks/librime.1.dylib"
 workspace="$(mktemp -d)"; GY_RIME_USER_DATA_DIR="$workspace/rime" "$app/Contents/MacOS/GYInputPreview" --self-test
+# Self-tests run from a bundle path. Remove that transient Launch Services
+# registration so the installed /Library bundle remains the single source of
+# truth for this preview bundle ID.
+lsregister='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+"$lsregister" -u "$app" || true
 mkdir -p "$app/Contents/Resources/Rime/shared/build"
 for file in default.yaml luna_pinyin.prism.bin luna_pinyin.reverse.bin luna_pinyin.table.bin gy_pinyin.schema.yaml; do cp "$workspace/rime/build/$file" "$app/Contents/Resources/Rime/shared/build/$file"; done
 install_name_tool -id '@rpath/librime.1.dylib' "$app/Contents/Frameworks/librime.1.dylib"

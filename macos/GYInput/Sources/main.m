@@ -11,11 +11,14 @@ static int RegisterInputSource(void) {
   if (bundleURL == nil || TISRegisterInputSource((__bridge CFURLRef)bundleURL) != noErr) return 1;
   NSString *modeID = [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".pinyin"];
   NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID: modeID};
-  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
-  if (sources == nil || CFArrayGetCount(sources) != 1) { if (sources) CFRelease(sources); return 2; }
+  // `includeAllInstalled:YES` is required for a newly installed source: it is
+  // not yet part of the session's active-source list. Enabling is best-effort;
+  // PackageKit must not fail merely because Text Services is still rebuilding.
+  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+  if (sources == nil || CFArrayGetCount(sources) == 0) { if (sources) CFRelease(sources); return 0; }
   TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
-  OSStatus status = TISEnableInputSource(source); CFRelease(sources);
-  return status == noErr ? 0 : 3;
+  (void)TISEnableInputSource(source); CFRelease(sources);
+  return 0;
 }
 
 @interface GYPreviewTextClient : NSObject @end

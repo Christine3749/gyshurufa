@@ -15,6 +15,15 @@ run_self_test() {
   if [[ "$EUID" == 0 ]]; then /usr/bin/sudo -u "$user" "$app_path/Contents/MacOS/GYInput" --self-test
   else "$app_path/Contents/MacOS/GYInput" --self-test; fi
 }
+
+kill_user_input() {
+  local proc_name="$1"
+  local user uid
+  user="$(/usr/bin/stat -f '%Su' /dev/console)"
+  [[ "$user" == root || "$user" == loginwindow ]] && return 0
+  uid="$(/usr/bin/id -u "$user")"
+  /usr/bin/pkill -TERM -u "$uid" -x "$proc_name" 2>/dev/null || true
+}
 route_version() {
   local user home route
   user="$(/usr/bin/stat -f '%Su' /dev/console)"; [[ "$user" == root || "$user" == loginwindow ]] && return 0
@@ -38,7 +47,9 @@ case "$command" in
     printf 'installed=%s\nactivation=%s\nroute-verified=%s\nknown-good=%s\nfunctional-baseline=%s\nrollback=%s\n' "$installed" "$activation" "$route" "$(read_status knownGoodVersion)" "$(read_status functionalBaselineVersion)" "$(read_status rollbackAppPath)"
     ;;
   repair)
-    valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }; register_current
+    valid_app "$app_path" || { echo 'Installed GYInput.app is invalid.' >&2; exit 1; }
+    kill_user_input GYInput
+    register_current
     echo 'GY registration was rebuilt. Save work and log out/in before judging an active client session.'
     ;;
   mark-known-good)
@@ -55,6 +66,7 @@ case "$command" in
     valid_app "$backup" || { echo 'Rollback snapshot is invalid.' >&2; exit 1; }
     [[ "$(version "$backup")" == "$(read_status functionalBaselineVersion)" ]] || { echo 'Rollback snapshot has not passed functional acceptance.' >&2; exit 1; }
     current="$(version "$app_path")"; restored="$(version "$backup")"; mkdir -p "$state_root/failed"
+    kill_user_input GYInput
     stage="$(/usr/bin/mktemp -d "$target_root/Library/Input Methods/.gy-rollback.XXXXXX")"
     /usr/bin/ditto "$backup" "$stage/GYInput.app"; valid_app "$stage/GYInput.app" || exit 1
     stamp="$(/bin/date -u '+%Y%m%dT%H%M%SZ')"; /bin/mv "$app_path" "$state_root/failed/GYInput-$current-$stamp.app"
