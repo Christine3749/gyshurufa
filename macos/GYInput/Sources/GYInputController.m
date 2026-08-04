@@ -1,126 +1,147 @@
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
-#import <fcntl.h>
-#import <stdio.h>
-#import <unistd.h>
+#import "GYDiagnostics.h"
+#import "GYCandidatePanel.h"
+#import "GYInputMode.h"
+#import "GYRimeSession.h"
 
 @interface GYInputController : IMKInputController
 @end
 
-static void Trace(const char *event) {
-  static int file = -1;
-  static int wroteRuntimeMetadata = 0;
-  if (file < 0) file = open("/tmp/GYInput-core.trace", O_WRONLY | O_APPEND | O_CREAT, 0600);
-  if (file >= 0) {
-    if (!wroteRuntimeMetadata) {
-      wroteRuntimeMetadata = 1;
-      NSBundle *bundle = NSBundle.mainBundle;
-      NSString *build = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
-      NSString *identifier = bundle.bundleIdentifier ?: @"unknown";
-      dprintf(file, "pid=%d build=%s route=inputText:key:modifiers:client: bundle=%s\n",
-              getpid(), build.UTF8String, identifier.UTF8String);
-    }
-    dprintf(file, "%s\n", event);
-  }
-}
-
-static NSString *CommitForCode(NSString *code) {
-  if ([code isEqualToString:@"nihao"]) return @"你好";
-  return code;
-}
-
 @implementation GYInputController {
   __weak id _activeClient;
-  NSMutableString *_composition;
+  GYRimeSession *_rime;
+  GYCandidatePanel *_candidatePanel;
+  NSInteger _selection;
+  BOOL _expanded;
+  BOOL _hasMarkedText;
 }
 
 - (instancetype)initWithServer:(IMKServer *)server delegate:(id)delegate client:(id)client {
   self = [super initWithServer:server delegate:delegate client:client];
-  if (self != nil) {
-    _activeClient = client;
-    _composition = [NSMutableString string];
-    Trace("controller-init");
+  if (self) {
+    _activeClient = client; _rime = [GYRimeSession new];
+    __weak GYInputController *weakSelf = self;
+    _candidatePanel = [[GYCandidatePanel alloc] initWithActionHandler:^(GYCandidateAction action, NSInteger index) {
+      GYInputController *strongSelf = weakSelf; if (!strongSelf) return;
+      if (action == GYCandidateActionSelect) [strongSelf->_rime selectCandidateAtIndex:index];
+      else if (action == GYCandidateActionToggle) strongSelf->_expanded = !strongSelf->_expanded;
+      else if (action == GYCandidateActionPrevious) [strongSelf->_rime previousPage];
+      else if (action == GYCandidateActionNext) [strongSelf->_rime nextPage];
+      strongSelf->_selection = 0; [strongSelf applyRimeResult];
+    }];
+    GYTrace(_rime.ready ? @"controller-init rime=ready" : @"controller-init rime=failed");
   }
   return self;
 }
 
-- (void)activateServer:(id)sender {
-  _activeClient = sender;
-  Trace("controller-activate");
-}
+- (void)activateServer:(id)sender { _activeClient = sender; GYTrace(@"controller-activate"); }
+- (void)deactivateServer:(id)sender { (void)sender; [self clearComposition]; _activeClient = nil; GYTrace(@"controller-deactivate"); }
+- (id)currentClient { return _activeClient ?: self.client; }
 
-- (void)deactivateServer:(id)sender {
-  (void)sender;
-  Trace("controller-deactivate");
-  [self clearComposition];
-  _activeClient = nil;
-}
-
-- (id)currentClient {
-  return _activeClient ?: self.client;
+- (NSArray<NSString *> *)visibleCandidates {
+  NSUInteger limit = _expanded ? 25 : 5;
+  return [_rime.candidates subarrayWithRange:NSMakeRange(0, MIN(limit, _rime.candidates.count))];
 }
 
 - (void)showComposition {
-  id client = [self currentClient];
-  if (client == nil || _composition.length == 0) return;
-  NSAttributedString *text = [[NSAttributedString alloc] initWithString:_composition];
-  [client setMarkedText:text
-          selectionRange:NSMakeRange(_composition.length, 0)
-        replacementRange:NSMakeRange(NSNotFound, 0)];
+  id client = self.currentClient;
+  if (client && _rime.preedit.length) {
+    [client setMarkedText:[[NSAttributedString alloc] initWithString:_rime.preedit]
+            selectionRange:NSMakeRange(_rime.preedit.length, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    _hasMarkedText = YES;
+  }
+}
+
+- (void)refreshCandidates {
+  NSArray *visible = self.visibleCandidates;
+  if (visible.count == 0) { [_candidatePanel hide]; return; }
+  _selection = MIN(_selection, (NSInteger)visible.count - 1);
+  [_candidatePanel showCandidates:visible selection:_selection mode:GYInputModeStore.sharedStore.mode expanded:_expanded
+                       expandable:_rime.candidates.count > 5 || _rime.hasNextPage previous:_rime.hasPreviousPage
+                             next:_rime.hasNextPage client:self.currentClient];
 }
 
 - (void)clearComposition {
-  [_composition setString:@""];
-  id client = [self currentClient];
-  if ([client respondsToSelector:@selector(unmarkText)]) [client unmarkText];
+  [_candidatePanel hide]; [_rime clear]; _selection = 0; _expanded = NO;
+  id client = self.currentClient;
+  if (_hasMarkedText && [client respondsToSelector:@selector(unmarkText)]) [client unmarkText];
+  _hasMarkedText = NO;
 }
 
-- (void)commitComposition {
-  if (_composition.length == 0) return;
-  id client = [self currentClient];
-  if (client != nil) {
-    [client insertText:CommitForCode(_composition) replacementRange:NSMakeRange(NSNotFound, 0)];
+- (void)applyRimeResult {
+  NSString *commit = _rime.commitText;
+  if (commit.length) { [self.currentClient insertText:commit replacementRange:NSMakeRange(NSNotFound, 0)]; [self clearComposition]; return; }
+  if (_rime.preedit.length) { [self showComposition]; [self refreshCandidates]; } else [self clearComposition];
+}
+
+- (id)composedString:(id)sender { (void)sender; return _rime.preedit; }
+- (NSAttributedString *)originalString:(id)sender { (void)sender; return [[NSAttributedString alloc] initWithString:_rime.preedit]; }
+- (void)commitComposition:(id)sender { (void)sender; [_rime commitDefault]; [self applyRimeResult]; }
+
+- (BOOL)moveSelectionForKey:(NSInteger)keyCode {
+  NSArray *visible = self.visibleCandidates;
+  if (visible.count == 0) return NO;
+  if (keyCode == kVK_DownArrow && !_expanded && (_rime.candidates.count > 5 || _rime.hasNextPage)) { _expanded = YES; _selection = 0; [self refreshCandidates]; return YES; }
+  if (keyCode == kVK_PageDown && [_rime nextPage]) { _selection = 0; [self refreshCandidates]; return YES; }
+  if (keyCode == kVK_PageUp && [_rime previousPage]) { _selection = 0; [self refreshCandidates]; return YES; }
+  if (keyCode == kVK_UpArrow && _selection < 5 && _expanded) {
+    NSInteger column = _selection;
+    if (_rime.hasPreviousPage && [_rime previousPage]) {
+      NSArray *previous = self.visibleCandidates; NSInteger rowStart = MAX(0, (NSInteger)previous.count - 5) / 5 * 5;
+      _selection = MIN(rowStart + column, (NSInteger)previous.count - 1); [self refreshCandidates]; return YES;
+    }
+    _expanded = NO; _selection = 0; [self refreshCandidates]; return YES;
   }
-  [self clearComposition];
+  NSInteger delta = keyCode == kVK_LeftArrow ? -1 : keyCode == kVK_RightArrow ? 1 : keyCode == kVK_UpArrow ? -5 : keyCode == kVK_DownArrow ? 5 : 0;
+  NSInteger target = _selection + delta;
+  if (delta == 0 || target < 0 || target >= (NSInteger)visible.count) {
+    if (_expanded && keyCode == kVK_DownArrow && _rime.hasNextPage && [_rime nextPage]) {
+      NSArray *next = self.visibleCandidates; _selection = MIN(_selection % 5, (NSInteger)next.count - 1); [self refreshCandidates]; return YES;
+    }
+    return delta != 0;
+  }
+  _selection = target; [self refreshCandidates]; return YES;
+}
+
+- (BOOL)selectNumberForKey:(NSInteger)keyCode {
+  NSArray *keys = @[@(kVK_ANSI_1), @(kVK_ANSI_2), @(kVK_ANSI_3), @(kVK_ANSI_4), @(kVK_ANSI_5)];
+  NSUInteger index = [keys indexOfObject:@(keyCode)];
+  if (index == NSNotFound || index >= self.visibleCandidates.count) return NO;
+  [_rime selectCandidateAtIndex:(NSInteger)index]; [self applyRimeResult]; return YES;
 }
 
 - (BOOL)inputText:(NSString *)string key:(NSInteger)keyCode modifiers:(NSUInteger)modifiers client:(id)client {
-  _activeClient = client;
-  Trace("text-event");
-  NSEventModifierFlags blocked = NSEventModifierFlagCommand | NSEventModifierFlagControl |
-      NSEventModifierFlagOption | NSEventModifierFlagFunction;
+  _activeClient = client; GYTrace(@"text-event");
+  NSEventModifierFlags blocked = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagFunction;
   if ((modifiers & blocked) != 0) return NO;
-
-  if (keyCode == kVK_Escape && _composition.length != 0) {
-    [self clearComposition];
-    return YES;
+  if ((keyCode == kVK_Shift || keyCode == kVK_RightShift) && string.length == 0) {
+    GYInputMode mode = [GYInputModeStore.sharedStore cycleMode]; [self clearComposition];
+    GYTrace([NSString stringWithFormat:@"mode=%@", GYInputModeLabel(mode)]); return YES;
   }
-  if (keyCode == kVK_Delete) {
-    if (_composition.length == 0) return NO;
-    [_composition deleteCharactersInRange:NSMakeRange(_composition.length - 1, 1)];
-    if (_composition.length == 0) [self clearComposition];
-    else [self showComposition];
-    return YES;
+  if (!GYInputModeUsesChinese(GYInputModeStore.sharedStore.mode)) { if (_rime.preedit.length) [self clearComposition]; return NO; }
+  if (keyCode == kVK_Escape && _rime.preedit.length) { [self clearComposition]; return YES; }
+  if (keyCode == kVK_Delete) { if (![_rime deleteBackward]) return NO; [self applyRimeResult]; return YES; }
+  if ([self moveSelectionForKey:keyCode] || [self selectNumberForKey:keyCode]) return YES;
+  if ((keyCode == kVK_Space || keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter) && _rime.preedit.length) {
+    [_rime selectCandidateAtIndex:_selection]; [self applyRimeResult]; return YES;
   }
-  if (keyCode == kVK_Space && _composition.length != 0) {
-    [self commitComposition];
-    return YES;
-  }
-
-  NSString *characters = string;
-  if (characters.length == 1 && [characters rangeOfCharacterFromSet:NSCharacterSet.letterCharacterSet].location != NSNotFound) {
-    [_composition appendString:characters];
-    [self showComposition];
-    return YES;
-  }
-
-  if (_composition.length != 0) [self commitComposition];
+  if ([_rime processText:string mode:GYInputModeStore.sharedStore.mode]) { [self applyRimeResult]; return YES; }
+  if (_rime.preedit.length) { [_rime commitDefault]; [self applyRimeResult]; }
   return NO;
 }
 
-- (void)inputControllerWillClose {
-  [self clearComposition];
-  [super inputControllerWillClose];
+- (NSMenu *)menu {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"GY 输入法"];
+  for (NSNumber *value in @[@(GYInputModeSimplified), @(GYInputModeTraditional), @(GYInputModeEnglish)]) {
+    GYInputMode mode = value.integerValue;
+    NSMenuItem *item = [menu addItemWithTitle:GYInputModeLabel(mode) action:@selector(selectMode:) keyEquivalent:@""];
+    item.representedObject = value; item.state = GYInputModeStore.sharedStore.mode == mode ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+  return menu;
 }
+
+- (void)selectMode:(NSMenuItem *)item { [GYInputModeStore.sharedStore setMode:[(NSNumber *)item.representedObject integerValue]]; [self clearComposition]; }
+- (void)inputControllerWillClose { [self clearComposition]; [super inputControllerWillClose]; }
 
 @end
