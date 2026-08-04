@@ -14,12 +14,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setInputMode:(GYInputMode)mode;
 - (NSArray<NSString *> *)candidatesForCode:(NSString *)code;
 - (NSArray<NSString *> *)currentCandidates;
+// Collects up to `limit` candidates by walking Rime pages forward, then
+// restores the original page so commit math stays relative to page zero.
+- (NSArray<NSString *> *)candidatesUpToCount:(NSUInteger)limit;
 - (nullable NSString *)commitCandidateAtIndex:(NSUInteger)index;
+// Commits a candidate by absolute index within a candidatesUpToCount: window
+// (pages the Rime session to the right page, then selects on that page).
+- (nullable NSString *)commitCandidateAtAbsoluteIndex:(NSUInteger)index;
 // Raw pinyin Rime still holds after a partial commit; nil when fully consumed.
 - (nullable NSString *)remainingCompositionInput;
 - (BOOL)pageUp;
 - (BOOL)pageDown;
 - (void)clearComposition;
+
+// Class method to move the learning database to trash.
++ (BOOL)moveLearningDatabaseToTrash:(NSError * _Nullable * _Nullable)error;
 
 @end
 

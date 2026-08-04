@@ -3,16 +3,25 @@
 #import "GYInputMode.h"
 #import "GYSettingsStore.h"
 #import "GYPreferencesController.h"
-#import <Carbon/HIToolbox/Events.h>
+#import "GYCandidateWindow.h"
+#import <Carbon/Carbon.h>
+
+// WINDOWS-DESIGN.md §4/§5: collapsed strip shows 5, expanded grid is 5×5,
+// the pool holds up to 75 candidates (3 pages of 25), PageUp/Down flip 25.
+static const NSUInteger kCollapsedPageSize = 5;
+static const NSUInteger kExpandedPageSize = 25;
+static const NSUInteger kCandidateFetchLimit = 75;
 
 @implementation GYInputController {
   GYRimeBridge *_engine;
-  IMKCandidates *_candidatePanel;
+  GYCandidateWindow *_candidateWindow;
   NSArray<NSString *> *_candidates;
   NSString *_composition;
   GYInputMode _mode;
-  BOOL _shiftPending;
-  BOOL _shiftUsed;
+  NSUInteger _selected;
+  NSUInteger _pageStart;
+  BOOL _expanded;
+  BOOL _shiftAwaitingSoleRelease;
 }
 
 - (instancetype)initWithServer:(IMKServer *)server delegate:(id)delegate client:(id)client {
@@ -26,30 +35,50 @@
                            URLByAppendingPathComponent:@"rime" isDirectory:YES];
   [NSFileManager.defaultManager createDirectoryAtURL:user withIntermediateDirectories:YES attributes:nil error:nil];
   _engine = [[GYRimeBridge alloc] initWithSharedDataURL:shared userDataURL:user];
-  _candidatePanel = [[IMKCandidates alloc] initWithServer:server panelType:kIMKSingleColumnScrollingCandidatePanel];
-  [_candidatePanel setDismissesAutomatically:YES];
+
+  __weak typeof(self) weakSelf = self;
+  _candidateWindow = [[GYCandidateWindow alloc]
+      initWithChooseHandler:^(NSUInteger index) {
+        [weakSelf commitCandidateSelectionAtIndex:index suffix:nil client:weakSelf.client];
+      }
+      disclosureHandler:^(BOOL expanded) {
+        typeof(self) strongSelf = weakSelf;
+        strongSelf->_expanded = expanded;
+        if (!expanded) {
+          strongSelf->_pageStart = 0;
+          strongSelf->_selected = 0;
+        }
+        [strongSelf updateCandidateWindowForClient:strongSelf.client];
+      }
+      pageHandler:^(NSInteger direction) {
+        [weakSelf pageCandidateWindow:direction client:weakSelf.client];
+      }
+      settingsHandler:^{
+        [weakSelf showPreferences:nil];
+      }];
+
   _composition = @"";
   _candidates = @[];
+  _selected = 0;
+  _pageStart = 0;
+  _expanded = NO;
+  _shiftAwaitingSoleRelease = NO;
   _mode = GYSettingsStore.sharedStore.inputMode;
   [_engine setInputMode:_mode];
-  _shiftPending = NO;
-  _shiftUsed = NO;
   return self;
 }
 
 - (void)applyInputMode:(GYInputMode)mode {
   if (_mode == mode) return;
+  // Switching away mid-composition cancels the preedit; nothing is committed.
   [self cancelComposition];
   _mode = mode;
   GYSettingsStore.sharedStore.inputMode = mode;
+  if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
   [_engine setInputMode:mode];
-}
-
-- (void)toggleDirectInput {
-  if (_mode == GYInputModeEnglish) {
-    [self applyInputMode:GYSettingsStore.sharedStore.lastChineseMode];
-  } else {
-    [self applyInputMode:GYInputModeEnglish];
+  id client = self.client;
+  if (client != nil) {
+    [_candidateWindow showModeAtCaret:[self caretRectForClient:client] inputMode:(NSInteger)_mode];
   }
 }
 
@@ -61,6 +90,121 @@
   [GYPreferencesController.sharedController show];
 }
 
+// Sole Shift press-release cycles 中⇄EN, remembering the last Chinese mode.
+- (void)toggleChineseEnglish {
+  [self applyInputMode:_mode == GYInputModeEnglish
+      ? GYSettingsStore.sharedStore.lastChineseMode
+      : GYInputModeEnglish];
+}
+
+- (NSRect)caretRectForClient:(id)client {
+  NSRect rect = NSZeroRect;
+  @try {
+    if ([client respondsToSelector:@selector(attributesForCharacterIndex:lineHeightRectangle:)]) {
+      [client attributesForCharacterIndex:0 lineHeightRectangle:&rect];
+    }
+  } @catch (__unused NSException *exception) {
+    rect = NSZeroRect;
+  }
+  if (rect.size.height <= 0) {
+    const NSPoint mouse = NSEvent.mouseLocation;
+    rect = NSMakeRect(mouse.x, mouse.y - 18, 4, 18);
+  }
+  return rect;
+}
+
+// Fetches the governed 75-candidate pool and merges per-code custom phrases
+// at the front, like the Windows pipeline.
+- (void)refetchCandidatesForCode:(NSString *)code {
+  NSArray<NSString *> *rime = [_engine candidatesForCode:code];
+  rime = rime.count != 0 ? [_engine candidatesUpToCount:kCandidateFetchLimit] : @[];
+  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:rime forCode:code];
+  _selected = 0;
+  _pageStart = 0;
+}
+
+- (void)updateCandidateWindowForClient:(id)client {
+  if (client == nil) return;
+  [_candidateWindow showAtCaret:[self caretRectForClient:client]
+                     candidates:_candidates
+                       selected:_selected
+                      pageStart:_pageStart
+                       expanded:_expanded
+                      inputMode:(NSInteger)_mode];
+}
+
+// PageUp/PageDown flip a whole 25-candidate page in both strip and grid.
+- (void)pageCandidateWindow:(NSInteger)direction client:(id)client {
+  if (direction > 0) {
+    if (_pageStart + kExpandedPageSize < _candidates.count) {
+      _pageStart += kExpandedPageSize;
+      _selected = _pageStart;
+    } else if ([_engine pageDown]) {
+      _candidates = [GYSettingsStore.sharedStore
+          candidatesByAddingCustomPhrases:[_engine candidatesUpToCount:kCandidateFetchLimit]
+                                  forCode:_composition];
+      _pageStart = 0;
+      _selected = 0;
+    }
+  } else {
+    if (_pageStart > 0) {
+      _pageStart -= kExpandedPageSize;
+      _selected = _pageStart;
+    } else if ([_engine pageUp]) {
+      _candidates = [GYSettingsStore.sharedStore
+          candidatesByAddingCustomPhrases:[_engine candidatesUpToCount:kCandidateFetchLimit]
+                                  forCode:_composition];
+      _pageStart = _candidates.count != 0 ? ((_candidates.count - 1) / kExpandedPageSize) * kExpandedPageSize : 0;
+      _selected = _pageStart;
+    }
+  }
+  [self updateCandidateWindowForClient:client];
+}
+
+// Grid navigation (expanded state). All movements clamp to real candidates;
+// the last, possibly short, row never invents a cell.
+- (void)moveSelectionHorizontally:(NSInteger)delta client:(id)client {
+  const NSInteger next = (NSInteger)_selected + delta;
+  if (next >= 0 && next < (NSInteger)_candidates.count) {
+    _selected = (NSUInteger)next;
+    if (_selected < _pageStart) _pageStart -= kExpandedPageSize;
+    if (_selected >= _pageStart + kExpandedPageSize) _pageStart += kExpandedPageSize;
+  }
+  [self updateCandidateWindowForClient:client];
+}
+
+- (void)moveSelectionDownWithClient:(id)client {
+  const NSUInteger count = _candidates.count;
+  const NSUInteger next = _selected + kCollapsedPageSize;
+  if (next < count) {
+    _selected = next;
+    if (_selected >= _pageStart + kExpandedPageSize) _pageStart += kExpandedPageSize;
+  } else if (_pageStart + kExpandedPageSize < count) {
+    // Page bottom: cross to the next page in the same column.
+    const NSUInteger column = (_selected - _pageStart) % kCollapsedPageSize;
+    const NSUInteger target = _pageStart + kExpandedPageSize + column;
+    if (target < count) {
+      _selected = target;
+      _pageStart += kExpandedPageSize;
+    }
+  }
+  [self updateCandidateWindowForClient:client];
+}
+
+- (void)moveSelectionUpWithClient:(id)client {
+  if (_selected - _pageStart >= kCollapsedPageSize) {
+    _selected -= kCollapsedPageSize;
+  } else if (_pageStart > 0) {
+    _pageStart -= kExpandedPageSize;
+    _selected -= kCollapsedPageSize;
+  } else {
+    // First page, first row: ↑ collapses back to the single-row strip.
+    _expanded = NO;
+    _pageStart = 0;
+    _selected = 0;
+  }
+  [self updateCandidateWindowForClient:client];
+}
 
 // Commits the displayed candidate at index, then refreshes any composition
 // remainder Rime kept (sentence-style partial commits). A custom phrase at
@@ -69,7 +213,8 @@
                                  suffix:(nullable NSString *)suffix
                                  client:(id)client {
   if (index >= _candidates.count || client == nil) return;
-  NSString *phrase = GYSettingsStore.sharedStore.customPhrases[_composition.lowercaseString];
+  NSArray<NSString *> *phrases = GYSettingsStore.sharedStore.customPhrases[_composition.lowercaseString];
+  NSString *phrase = phrases.firstObject;
   NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
   BOOL insertedCustomPhrase = phrase.length != 0 &&
       [_candidates.firstObject isEqualToString:phrase] &&
@@ -81,7 +226,7 @@
     return;
   }
   NSUInteger rimeIndex = insertedCustomPhrase ? index - 1 : index;
-  NSString *commit = [_engine commitCandidateAtIndex:rimeIndex];
+  NSString *commit = [_engine commitCandidateAtAbsoluteIndex:rimeIndex];
   if (commit == nil) return;
   [client insertText:[commit stringByAppendingString:tail]
     replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -97,17 +242,23 @@
     _composition = @"";
     _candidates = @[];
     [_engine clearComposition];
-    [_candidatePanel hide];
+    [_candidateWindow hide];
     return;
   }
   _composition = rest;
-  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine currentCandidates]
-                                                                     forCode:_composition];
+  [self refetchCandidatesForCode:_composition];
   [self updateMarkedTextForClient:client];
 }
 
+// IMK creates one controller per client session. When focus moves to another
+// document or app, this session's candidate panel must not linger on screen.
+- (void)deactivateServer:(id)sender {
+  [self cancelComposition];
+  [super deactivateServer:sender];
+}
+
 - (NSMenu *)menu {
-  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"GY 输入法"];
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"输入法.网"];
   NSArray<NSNumber *> *modes = @[@(GYInputModeSimplified), @(GYInputModeTraditional), @(GYInputModeEnglish)];
   for (NSNumber *value in modes) {
     GYInputMode mode = (GYInputMode)value.integerValue;
@@ -121,98 +272,130 @@
   NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
   preferences.target = self;
   preferences.keyEquivalentModifierMask = NSEventModifierFlagCommand;
-  [menu addItem:preferences];
   NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(_mode)] action:nil keyEquivalent:@""];
   status.enabled = NO;
   [menu addItem:status];
   return menu;
 }
 
-- (NSArray *)candidates:(id)sender { return _candidates; }
-
-- (void)candidateSelected:(NSAttributedString *)candidateString {
-  NSString *text = candidateString.string;
-  if (text.length == 0) return;
-  NSUInteger index = [_candidates indexOfObject:text];
-  if (index == NSNotFound) {
-    [self commitText:text];
-    return;
-  }
-  [self commitCandidateSelectionAtIndex:index suffix:nil client:self.client];
-}
-
-// The direct event path avoids binding normal application shortcuts to the
-// IME. Command/Control/Option/Fn always return NO to the focused application.
-- (BOOL)handleEvent:(NSEvent *)event client:(id)client {
+- (BOOL)inputText:(NSString *)string key:(NSInteger)keyCode modifiers:(NSUInteger)modifiers client:(id)client {
   const NSEventModifierFlags blockingModifiers = NSEventModifierFlagCommand |
       NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagFunction;
-  if (event.type == NSEventTypeFlagsChanged &&
-      (event.keyCode == kVK_Shift || event.keyCode == kVK_RightShift)) {
-    if ((event.modifierFlags & NSEventModifierFlagShift) != 0) {
-      _shiftPending = YES;
-      _shiftUsed = NO;
-    } else if (_shiftPending) {
-      if (!_shiftUsed) [self toggleDirectInput];
-      _shiftPending = NO;
-      _shiftUsed = NO;
+
+  // Sole-Shift mode toggle (press and release with no key in between).
+  if (keyCode == kVK_Shift || keyCode == kVK_RightShift) {
+    if ((modifiers & NSEventModifierFlagShift) != 0) {
+      _shiftAwaitingSoleRelease = YES;
+    } else if (_shiftAwaitingSoleRelease) {
+      _shiftAwaitingSoleRelease = NO;
+      [self toggleChineseEnglish];
     }
     return YES;
   }
-  if (event.type != NSEventTypeKeyDown) return NO;
+  _shiftAwaitingSoleRelease = NO;
+
   if (_composition.length == 0 && _mode != GYSettingsStore.sharedStore.inputMode) {
     _mode = GYSettingsStore.sharedStore.inputMode;
     [_engine setInputMode:_mode];
   }
 
-  if ((event.modifierFlags & blockingModifiers) != 0) {
-    _shiftUsed = _shiftPending;
+  // Arrow and paging keys arrive with the Function modifier flag set; they are
+  // navigation for the candidate window, not modified shortcuts. Only genuine
+  // Command/Control/Option chords are passed back to the application.
+  const BOOL isNavigationKey = keyCode == kVK_DownArrow || keyCode == kVK_UpArrow ||
+      keyCode == kVK_LeftArrow || keyCode == kVK_RightArrow ||
+      keyCode == kVK_PageUp || keyCode == kVK_PageDown;
+  if ((modifiers & blockingModifiers) != 0 &&
+      (!isNavigationKey || (modifiers & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption)) != 0)) {
     return NO;
   }
-  if (_shiftPending) _shiftUsed = YES;
 
-  if (event.keyCode == kVK_Escape && _composition.length != 0) {
+  if (keyCode == kVK_Escape && _composition.length != 0) {
     [self cancelComposition];
     return YES;
   }
-  if (event.keyCode == kVK_Return && _composition.length != 0) {
-    // Return explicitly keeps pinyin as ASCII. It must never toggle EN mode.
-    [self commitText:_composition];
+  if (keyCode == kVK_Return && _composition.length != 0) {
+    // Collapsed: keep the raw pinyin as ASCII. Expanded: commit the highlight.
+    if (_expanded && _candidates.count != 0) {
+      [self commitCandidateSelectionAtIndex:_selected suffix:nil client:client];
+    } else {
+      [self commitText:_composition];
+    }
     return YES;
   }
 
-  if (event.keyCode == kVK_Delete && _composition.length != 0) {
+  if (keyCode == kVK_Delete && _composition.length != 0) {
     _composition = [_composition substringToIndex:_composition.length - 1];
-    _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
-    if (_composition.length == 0) [self cancelComposition];
-    else [self updateMarkedTextForClient:client];
+    if (_composition.length == 0) {
+      [self cancelComposition];
+    } else {
+      [self refetchCandidatesForCode:_composition];
+      [self updateMarkedTextForClient:client];
+    }
     return YES;
   }
-  if (event.keyCode == kVK_Space && _candidates.count != 0) {
-    [self commitCandidateSelectionAtIndex:0 suffix:nil client:client];
+  if (keyCode == kVK_Space && _candidates.count != 0) {
+    // Collapsed commits the strip's first candidate; expanded the highlight.
+    [self commitCandidateSelectionAtIndex:_expanded ? _selected : _pageStart
+                                   suffix:nil client:client];
     return YES;
   }
-  if (event.keyCode == kVK_PageUp && _composition.length != 0 && [_engine pageUp]) {
-    _candidates = [_engine currentCandidates];
-    [self updateMarkedTextForClient:client];
+  if (keyCode == kVK_PageUp && _composition.length != 0) {
+    [self pageCandidateWindow:-1 client:client];
     return YES;
   }
-  if (event.keyCode == kVK_PageDown && _composition.length != 0 && [_engine pageDown]) {
-    _candidates = [_engine currentCandidates];
-    [self updateMarkedTextForClient:client];
+  if (keyCode == kVK_PageDown && _composition.length != 0) {
+    [self pageCandidateWindow:1 client:client];
     return YES;
   }
 
-  if (event.keyCode >= kVK_ANSI_1 && event.keyCode <= kVK_ANSI_9 && _candidates.count != 0) {
-    NSUInteger index = event.keyCode - kVK_ANSI_1;
-    if (index < _candidates.count) {
-      [self commitCandidateSelectionAtIndex:index suffix:nil client:client];
+  // Locked interaction: keyboard ↓ enters the fixed 5×5 grid; inside the grid
+  // the arrows move the highlight and cross page boundaries.
+  if (keyCode == kVK_DownArrow && _candidates.count != 0) {
+    if (!_expanded) {
+      if (_candidates.count > kCollapsedPageSize) _expanded = YES;
+      [self updateCandidateWindowForClient:client];
+    } else {
+      [self moveSelectionDownWithClient:client];
+    }
+    return YES;
+  }
+  if (keyCode == kVK_UpArrow) {
+    if (_expanded && _candidates.count != 0) {
+      [self moveSelectionUpWithClient:client];
       return YES;
     }
+    return NO; // collapsed: pass through
+  }
+  if (keyCode == kVK_LeftArrow || keyCode == kVK_RightArrow) {
+    if (_expanded && _candidates.count != 0) {
+      [self moveSelectionHorizontally:keyCode == kVK_LeftArrow ? -1 : 1 client:client];
+      return YES;
+    }
+    return NO; // collapsed: pass through
+  }
+
+  if (keyCode >= kVK_ANSI_1 && keyCode <= kVK_ANSI_5 && _candidates.count != 0) {
+    const NSUInteger digit = (NSUInteger)(keyCode - kVK_ANSI_1);
+    if (_expanded) {
+      // Row of the highlight, column N; a short last row must not misselect.
+      const NSUInteger rowStart = _pageStart + ((_selected - _pageStart) / kCollapsedPageSize) * kCollapsedPageSize;
+      const NSUInteger rowCount = MIN(kCollapsedPageSize, _candidates.count - rowStart);
+      if (digit < rowCount) {
+        [self commitCandidateSelectionAtIndex:rowStart + digit suffix:nil client:client];
+      }
+    } else {
+      const NSUInteger index = _pageStart + digit;
+      if (index < MIN(_candidates.count, _pageStart + kCollapsedPageSize)) {
+        [self commitCandidateSelectionAtIndex:index suffix:nil client:client];
+      }
+    }
+    return YES;
   }
 
   if (GYInputModeIsChinese(_mode)) {
     NSDictionary<NSString *, NSString *> *punctuation = @{@",": @"，", @".": @"。", @"?": @"？", @"!": @"！", @";": @"；", @":": @"："};
-    NSString *converted = punctuation[event.characters];
+    NSString *converted = punctuation[string];
     if (converted != nil) {
       if (_composition.length == 0) {
         [self commitText:converted];
@@ -228,12 +411,12 @@
     }
   }
 
-  NSString *text = event.charactersIgnoringModifiers.lowercaseString;
+  NSString *text = string.lowercaseString;
   if (!GYInputModeIsChinese(_mode) || text.length != 1 || [text rangeOfCharacterFromSet:NSCharacterSet.letterCharacterSet].location == NSNotFound) {
     return NO;
   }
   _composition = [_composition stringByAppendingString:text];
-  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:[_engine candidatesForCode:_composition] forCode:_composition];
+  [self refetchCandidatesForCode:_composition];
   [self updateMarkedTextForClient:client];
   return YES;
 }
@@ -245,7 +428,10 @@
   [_engine clearComposition];
   _composition = @"";
   _candidates = @[];
-  [_candidatePanel hide];
+  _selected = 0;
+  _pageStart = 0;
+  _expanded = NO;
+  [_candidateWindow hide];
 }
 
 - (void)updateMarkedTextForClient:(id)client {
@@ -254,15 +440,17 @@
   [client setMarkedText:marked
           selectionRange:NSMakeRange(_composition.length, 0)
         replacementRange:NSMakeRange(NSNotFound, 0)];
-  [_candidatePanel updateCandidates];
-  [_candidatePanel show:kIMKLocateCandidatesBelowHint];
+  [self updateCandidateWindowForClient:client];
 }
 
 - (void)cancelComposition {
   [_engine clearComposition];
   _composition = @"";
   _candidates = @[];
-  [_candidatePanel hide];
+  _selected = 0;
+  _pageStart = 0;
+  _expanded = NO;
+  [_candidateWindow hide];
   [super cancelComposition];
 }
 

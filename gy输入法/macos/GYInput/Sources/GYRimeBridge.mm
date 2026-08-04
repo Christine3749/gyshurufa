@@ -43,10 +43,28 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
   return YES;
 }
 
+// Candidate governance gate (WINDOWS-DESIGN.md §6): pure CJK ideographs,
+// at most 12 characters; emoji, PUA, symbols and duplicates are filtered.
+static BOOL GYIsQualityCandidate(NSString *text) {
+  if (text.length == 0 || text.length > 12) return NO;
+  for (NSUInteger i = 0; i < text.length; ++i) {
+    const unichar c = [text characterAtIndex:i];
+    const BOOL isCJK = (c >= 0x4E00 && c <= 0x9FFF) ||
+                       (c >= 0x3400 && c <= 0x4DBF) ||
+                       (c >= 0xF900 && c <= 0xFAFF);
+    if (!isCJK) return NO;
+  }
+  return YES;
+}
+
 @implementation GYRimeBridge {
   NSURL *_sharedDataURL;
   NSURL *_userDataURL;
   NSString *_diagnostic;
+  // Maps a filtered candidate index (what the user sees) to the raw Rime
+  // index (what select_candidate_on_current_page expects). Rebuilt by every
+  // candidatesUpToCount: call; invalidated by clearComposition.
+  NSMutableArray<NSNumber *> *_candidateIndexMap;
 #if GY_HAS_RIME
   RimeApi *_api;
   RimeSessionId _session;
@@ -154,6 +172,78 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
 #endif
 }
 
+- (NSArray<NSString *> *)candidatesUpToCount:(NSUInteger)limit {
+#if GY_HAS_RIME
+  if (![self isReady] || limit == 0) return @[];
+  NSMutableArray<NSString *> *result = [NSMutableArray array];
+  NSMutableArray<NSNumber *> *indexMap = [NSMutableArray array];
+  NSUInteger pagesAdvanced = 0;
+  NSUInteger rawIndex = 0;
+  while (result.count < limit) {
+    RIME_STRUCT(RimeContext, context);
+    if (!_api->get_context(_session, &context)) break;
+    for (size_t i = 0; i < context.menu.num_candidates && result.count < limit; ++i) {
+      const NSUInteger thisRawIndex = rawIndex++;
+      const char *text = context.menu.candidates[i].text;
+      if (text == nullptr) continue;
+      NSString *candidate = [NSString stringWithUTF8String:text];
+      if (!GYIsQualityCandidate(candidate)) continue;
+      if ([result containsObject:candidate]) continue;
+      [result addObject:candidate];
+      [indexMap addObject:@(thisRawIndex)];
+    }
+    const Bool isLastPage = context.menu.is_last_page;
+    _api->free_context(&context);
+    if (isLastPage) break;
+    if (!_api->change_page(_session, False)) break;
+    pagesAdvanced++;
+  }
+  while (pagesAdvanced-- > 0) _api->change_page(_session, True);
+  _candidateIndexMap = indexMap;
+  return result;
+#else
+  (void)limit;
+  return @[];
+#endif
+}
+
+- (nullable NSString *)commitCandidateAtAbsoluteIndex:(NSUInteger)index {
+#if GY_HAS_RIME
+  if (![self isReady]) return nil;
+  // Translate the filtered (displayed) index back to the raw Rime index;
+  // the quality gate and dedupe may have dropped candidates in between.
+  NSUInteger rimeIndex = index;
+  if (_candidateIndexMap != nil && index < _candidateIndexMap.count) {
+    rimeIndex = _candidateIndexMap[index].unsignedIntegerValue;
+  }
+  RIME_STRUCT(RimeContext, context);
+  if (!_api->get_context(_session, &context)) return nil;
+  int pageSize = context.menu.page_size;
+  int currentPage = context.menu.page_no;
+  _api->free_context(&context);
+  if (pageSize <= 0) pageSize = 5;
+  const int targetPage = (int)(rimeIndex / (NSUInteger)pageSize);
+  const size_t withinPage = rimeIndex % (NSUInteger)pageSize;
+  while (currentPage < targetPage) {
+    if (!_api->change_page(_session, False)) return nil;
+    currentPage++;
+  }
+  while (currentPage > targetPage) {
+    if (!_api->change_page(_session, True)) return nil;
+    currentPage--;
+  }
+  if (!_api->select_candidate_on_current_page(_session, withinPage)) return nil;
+  RIME_STRUCT(RimeCommit, commit);
+  if (!_api->get_commit(_session, &commit) || commit.text == nullptr) return nil;
+  NSString *result = [NSString stringWithUTF8String:commit.text];
+  _api->free_commit(&commit);
+  return result;
+#else
+  (void)index;
+  return nil;
+#endif
+}
+
 - (nullable NSString *)remainingCompositionInput {
 #if GY_HAS_RIME
   if (![self isReady]) return nil;
@@ -190,6 +280,7 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
 }
 
 - (void)clearComposition {
+  _candidateIndexMap = nil;
 #if GY_HAS_RIME
   if ([self isReady]) _api->clear_composition(_session);
 #endif
@@ -211,4 +302,17 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
   return NO;
 #endif
 }
++ (BOOL)moveLearningDatabaseToTrash:(NSError * _Nullable * _Nullable)error {
+  NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
+                                                        inDomains:NSUserDomainMask].firstObject;
+  NSURL *userDir = [support URLByAppendingPathComponent:@"GYInput/rime" isDirectory:YES];
+  NSURL *db = [userDir URLByAppendingPathComponent:@"user.db"];
+  if (![NSFileManager.defaultManager fileExistsAtPath:db.path]) {
+    return YES; // nothing to delete
+  }
+  NSURL *trash = [userDir URLByAppendingPathComponent:@"trashed-user.db"];
+  [NSFileManager.defaultManager removeItemAtURL:trash error:nil];
+  return [NSFileManager.defaultManager moveItemAtURL:db toURL:trash error:error];
+}
+
 @end

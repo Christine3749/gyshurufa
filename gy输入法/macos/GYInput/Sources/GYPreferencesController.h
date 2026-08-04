@@ -2,5 +2,6 @@
 
 @interface GYPreferencesController : NSObject
 + (instancetype)sharedController;
-+- (void)show;
+- (void)show;
+- (void)showAbout;
 @end
