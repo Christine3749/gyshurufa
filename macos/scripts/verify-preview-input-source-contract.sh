@@ -24,7 +24,4 @@ main_source="$root/GYInput/Sources/main.m"
 /usr/bin/grep -F -q 'TISEnableInputSource(source)' "$main_source" || {
   echo 'Preview input-source violation: registration must enable the Preview mode.' >&2; exit 1;
 }
-/usr/bin/grep -F -q 'TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true)' "$main_source" || {
-  echo 'Preview input-source violation: registration must find disabled modes before enabling them.' >&2; exit 1;
-}
 echo "Preview input-source contract is valid: $plist"
