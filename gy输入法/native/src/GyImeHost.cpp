@@ -69,8 +69,30 @@ SECURITY_ATTRIBUTES* PipeSecurityAttributes() {
   // Cached for the process lifetime. Parsing the SDDL used to happen on every
   // single client connection and was part of the ~15ms accept-recycle cost.
   static SECURITY_ATTRIBUTES* cached = [] {
+    // Grant the interactive user explicitly instead of only the pipe owner:
+    // objects created by an elevated process are owned by the Administrators
+    // group, so an owner-only DACL locks out every medium-integrity app when
+    // the Host was ever launched elevated. The user SID comes from our own
+    // token, which does not change with elevation. Other local users are
+    // still denied either way.
+    std::wstring sddl = L"D:P(A;;GA;;;OW)";
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+      DWORD size = 0;
+      GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+      std::vector<unsigned char> buffer(size);
+      if (size && GetTokenInformation(token, TokenUser, buffer.data(), size, &size)) {
+        wchar_t* sid_string = nullptr;
+        if (ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid,
+                                   &sid_string)) {
+          sddl = L"D:P(A;;GA;;;" + std::wstring(sid_string) + L")";
+          LocalFree(sid_string);
+        }
+      }
+      CloseHandle(token);
+    }
     PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;OW)", SDDL_REVISION_1,
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
                                                               &descriptor, nullptr)) {
       return static_cast<SECURITY_ATTRIBUTES*>(nullptr);
     }

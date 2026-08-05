@@ -73,8 +73,26 @@ bool SendRequest(gy::host::MessageType type, const std::wstring& payload, std::w
   return read;
 }
 
+bool CurrentProcessElevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  TOKEN_ELEVATION elevation{};
+  DWORD size = sizeof(elevation);
+  const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, size, &size) &&
+                        elevation.TokenIsElevated != 0;
+  CloseHandle(token);
+  return elevated;
+}
+
 bool StartHost(const std::wstring& path) {
   if (!FileExists(path)) return false;
+  // An elevated launch poisons the whole install: objects created by an
+  // elevated process are owned by the Administrators group, while the Host
+  // pipe DACL grants the user — every medium-integrity app then gets
+  // ACCESS_DENIED (compositions work, lookups die, the IME feels dead).
+  // Elevated clients can still USE an existing Host (their token user is the
+  // same account); they must just never be the process that creates it.
+  if (CurrentProcessElevated()) return false;
   std::vector<wchar_t> command(path.begin(), path.end());
   command.push_back(L'\0');
   STARTUPINFOW startup{sizeof(startup)};
