@@ -79,3 +79,38 @@
 - [x] 切换应用候选窗自动关闭（不再一屏两窗）
 - [x] 设置面板四页排版、主题联动换色、完成/× 保存语义
 - [x] 菜单栏「输入法.网」+ 灰底 GY 图标；系统输入法列表仅 1 条
+
+---
+
+## 六、菜单图标战争全记录（2026-08-05 下午追加，史上最贵一个 icon）
+
+### 症状
+菜单栏/输入法列表永远显示通用文档图标，换包、清缓存、注销均无效。
+
+### 排障链（每一步都是真问题，层层叠加）
+1. **LaunchServices 幽灵注册**：同 bundle ID 注册了 13+ 个副本（旧 build、preview 2.0.0–2.0.8、
+   自动更新 failed/rollback 残骸）。LS 按**版本号最高者**做 canonical：v12 幽灵压着正式版 v8，
+   系统去读死路径的 GYIcon.icns 失败 → 通用图标。修法：`lsregister -u` 注销 + 删除残骸 +
+   **正式版版本号抬到 13** 永远压过幽灵。
+2. **缺 tsInputModeIconFileKey**：菜单图标只认输入模式字典里的这个键，CFBundleIconFile
+   管 app 不管输入源。补上后仍不显示 → 引出第 3 层。
+3. **macOS 26 的 TIS 图标加载器不认 .icns**：红色探针实验证明文件/键/注册全对时，TIS 仍把
+   icns 当普通文档、显示"icns 文件类型"占位图（用 initWithIconRef 导出实锤）。
+   NSWorkspace/IconServices 读同一文件完全正常——只有输入源图标这条路水土不服。
+4. **正道（对标微信/讯飞逆向得出）**：两家用的都是 **16pt 矢量 PDF** +
+   四个键全配（tsInputModeIconFileKey / tsInputModeMenuIconFileKey /
+   tsInputModeAlternateMenuIconFileKey / tsInputModePaletteIconFileKey）+
+   顶层 tsInputMethodIconFileKey。照做即显示，位置颜色自动正确。
+5. **菜单栏顶部图标刷新**：System Settings 与菜单栏对已装输入法的变更**不注销不刷新**，
+   Apple DTS 官方确认无 API 可绕（反馈 FB23026482）。每次改图标必须注销重登验收。
+
+### 菜单 action 坑（同日修复）
+简/繁/EN 菜单项点击无反应：`-menu` 的 target 是会话级 IMKInputController 实例，
+菜单弹出时实例可能已随会话销毁 → action 投递落空。改长效单例 GYMenuActionTarget 写
+sharedStore。另：「设置…」item 创建了却漏 addItem，从未显示过。
+
+### 工具箱（复用价值高）
+- 红色探针法：换醒目测试图标判断"系统读没读文件"，一步区分缓存 vs 链路
+- initWithIconRef 导出 TIS 实际持有的图标内容，直接看系统眼里的图
+- NSWorkspace iconForFile 对照组，区分 LS/IconServices 层 vs TIS 层
+- 逆向友商包：plutil 读 WeType/iFlytek 的 Info.plist 抄正确配置

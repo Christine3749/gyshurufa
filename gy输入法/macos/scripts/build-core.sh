@@ -21,12 +21,15 @@ if [[ -f "$root/GYInput/Resources/AppIcon.icns" ]]; then
   mkdir -p "$app/Contents/Resources"
   cp "$root/GYInput/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 fi
-# Input-source menu icon must be a plain PNG: on macOS 26 the TIS icon loader
-# cannot consume .icns here and falls back to the generic "icns document" icon.
-if [[ -f "$root/GYInput/Resources/GYSourceIcon.png" ]]; then
-  mkdir -p "$app/Contents/Resources"
-  cp "$root/GYInput/Resources/GYSourceIcon.png" "$app/Contents/Resources/GYSourceIcon.png"
-fi
+# Input-source menu icons: TIS on macOS 26 cannot consume .icns here (falls
+# back to the generic "icns document" placeholder). Ship a 16pt vector PDF
+# (same format as WeType/iFlytek menu icons) plus a small PNG fallback.
+for icon in GYMenuIcon.pdf GYSourceIcon.png; do
+  if [[ -f "$root/GYInput/Resources/$icon" ]]; then
+    mkdir -p "$app/Contents/Resources"
+    cp "$root/GYInput/Resources/$icon" "$app/Contents/Resources/$icon"
+  fi
+done
 for lproj in "$root/GYInput/Resources/"*.lproj; do
   [[ -d "$lproj" ]] || continue
   cp -R "$lproj" "$app/Contents/Resources/"
