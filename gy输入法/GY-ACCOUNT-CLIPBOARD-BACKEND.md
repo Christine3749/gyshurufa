@@ -27,7 +27,7 @@ GY 设置-账户页 点"绑定账号"
   ▼
 GY 每 3 秒轮询 POST /gy/devices/token { device_code }
   │  未授权 → 426/pending；已授权 →
-  │  ← { device_token, device_id, user: { email, tier } }
+  │  ← { device_token, device_id, username }   -- 只回用户名，不回邮箱等档案
   ▼
 device_token 写入 DPAPI（Windows）/ Keychain（macOS）
 设置页账户卡片变为已绑定态：邮箱 + 设备名 + "解除绑定"
@@ -57,8 +57,7 @@ device_token 写入 DPAPI（Windows）/ Keychain（macOS）
 create table gy_devices (
   device_id    uuid primary key default gen_random_uuid(),
   user_id      uuid not null references auth.users(id) on delete cascade,
-  name         text not null,            -- "Ethan 的 Windows Pro"
-  platform     text not null,            -- windows | macos
+  platform     text not null,            -- windows | macos（只存平台泛称，不存设备名）
   public_key   bytea,                    -- E2E 预留
   token_hash   text not null,
   created_at   timestamptz default now(),
@@ -91,6 +90,7 @@ create index on gy_clipboard_items (user_id, created_at);
 
 ## 5. 安全边界（不可妥协）
 
+0. **数据最小化（产品决策 2026-08-05）：HalfSphere 只放用户名，其他信息一概不放。** GY 自有表不镜像邮箱、手机号、头像等任何档案信息；授权响应只回 `username`；日志不落用户标识；设备名不进库（设备列表只显示平台泛称"Windows 设备"/"Mac 设备"+ 绑定时间）。
 1. GY 客户端**只持 device_token**；Supabase anon key 不出现在输入法任何进程；Service Role Key 只在 halfsphere-api。
 2. 剪贴板内容**端到端加密**：MVP 可先用"账户级数据密钥"（绑定后从服务端领取、密文存储、device_token 换取），二期升级设备组密钥 + 验签（规格完整模型）。
 3. 令牌存储：Windows DPAPI / macOS Keychain，与产品标准 §6 一致。
