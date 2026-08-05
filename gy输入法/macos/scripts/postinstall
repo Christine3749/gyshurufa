@@ -4,8 +4,14 @@ set -euo pipefail
 app_path="${2%/}/GYInput.app"
 [[ -x "$app_path/Contents/MacOS/GYInput" ]] || app_path="/Library/Input Methods/GYInput.app"
 login_user="$(/usr/bin/stat -f '%Su' /dev/console)"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 if [[ "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Contents/MacOS/GYInput" ]]; then
+  # 干净注册：LaunchServices 按版本号选 canonical 副本，同路径旧登记不刷就
+  # 可能继续引用幽灵信息（图标战争的教训）。先 -u 再 -f，登记状态归零重建。
+  /usr/bin/sudo -u "$login_user" "$LSREGISTER" -u "$app_path" >/dev/null 2>&1 || true
+  /usr/bin/sudo -u "$login_user" "$LSREGISTER" -f "$app_path" >/dev/null 2>&1 || true
+
   # The package build rejects identity changes. Registering here refreshes the
   # normal install path; it is not a substitute for an identity migration.
   /usr/bin/sudo -u "$login_user" "$app_path/Contents/MacOS/GYInput" --register-input-source
@@ -14,5 +20,15 @@ if [[ "$login_user" != root && "$login_user" != loginwindow && -x "$app_path/Con
     /usr/bin/pgrep -x GYInput >/dev/null || break
     /bin/sleep 1
   done
+
+  # 缓存刷新链：菜单栏图标、TIS 输入源表、参数缓存对已装输入法的变更
+  # 不注销不刷新（Apple DTS 确认无 API，FB23026482）。杀掉即自动重生，
+  # 让重装后立刻看到新版本，免去用户注销重登。
+  /usr/bin/sudo -u "$login_user" /usr/bin/killall TextInputMenuAgent 2>/dev/null || true
+  /usr/bin/sudo -u "$login_user" /usr/bin/killall SystemUIServer 2>/dev/null || true
+  /usr/bin/sudo -u "$login_user" /usr/bin/killall cfprefsd 2>/dev/null || true
+  /usr/bin/killall iconservicesagent 2>/dev/null || true
+  /usr/bin/killall iconservicesd 2>/dev/null || true
+
   /usr/bin/sudo -u "$login_user" /usr/bin/open "$app_path"
 fi

@@ -42,6 +42,7 @@ pkgbuild \
   --install-location '/Library/Input Methods' \
   --identifier wang.shurufa.GYInput.pkg \
   --version "$version" \
+  --scripts "$macos_root/scripts" \
   --sign "$installer_identity" \
   "$pkg"
 

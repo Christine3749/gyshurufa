@@ -488,6 +488,7 @@ private:
     // switch must never anchor the candidate window to a position measured
     // somewhere else (it jumped across the screen after an app switch).
     last_caret_valid_ = false;
+    composition_anchor_valid_ = false;
     CancelComposition();
     if (context_) context_->Release();
     context_ = context;
@@ -527,6 +528,8 @@ private:
       if (inserter) inserter->Release();
       if (FAILED(hr)) return hr;
       if (!composition_) { Trace(L"composition.rejected", E_FAIL); return E_FAIL; }
+      // A brand-new composition re-anchors on its first measurement.
+      composition_anchor_valid_ = false;
     }
     ITfRange* range = nullptr;
     HRESULT hr = composition_->GetRange(&range);
@@ -589,6 +592,7 @@ private:
     if (range) range->Release();
     composition_->Release();
     composition_ = nullptr;
+    composition_anchor_valid_ = false;
     if (SUCCEEDED(hr) && selected_candidate) engine_.Learn(pinyin, text);
     composition_text_.clear();
     candidates_.clear();
@@ -612,6 +616,7 @@ private:
   }
   void ResetCompositionState() {
     if (composition_) { composition_->Release(); composition_ = nullptr; }
+    composition_anchor_valid_ = false;
     composition_text_.clear();
     candidates_.clear();
     selected_ = 0;
@@ -667,6 +672,28 @@ private:
         }
       }
     }
+    // Chromium TSF can answer GetTextExt with a stale cached rect for one
+    // frame right after an app switch (Kimi: the strip jumped up-left on the
+    // second keystroke). Within one composition the anchor must be continuous:
+    // left/top stay fixed while only the right edge grows. A larger jump is a
+    // bogus measurement — keep the anchor pinned for this composition instead
+    // of poisoning last_caret_ with it.
+    if (composition_ && have_caret) {
+      if (!composition_anchor_valid_) {
+        composition_anchor_ = caret;
+        composition_anchor_valid_ = true;
+      } else {
+        const LONG anchor_h = (composition_anchor_.bottom - composition_anchor_.top) > 1 ? (composition_anchor_.bottom - composition_anchor_.top) : 1;
+        const LONG dx = caret.left - composition_anchor_.left;
+        const LONG dy = caret.top - composition_anchor_.top;
+        const LONG dy_limit = anchor_h + anchor_h / 2 + 8;  // tolerate a line wrap
+        if (dy < -dy_limit || dy > dy_limit || dx < -64 || dx > 96) {
+          caret = composition_anchor_;
+          last_caret_ = composition_anchor_;
+          TraceRect(L"caret.clamp", caret);
+        }
+      }
+    }
     if (!have_caret && !last_caret_valid_) {
       // Nothing was ever measured in this context (Chromium's layout can lag
       // one keystroke right after an app switch). One late frame is harmless;
@@ -678,7 +705,7 @@ private:
     engine_.ShowCandidates(caret, candidates_, selected_, page_start_, input_mode_, expanded_candidates_, selection_callback_.Endpoint());
   }
   bool Select(unsigned index) { if (index >= candidates_.size()) return false; return SUCCEEDED(RequestEdit({EditActionKind::CommitCandidate, 0, index})); }
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 

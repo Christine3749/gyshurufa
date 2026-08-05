@@ -1,0 +1,44 @@
+#!/bin/bash
+set -euo pipefail
+
+# GY 输入法 · 重装不留痕（preinstall，安装器以 root 运行）
+# 目标：旧版本与旧变体全部清干净，payload 落在无残留的路径上。
+# pkg 的"覆盖安装"只覆盖同名文件，旧 payload 里有而新版删掉的文件会残留——
+# 所以旧副本必须整体删除，而不是让安装器覆盖。
+
+IME_DIR="/Library/Input Methods"
+USER_IME_DIR="/Users/$(/usr/bin/stat -f '%Su' /dev/console)/Library/Input Methods"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+# 1) 结束所有登录会话里正在运行的 GY 进程。
+#    运行中的 bundle 文件可以删，但旧进程必须死绝，否则装完跑的还是旧代码。
+/usr/bin/pkill -x GYInput || true
+/usr/bin/pkill -x GYInputPreview || true
+for _ in 1 2 3; do
+  /usr/bin/pgrep -x GYInput >/dev/null || break
+  /bin/sleep 1
+done
+
+# 2) 注销并删除所有历史副本：
+#    - 同名旧正式版（GYInput.app）
+#    - 预览期变体（GYInputPreview*.app，2.0.0–2.0.8 时代的 LaunchServices 幽灵源）
+#    - 早期自动更新实验留下的 failed/rollback 残骸
+#    - 用户级安装目录里的同名副本（如有）
+shopt -s nullglob
+copies=(
+  "$IME_DIR/GYInput.app"
+  "$IME_DIR"/GYInputPreview*.app
+  "$IME_DIR"/GYInput*.failed*
+  "$IME_DIR"/GYInput*.rollback*
+  "$USER_IME_DIR/GYInput.app"
+  "$USER_IME_DIR"/GYInputPreview*.app
+)
+for item in "${copies[@]}"; do
+  [[ -e "$item" ]] || continue
+  "$LSREGISTER" -u "$item" >/dev/null 2>&1 || true
+  /bin/rm -rf "$item"
+done
+
+# 3) 用户词库与学习数据（~/Library/Rime）一律保留——卸载干净的是程序，
+#    不是用户的输入习惯。
+exit 0

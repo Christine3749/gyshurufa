@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "ClipboardHistory.h"
+
 class SettingsWindow {
 public:
   void Show(const RECT& anchor);
@@ -16,11 +18,12 @@ private:
   void TogglePhrases();
   void ApplyThemeBrush();
   void ClearLearning();
+  void ClearHistory();
   void ExportBackup();
   void ImportBackup();
   bool Hit(const RECT& rect, POINT point) const;
 
-  enum class Page { General, Input, Appearance, Account };
+  enum class Page { General, Input, Appearance, Account, Clipboard };
 
   HWND hwnd_ = nullptr;
   int width_ = 520;
@@ -35,7 +38,7 @@ private:
   int size_index_ = 1;
   Page page_ = Page::General;
   RECT input_mode_rects_[3]{};
-  RECT nav_rects_[4]{};
+  RECT nav_rects_[5]{};
   bool phrases_expanded_ = false;
   // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
   // 输入 page card toggles it and annotates the low-spec recommendation.
@@ -51,4 +54,17 @@ private:
   RECT warm_rect_{};
   RECT done_rect_{};
   RECT close_rect_{};
+
+  // 剪贴板页（CLIPBOARD-PAGE-DESIGN.md）：开关拨动即写入，不等“完成”。
+  // 本机历史卡直接在页内列出最近 20 条文本，滚轮翻页。
+  bool clip_enabled_ = true;
+  bool clip_instant_ = true;
+  std::vector<gy::clipboard_history::Entry> history_entries_;
+  int history_scroll_ = 0;
+  RECT clip_sync_card_{};
+  RECT clip_sync_switch_{};
+  RECT clip_instant_card_{};
+  RECT clip_instant_switch_{};
+  RECT clip_history_clear_{};
+  RECT clip_history_list_{};
 };

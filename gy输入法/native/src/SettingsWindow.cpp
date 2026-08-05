@@ -1,10 +1,12 @@
 #include "SettingsWindow.h"
 #include "InputMode.h"
+#include "ClipboardHistory.h"
 #include "SettingsFile.h"
 
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <ctime>
 #include <windowsx.h>
 #include <iterator>
 #include <string>
@@ -108,6 +110,34 @@ void DrawSegmentedActions(HDC dc, const RECT& first, const RECT& second, const R
     }
     Text(dc, labels[i], rects[i], pal.text, DT_CENTER, font);
   }
+}
+
+// The clipboard page's only instant-apply controls (CLIPBOARD-PAGE-DESIGN §3):
+// a 44×26 pill with a 20 knob. On = accent fill with the knob parked right;
+// off = surface_hover fill with the knob parked left.
+void DrawSwitch(HDC dc, const RECT& rect, bool on, const Palette& pal, UINT dpi) {
+  const int height = rect.bottom - rect.top;
+  Rounded(dc, rect, on ? kBlue : pal.surface_hover, on ? kBlue : pal.border, height / 2);
+  const int knob = Scale(dpi, 20);
+  const int left = on ? rect.right - knob - Scale(dpi, 3) : rect.left + Scale(dpi, 3);
+  const int top = rect.top + (height - knob) / 2;
+  const HBRUSH brush = CreateSolidBrush(kOnAccent);
+  const HGDIOBJ old_brush = SelectObject(dc, brush);
+  const HGDIOBJ old_pen = SelectObject(dc, static_cast<HGDIOBJ>(GetStockObject(NULL_PEN)));
+  Ellipse(dc, left, top, left + knob, top + knob);
+  SelectObject(dc, old_pen);
+  SelectObject(dc, old_brush);
+  DeleteObject(brush);
+}
+
+// 剪贴板历史条目的时间戳：HH:MM 本地时间。
+std::wstring FormatEntryTime(unsigned long long unix_time) {
+  std::time_t value = static_cast<std::time_t>(unix_time);
+  std::tm local{};
+  if (localtime_s(&local, &value) != 0) return L"--:--";
+  wchar_t buffer[6]{};
+  swprintf_s(buffer, std::size(buffer), L"%02d:%02d", local.tm_hour, local.tm_min);
+  return buffer;
 }
 
 // The compact master wordmark is traced from the approved GY brand SVG.
@@ -243,9 +273,11 @@ void SettingsWindow::Layout() {
   const int card_width = width - content_left - right_pad;
   const int group_height = Scale(dpi_, 42), option_width = card_width / 3;
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
-  for (int i = 0; i < 4; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
+  for (int i = 0; i < 5; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
   account_rect_ = {}; phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
+  clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
+  clip_history_clear_ = {}; clip_history_list_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -257,7 +289,15 @@ void SettingsWindow::Layout() {
     clear_rect_ = {content_left, tools_y, content_left + option_width, tools_y + group_height};
     export_rect_ = {content_left + option_width, tools_y, content_left + option_width * 2, tools_y + group_height};
     import_rect_ = {content_left + option_width * 2, tools_y, content_left + card_width, tools_y + group_height};
-    done_y = tools_y + Scale(dpi_, 64);
+    // 剪贴板的两个开关放在通用页（产品决策：剪贴板页只留历史卡片列表）。
+    clip_sync_card_ = {content_left, tools_y + group_height + Scale(dpi_, 14), content_left + card_width, tools_y + group_height + Scale(dpi_, 78)};
+    clip_sync_switch_ = {clip_sync_card_.right - Scale(dpi_, 60), clip_sync_card_.top + Scale(dpi_, 19),
+                         clip_sync_card_.right - Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 45)};
+    clip_instant_card_ = {content_left, clip_sync_card_.bottom + Scale(dpi_, 14), content_left + card_width,
+                          clip_sync_card_.bottom + Scale(dpi_, 100)};
+    clip_instant_switch_ = {clip_instant_card_.right - Scale(dpi_, 60), clip_instant_card_.top + Scale(dpi_, 30),
+                            clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 56)};
+    done_y = clip_instant_card_.bottom + Scale(dpi_, 22);
   } else if (page_ == Page::Input) {
     for (int i = 0; i < 3; ++i) input_mode_rects_[i] = {content_left + i * option_width, base_y, content_left + (i + 1) * option_width, base_y + group_height};
     phrases_rect_ = {content_left, base_y + group_height + Scale(dpi_, 28), content_left + card_width, base_y + group_height + Scale(dpi_, 86)};
@@ -278,11 +318,24 @@ void SettingsWindow::Layout() {
     ai_preview_rect_ = {content_left, size_y + group_height + Scale(dpi_, 32), content_left + card_width, size_y + group_height + Scale(dpi_, 168)};
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = ai_preview_rect_.bottom + Scale(dpi_, 20);
-  } else {
+  } else if (page_ == Page::Account) {
     account_rect_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 52)};
     MoveWindow(account_edit_, account_rect_.left + Scale(dpi_, 126), account_rect_.top + Scale(dpi_, 13), std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 152)), Scale(dpi_, 26), TRUE);
     phrases_rect_ = {content_left, account_rect_.bottom + Scale(dpi_, 18), content_left + card_width, account_rect_.bottom + Scale(dpi_, 90)};
+    // 从“通用”页展开短语后切过来，编辑器不能残留在本页。
+    ShowWindow(phrases_edit_, SW_HIDE);
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
+  } else {
+    // Page::Clipboard：页内只有历史——标题/清空 + 卡片式条目列表（开关在通用页）。
+    done_y = Scale(dpi_, 616);
+    clip_history_clear_ = {content_left + card_width - Scale(dpi_, 60), base_y + Scale(dpi_, 2),
+                           content_left + card_width, base_y + Scale(dpi_, 30)};
+    clip_history_list_ = {content_left, base_y + Scale(dpi_, 40), content_left + card_width, done_y - Scale(dpi_, 10)};
+    history_entries_ = gy::clipboard_history::ReadAll();
+    const int entry_h = Scale(dpi_, 54);
+    const int visible = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_h);
+    history_scroll_ = std::clamp(history_scroll_, 0, std::max(0, static_cast<int>(history_entries_.size()) - visible));
+    ShowWindow(phrases_edit_, SW_HIDE);
   }
   ShowWindow(account_edit_, page_ == Page::Account ? SW_SHOW : SW_HIDE);
   done_rect_ = {width - right_pad - Scale(dpi_, 110), done_y, width - right_pad, done_y + Scale(dpi_, 42)};
@@ -311,8 +364,8 @@ void SettingsWindow::Paint(HDC dc) {
   Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
   Text(dc, L"×", close_rect_, pal.muted, DT_CENTER, title);
 
-  const wchar_t* nav_labels[] = {L"通用", L"输入", L"外观", L"账户"};
-  for (int i = 0; i < 4; ++i) {
+  const wchar_t* nav_labels[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板"};
+  for (int i = 0; i < 5; ++i) {
     const bool selected = static_cast<int>(page_) == i;
     if (selected) {
       RECT marker{nav_rects_[i].right - Scale(dpi_, 2), nav_rects_[i].top + Scale(dpi_, 8), nav_rects_[i].right + Scale(dpi_, 7), nav_rects_[i].bottom - Scale(dpi_, 8)};
@@ -322,8 +375,8 @@ void SettingsWindow::Paint(HDC dc) {
   }
 
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
-  const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户"};
-  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户"};
+  const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板"};
+  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户", L"跨设备复制粘贴与本机历史"};
   Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
   Text(dc, page_subtitles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 118), content_right, Scale(dpi_, 137)}, pal.muted, DT_LEFT, tiny);
 
@@ -334,6 +387,17 @@ void SettingsWindow::Paint(HDC dc) {
     if (!phrases_expanded_) Text(dc, L"例如：dz=地址|电子邮箱", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* tools[] = {L"清空学习", L"导出", L"导入"};
     DrawSegmentedActions(dc, clear_rect_, export_rect_, import_rect_, tools, pal, dpi_, medium);
+    // 剪贴板的两个开关挂在通用页（剪贴板页只留历史卡片列表）。
+    Rounded(dc, clip_sync_card_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"跨设备剪贴板", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 9), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"在已配对的设备间同步复制内容", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 33), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 53)}, pal.muted, DT_LEFT, tiny);
+    DrawSwitch(dc, clip_sync_switch_, clip_enabled_, pal, dpi_);
+    Rounded(dc, clip_instant_card_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"即时粘贴", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 9), clip_instant_card_.right - Scale(dpi_, 76), clip_instant_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    // Windows 面板只提 Ctrl+V；设计稿里的 ⌘V 是 Mac 端文案。
+    Text(dc, L"我复制的内容直接写入其他设备的剪贴板，Ctrl+V 即可粘贴", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 32), clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 51)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"关闭后，收到的内容只进入剪贴板历史，需手动选择", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 54), clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.bottom - Scale(dpi_, 12)}, pal.muted, DT_LEFT, tiny);
+    DrawSwitch(dc, clip_instant_switch_, clip_instant_, pal, dpi_);
   } else if (page_ == Page::Input) {
     Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 22), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* input_modes[] = {L"简体", L"繁体", L"EN"};
@@ -372,7 +436,7 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, preview_input, pal.ink, pal.border, Scale(dpi_, 7));
     Text(dc, L"例如：更安静一点，字稍微大一点", RECT{preview_input.left + Scale(dpi_, 12), preview_input.top, preview_input.right - Scale(dpi_, 12), preview_input.bottom}, pal.muted, DT_LEFT, tiny);
     Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 110), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 10)}, pal.muted, DT_LEFT, tiny);
-  } else {
+  } else if (page_ == Page::Account) {
     Rounded(dc, account_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"账号", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 5), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom - Scale(dpi_, 8)}, pal.text, DT_LEFT, medium);
     Text(dc, L"本地标识", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 25), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom}, pal.muted, DT_LEFT, tiny);
@@ -383,6 +447,42 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
     Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
+  } else {
+    // Page::Clipboard：纯历史卡片列表（开关在通用页）。每条历史一张圆角卡片。
+    const int head_y = clip_history_clear_.top - Scale(dpi_, 2);
+    Text(dc, L"本机历史", RECT{content_left, head_y, clip_history_clear_.left - Scale(dpi_, 16), head_y + Scale(dpi_, 24)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"清空", clip_history_clear_, kBlue, DT_CENTER, medium);
+    Text(dc, L"保留最近 20 条，先进后出；敏感内容仅保存在本机", RECT{content_left, head_y + Scale(dpi_, 24), clip_history_list_.right, head_y + Scale(dpi_, 40)}, pal.muted, DT_LEFT, tiny);
+    const int entry_stride = Scale(dpi_, 54);
+    const int card_h = Scale(dpi_, 46);
+    const int visible_rows = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_stride);
+    const int overflow = static_cast<int>(history_entries_.size()) - visible_rows;
+    if (history_entries_.empty()) {
+      Text(dc, L"还没有剪贴板历史，复制一段文字试试", clip_history_list_, pal.muted, DT_CENTER, tiny);
+    } else {
+      for (int row = 0; row < visible_rows; ++row) {
+        const int index = history_scroll_ + row;
+        if (index >= static_cast<int>(history_entries_.size())) break;
+        const auto& entry = history_entries_[static_cast<size_t>(index)];
+        const int top = clip_history_list_.top + row * entry_stride;
+        RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
+        Rounded(dc, card, pal.surface, pal.border, Scale(dpi_, 9));
+        std::wstring first_line = entry.text.substr(0, entry.text.find_first_of(L"\r\n"));
+        std::replace(first_line.begin(), first_line.end(), L'\t', L' ');
+        Text(dc, first_line, RECT{card.left + Scale(dpi_, 12), card.top + Scale(dpi_, 6), card.right - Scale(dpi_, 12), card.top + Scale(dpi_, 26)}, pal.text, DT_LEFT, tiny);
+        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 12), card.top + Scale(dpi_, 27), card.right - Scale(dpi_, 12), card.bottom - Scale(dpi_, 5)}, pal.muted, DT_LEFT, tiny);
+      }
+      if (overflow > 0) {
+        RECT track{clip_history_list_.right - Scale(dpi_, 4), clip_history_list_.top + Scale(dpi_, 2),
+                   clip_history_list_.right, clip_history_list_.bottom - Scale(dpi_, 2)};
+        Fill(dc, track, pal.border);
+        const int track_h = track.bottom - track.top;
+        const int thumb_h = std::max(Scale(dpi_, 20), track_h * visible_rows / static_cast<int>(history_entries_.size()));
+        const int thumb_y = track.top + (track_h - thumb_h) * history_scroll_ / std::max(1, overflow);
+        RECT thumb{track.left, thumb_y, track.right, thumb_y + thumb_h};
+        Fill(dc, thumb, pal.muted);
+      }
+    }
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
@@ -400,6 +500,9 @@ void SettingsWindow::Load() {
   const int points = GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str());
   size_index_ = points <= 13 ? 0 : points >= 17 ? 2 : 1;
   warm_start_ = GetPrivateProfileIntW(L"Performance", L"WarmStart", 1, path.c_str()) != 0;
+  // CLIPBOARD-PAGE-DESIGN §4：跨设备剪贴板与即时粘贴均默认开。
+  clip_enabled_ = GetPrivateProfileIntW(L"Clipboard", L"Enabled", 1, path.c_str()) != 0;
+  clip_instant_ = GetPrivateProfileIntW(L"Clipboard", L"InstantPaste", 1, path.c_str()) != 0;
 
   std::vector<wchar_t> phrases(4096, L'\0'); GetPrivateProfileSectionW(L"Phrases", phrases.data(), static_cast<DWORD>(phrases.size()), path.c_str());
   std::wstring text;
@@ -414,6 +517,8 @@ void SettingsWindow::Save() {
   WritePrivateProfileStringW(L"Appearance", L"Theme", std::to_wstring(theme_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"CandidateSize", std::to_wstring(points[size_index_]).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Performance", L"WarmStart", warm_start_ ? L"1" : L"0", path.c_str());
+  WritePrivateProfileStringW(L"Clipboard", L"Enabled", clip_enabled_ ? L"1" : L"0", path.c_str());
+  WritePrivateProfileStringW(L"Clipboard", L"InstantPaste", clip_instant_ ? L"1" : L"0", path.c_str());
   gy::input_mode::Write(input_mode_);
   const int length = GetWindowTextLengthW(phrases_edit_); std::vector<wchar_t> raw(static_cast<size_t>(length) + 1, L'\0'); GetWindowTextW(phrases_edit_, raw.data(), static_cast<int>(raw.size()));
   std::wstring section; const std::wstring input(raw.data()); size_t begin = 0;
@@ -428,6 +533,14 @@ void SettingsWindow::Save() {
 void SettingsWindow::ClearLearning() {
   if (MessageBoxW(hwnd_, L"清空本机的所有候选学习记录？常用短语不会受影响。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
   const std::wstring path = SettingsPath(); if (EnsureUnicodeSettingsFile(path)) WritePrivateProfileStringW(L"Learning", nullptr, nullptr, path.c_str());
+}
+void SettingsWindow::ClearHistory() {
+  // 确认文案逐字来自 CLIPBOARD-PAGE-DESIGN §2 卡片 3。
+  if (MessageBoxW(hwnd_, L"清空本机剪贴板历史？不影响其他设备。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+  gy::clipboard_history::Clear();
+  history_entries_.clear();
+  history_scroll_ = 0;
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 void SettingsWindow::ExportBackup() {
   const std::wstring source = SettingsPath(); if (source.empty() || !EnsureUnicodeSettingsFile(source)) return; std::wstring destination;
@@ -470,27 +583,33 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
-      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point);
+      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
       if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
     case WM_SETCURSOR: {
       POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point);
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
-      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point);
+      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
       if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
     case WM_LBUTTONUP: {
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      for (int i = 0; i < 4; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
+      for (int i = 0; i < 5; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
       if (self->page_ == Page::Input) for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      // 剪贴板开关在通用页：拨动即写入（不等“完成”）；剪贴板页只剩清空。
+      if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; }
@@ -507,6 +626,17 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->Hit(self->close_rect_, client)) return HTCLIENT;
       if (client.y < Scale(self->dpi_, 76)) return HTCAPTION;
       break;
+    }
+    case WM_MOUSEWHEEL: {
+      if (self->page_ != Page::Clipboard) break;
+      const int entry_h = Scale(self->dpi_, 54);
+      const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
+      const int max_scroll = std::max(0, static_cast<int>(self->history_entries_.size()) - visible);
+      if (max_scroll == 0) return 0;
+      const int step = 3;
+      self->history_scroll_ = std::clamp(self->history_scroll_ + (GET_WHEEL_DELTA_WPARAM(wparam) > 0 ? -step : step), 0, max_scroll);
+      InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
     }
     case WM_DPICHANGED: {
       self->dpi_ = std::min<UINT>(HIWORD(wparam), kMaxSettingsDpi);

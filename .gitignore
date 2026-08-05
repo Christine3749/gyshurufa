@@ -25,3 +25,10 @@ security-scan-*.jsonl
 .DS_Store
 /releases/
 gy输入法---官方网站/publish/
+
+# HS 项目工作副本（独立仓库，不入本仓）
+HS-halfsphere/
+HS-halfsphere-api/
+
+# GCP 同步用的 git bundle 备份（大二进制，不入本仓）
+gcp-bundles/

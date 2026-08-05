@@ -93,6 +93,7 @@ add_executable(GyImeHost WIN32
   src/CandidateWindow.cpp
   src/TrayController.cpp
   src/SettingsWindow.cpp
+  src/ClipboardHistory.cpp
   src/PinyinEngine.cpp
 )
 target_compile_features(GyImeHost PRIVATE cxx_std_20)

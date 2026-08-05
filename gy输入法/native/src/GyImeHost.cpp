@@ -1,4 +1,5 @@
 #include "CandidateWindow.h"
+#include "ClipboardHistory.h"
 #include "HostProtocol.h"
 #include "PerformanceSettings.h"
 #include "PinyinEngine.h"
@@ -39,6 +40,30 @@ void DebugStep(const wchar_t* step) {
 #else
 #define DebugStep(step) ((void)0)
 #endif
+
+// 本机剪贴板历史（CLIPBOARD-PAGE-DESIGN.md）：一个 message-only 隐藏窗口接收
+// WM_CLIPBOARDUPDATE，与候选窗/设置窗共用这条 UI 消息循环。纯本地、零网络。
+LRESULT CALLBACK ClipboardListenerProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_CLIPBOARDUPDATE) {
+    gy::clipboard_history::AppendFromClipboard();
+    return 0;
+  }
+  return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+HWND CreateClipboardListener() {
+  constexpr wchar_t kClassName[] = L"GyImeHostClipboard";
+  static const ATOM atom = [] {
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.lpfnWndProc = ClipboardListenerProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kClassName;
+    return RegisterClassExW(&wc);
+  }();
+  if (!atom) return nullptr;
+  return CreateWindowExW(0, kClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                         GetModuleHandleW(nullptr), nullptr);
+}
 
 enum class UiCommandKind { ShowCandidates, HideCandidates, ShowMode };
 
@@ -344,6 +369,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   MSG message{};
   PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
   const DWORD ui_thread_id = GetCurrentThreadId();
+  // 剪贴板历史监听挂在本线程的消息循环上；失败不致命，仅失去历史记录。
+  HWND clipboard_listener = CreateClipboardListener();
+  if (clipboard_listener && !AddClipboardFormatListener(clipboard_listener)) {
+    DestroyWindow(clipboard_listener);
+    clipboard_listener = nullptr;
+  }
   DebugStep(L"step: before engine");
   PinyinEngine engine(ModuleDirectory());
   DebugStep(L"step: engine ready");
@@ -370,6 +401,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     DispatchMessageW(&message);
   }
 
+  if (clipboard_listener) {
+    RemoveClipboardFormatListener(clipboard_listener);
+    DestroyWindow(clipboard_listener);
+  }
   running.store(false);
   // Wake the pooled pipe server so its WaitForMultipleObjects exits; pending
   // overlapped accepts are cancelled inside ServeRequests. The named pipe
