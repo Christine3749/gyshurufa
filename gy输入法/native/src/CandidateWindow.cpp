@@ -317,7 +317,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
       right_edge = mode_rect_.right;
     }
   } else {
-    mode_rect_ = RECT{padding, padding, padding + mode_width, padding + chip_height};
+    // Mode popup is a small floating tag, not a candidate row: fixed compact
+    // height, independent from the candidate font size setting.
+    const int strip_height = Scale(dpi, 24);
+    mode_rect_ = RECT{padding, padding, padding + mode_width, padding + strip_height};
     right_edge = mode_rect_.right;
   }
   ReleaseDC(nullptr, dc);
@@ -326,7 +329,8 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
 
   // Do not clamp a normal four-character candidate back into an ellipsis.
   content_width_ = expanded_grid ? grid_right + padding : std::max(Scale(dpi, 48), right_edge + padding);
-  content_height_ = expanded_grid ? mode_rect_.bottom + padding : chip_height + 2 * padding;
+  content_height_ = expanded_grid ? mode_rect_.bottom + padding
+      : mode_popup_ ? mode_rect_.bottom + padding : chip_height + 2 * padding;
   pinyin_rect_ = RECT{};
   candidate_strip_rect_ = RECT{0, 0, content_width_, content_height_};
 }

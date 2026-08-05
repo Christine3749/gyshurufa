@@ -478,12 +478,16 @@ void SettingsWindow::Paint(HDC dc) {
         const auto& entry = history_entries_[static_cast<size_t>(index)];
         const int top = clip_history_list_.top + row * entry_stride;
         RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
-        Rounded(dc, card, pal.surface, pal.border, Scale(dpi_, 10));
+        // Bear-style zebra rows: adjacent entries alternate between the two
+        // surface tones so the stream is readable without heavy dividers.
+        const COLORREF row_fill = (row % 2 == 0) ? pal.surface : pal.surface_hover;
+        Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         // 内容整段双行铺开（换行/Tab 归一为空格），不再只截首行。
         std::wstring content = entry.text;
         std::replace(content.begin(), content.end(), L'\t', L' ');
-        TextWrap(dc, content, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 5), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 42)}, pal.text, large);
-        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 43), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 5)}, pal.muted, DT_LEFT, tiny);
+        // Two full 16px lines need ~40px of room; anything less clips descenders.
+        TextWrap(dc, content, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 3), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 43)}, pal.text, large);
+        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 45), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 4)}, pal.muted, DT_LEFT, tiny);
       }
       if (overflow > 0) {
         RECT track{clip_history_list_.right - Scale(dpi_, 4), clip_history_list_.top + Scale(dpi_, 2),
