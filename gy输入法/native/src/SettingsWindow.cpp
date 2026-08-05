@@ -233,6 +233,8 @@ void SettingsWindow::Show(const RECT& anchor) {
   hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kClassName, L"GY 设置", WS_POPUP,
                           x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), this);
   if (!hwnd_) return;
+  // 设置窗自己监听剪贴板变化：剪贴板页打开时新复制的内容即时上卡。
+  AddClipboardFormatListener(hwnd_);
   CreateControls();
   Load();
   ApplyThemeBrush();
@@ -327,10 +329,12 @@ void SettingsWindow::Layout() {
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
   } else {
     // Page::Clipboard：页内只有历史——标题/清空 + 卡片式条目列表（开关在通用页）。
+    // 本页不画页头（剪贴板/副标题），内容直接顶到页头区域上沿。
+    const int top = Scale(dpi_, 100);
     done_y = Scale(dpi_, 616);
-    clip_history_clear_ = {content_left + card_width - Scale(dpi_, 60), base_y + Scale(dpi_, 2),
-                           content_left + card_width, base_y + Scale(dpi_, 30)};
-    clip_history_list_ = {content_left, base_y + Scale(dpi_, 40), content_left + card_width, done_y - Scale(dpi_, 10)};
+    clip_history_clear_ = {content_left + card_width - Scale(dpi_, 60), top + Scale(dpi_, 2),
+                           content_left + card_width, top + Scale(dpi_, 30)};
+    clip_history_list_ = {content_left, top + Scale(dpi_, 40), content_left + card_width, done_y - Scale(dpi_, 10)};
     history_entries_ = gy::clipboard_history::ReadAll();
     const int entry_h = Scale(dpi_, 54);
     const int visible = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_h);
@@ -377,8 +381,11 @@ void SettingsWindow::Paint(HDC dc) {
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
   const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板"};
   const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户", L"跨设备复制粘贴与本机历史"};
-  Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
-  Text(dc, page_subtitles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 118), content_right, Scale(dpi_, 137)}, pal.muted, DT_LEFT, tiny);
+  // 剪贴板页无页头：卡片列表直接占满内容区。
+  if (page_ != Page::Clipboard) {
+    Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
+    Text(dc, page_subtitles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 118), content_right, Scale(dpi_, 137)}, pal.muted, DT_LEFT, tiny);
+  }
 
   if (page_ == Page::General) {
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
@@ -648,7 +655,19 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, self->width_, self->height_, SWP_NOZORDER | SWP_NOACTIVATE);
       self->Layout(); return 0;
     }
-    case WM_DESTROY: if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; } self->hwnd_ = nullptr; return 0;
+    case WM_CLIPBOARDUPDATE: {
+      // 与隐藏监听窗口收到的顺序不定；AppendFromClipboard 连续去重，双写安全。
+      gy::clipboard_history::AppendFromClipboard();
+      if (self->page_ == Page::Clipboard) {
+        self->history_entries_ = gy::clipboard_history::ReadAll();
+        const int entry_h = Scale(self->dpi_, 54);
+        const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
+        self->history_scroll_ = std::clamp(self->history_scroll_, 0, std::max(0, static_cast<int>(self->history_entries_.size()) - visible));
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
+    }
+    case WM_DESTROY: RemoveClipboardFormatListener(hwnd); if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; } self->hwnd_ = nullptr; return 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
