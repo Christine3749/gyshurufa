@@ -33,11 +33,11 @@ struct Palette {
 Palette PaletteForTheme(int theme) {
   switch (theme) {
     case 1:  // 暖白: warm light surface matching the candidate strip swatch.
-      return {RGB(243, 241, 235), RGB(252, 251, 248), RGB(245, 243, 237), RGB(234, 231, 224), RGB(208, 203, 193), RGB(26, 27, 30), RGB(122, 120, 113)};
+      return {RGB(243, 241, 235), RGB(252, 251, 248), RGB(238, 235, 227), RGB(234, 231, 224), RGB(208, 203, 193), RGB(26, 27, 30), RGB(122, 120, 113)};
     case 2:  // 石墨: neutral graphite without the blue-night cast.
-      return {RGB(21, 23, 28), RGB(30, 33, 40), RGB(39, 43, 51), RGB(36, 40, 48), RGB(54, 59, 70), RGB(244, 245, 247), RGB(148, 154, 168)};
+      return {RGB(21, 23, 28), RGB(30, 33, 40), RGB(46, 51, 60), RGB(36, 40, 48), RGB(54, 59, 70), RGB(244, 245, 247), RGB(148, 154, 168)};
     default:  // GY 蓝夜: the original dark palette.
-      return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(38, 43, 51), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
+      return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(46, 51, 60), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
   }
 }
 constexpr UINT kMaxSettingsDpi = 136;
