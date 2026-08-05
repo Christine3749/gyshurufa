@@ -35,7 +35,7 @@
 				<key>TISIntendedLanguage</key>
 				<string>zh-Hans</string>
 				<key>tsInputModeIconFileKey</key>
-				<string>AppIcon.icns</string>
+				<string>GYSourceIcon.png</string>
 				<key>tsInputModeCharacterRepertoireKey</key>
 				<array>
 					<string>Hans</string>
@@ -80,6 +80,6 @@
 		<string>Hans</string>
 	</array>
 	<key>tsInputMethodIconFileKey</key>
-	<string>AppIcon.icns</string>
+	<string>GYSourceIcon.png</string>
 </dict>
 </plist>

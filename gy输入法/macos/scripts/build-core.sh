@@ -21,6 +21,12 @@ if [[ -f "$root/GYInput/Resources/AppIcon.icns" ]]; then
   mkdir -p "$app/Contents/Resources"
   cp "$root/GYInput/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 fi
+# Input-source menu icon must be a plain PNG: on macOS 26 the TIS icon loader
+# cannot consume .icns here and falls back to the generic "icns document" icon.
+if [[ -f "$root/GYInput/Resources/GYSourceIcon.png" ]]; then
+  mkdir -p "$app/Contents/Resources"
+  cp "$root/GYInput/Resources/GYSourceIcon.png" "$app/Contents/Resources/GYSourceIcon.png"
+fi
 for lproj in "$root/GYInput/Resources/"*.lproj; do
   [[ -d "$lproj" ]] || continue
   cp -R "$lproj" "$app/Contents/Resources/"
