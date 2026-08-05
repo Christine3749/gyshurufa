@@ -320,9 +320,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
     // Mode popup is a small floating tag, not a candidate row: fixed compact
     // height, independent from the candidate font size setting.
     const HFONT tag_font = status_font;
-    const int tag_width = Measure(dc, tag_font, mode_label) + Scale(dpi, 14);
-    const int strip_height = Scale(dpi, 22);
-    mode_rect_ = RECT{padding, padding, padding + tag_width, padding + strip_height};
+    const int strip_height = Scale(dpi, 26);
+    // The window IS the badge: one glyph gets a square, EN gets natural width.
+    const int tag_width = std::max(Measure(dc, tag_font, mode_label) + Scale(dpi, 14), strip_height);
+    mode_rect_ = RECT{0, 0, tag_width, strip_height};
     right_edge = mode_rect_.right;
   }
   ReleaseDC(nullptr, dc);
@@ -330,9 +331,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   DeleteObject(status_font);
 
   // Do not clamp a normal four-character candidate back into an ellipsis.
-  content_width_ = expanded_grid ? grid_right + padding : std::max(Scale(dpi, 48), right_edge + padding);
+  content_width_ = expanded_grid ? grid_right + padding
+      : mode_popup_ ? right_edge : std::max(Scale(dpi, 48), right_edge + padding);
   content_height_ = expanded_grid ? mode_rect_.bottom + padding
-      : mode_popup_ ? mode_rect_.bottom + padding : chip_height + 2 * padding;
+      : mode_popup_ ? mode_rect_.bottom : chip_height + 2 * padding;
   pinyin_rect_ = RECT{};
   candidate_strip_rect_ = RECT{0, 0, content_width_, content_height_};
 }
@@ -526,6 +528,15 @@ LRESULT CALLBACK CandidateWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpa
 void CandidateWindow::Paint(HDC dc) {
   RECT client{};
   GetClientRect(hwnd_, &client);
+  if (mode_popup_) {
+    // Solid VI-blue badge with a white glyph: quiet, centered, intentional.
+    Fill(dc, client, kGyBlue);
+    SetBkMode(dc, TRANSPARENT);
+    const HFONT tag_font = Font(dpi_, 12, FW_SEMIBOLD);
+    Text(dc, ModeLabel(input_mode_), client, RGB(255, 255, 255), DT_CENTER, tag_font);
+    DeleteObject(tag_font);
+    return;
+  }
   // Match the official GY surface: near-black, quiet neutral dividers, and
   // blue only for the active choice or an interactive affordance.
   const COLORREF background = visual_style_ == 0 ? kBrandInk : dark_theme_ ? kBrandInk : RGB(252, 252, 251);

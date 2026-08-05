@@ -405,7 +405,7 @@ void SettingsWindow::Paint(HDC dc) {
   const HGDIOBJ old_pen = SelectObject(dc, outline); const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
   RoundRect(dc, 0, 0, client.right, client.bottom, Scale(dpi_, 14), Scale(dpi_, 14));
   SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(outline);
-  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL), large = Font(dpi_, 16, FW_NORMAL);
+  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL), large = Font(dpi_, 16, FW_SEMIBOLD);
   DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, pal.text);
   Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, pal.text, DT_LEFT, title);
   Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
@@ -515,7 +515,7 @@ void SettingsWindow::Paint(HDC dc) {
         RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
         // Bear-style zebra rows: adjacent entries alternate between the two
         // surface tones so the stream is readable without heavy dividers.
-        const COLORREF row_alt = Mix(pal.surface, pal.border, 65);
+        const COLORREF row_alt = theme_ == 1 ? Mix(pal.surface, RGB(0, 0, 0), 5) : Mix(pal.surface, RGB(255, 255, 255), 7);
         const COLORREF row_fill = (row % 2 == 0) ? pal.surface : row_alt;
         Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         // 内容整段双行铺开（换行/Tab 归一为空格），不再只截首行。
