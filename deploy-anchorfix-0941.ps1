@@ -1,4 +1,4 @@
-﻿# deploy-anchorfix-0941.ps1
+# deploy-anchorfix-0941.ps1
 # Deploys: settings clipboard list page (Host) + candidate anchor clamp (DLL).
 # Run as Administrator. After deploy: restart Kimi (or sign out/in) so the new
 # DLL loads; the IME DLL cannot unload from running processes.
@@ -11,16 +11,15 @@ $version = Split-Path $versionDir -Leaf                  # 0.9.41
 $dllPath = Join-Path (Split-Path $versionDir -Parent | Split-Path -Parent) "tsf-$version\GyIme.dll"
 if (-not (Test-Path $dllPath)) { throw "installed DLL not found: $dllPath" }
 
-# 1. Host exe (rename unlocks the running file, then copy)
-$hostBak = "$hostPath.anchor-bak"
-Remove-Item $hostBak -Force -ErrorAction SilentlyContinue
+# 1. Host exe (rename unlocks the running file, then copy; unique bak name avoids
+# collision with locked baks from previous runs)
+$hostBak = "$hostPath.anchor-bak.$(Get-Date -Format HHmmss)"
 Rename-Item -Path $hostPath -NewName (Split-Path $hostBak -Leaf)
 Copy-Item "$buildDir\GyImeHost.exe" $hostPath -Force
 Get-Process | Where-Object { $_.Name -like 'GyImeHost*' } | Stop-Process -Force
 
 # 2. TSF DLL (rename works even while loaded in apps)
-$dllBak = "$dllPath.anchor-bak"
-Remove-Item $dllBak -Force -ErrorAction SilentlyContinue
+$dllBak = "$dllPath.anchor-bak.$(Get-Date -Format HHmmss)"
 Rename-Item -Path $dllPath -NewName (Split-Path $dllBak -Leaf)
 Copy-Item "$buildDir\GyIme.dll" $dllPath -Force
 

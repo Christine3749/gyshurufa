@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowUpRight, Check, CircleAlert, Copy, Download, History, Laptop, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
 import { formatReleaseBytes, formatReleaseDate, useReleaseStatus } from '../hooks/useReleaseStatus';
+import { useUserPlatform } from '../hooks/useUserPlatform';
 
 interface DownloadSectionProps {
   onOpenDownloadModal: () => void;
@@ -13,6 +14,7 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const { release, loading } = useReleaseStatus();
+  const platform = useUserPlatform();
   const windows = release?.platforms.windows;
   const windowsReady = Boolean(windows?.available);
   const macos = release?.platforms.macos;
@@ -49,7 +51,12 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
               <div className="w-12 h-12 rounded-2xl bg-blue-600 text-white grid place-items-center shadow-lg shadow-blue-600/20">
                 <Laptop className="w-6 h-6" />
               </div>
-              <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 border border-blue-100">{windowsReady ? '现可下载' : loading ? '读取中' : '验证中'}</span>
+              <div className="flex items-center gap-2">
+                {platform === 'windows' && (
+                  <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">你的设备</span>
+                )}
+                <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 border border-blue-100">{windowsReady ? '现可下载' : loading ? '读取中' : '验证中'}</span>
+              </div>
             </div>
             <div className="mt-7 space-y-2">
               <h3 className="text-2xl font-bold text-slate-900">GY输入法 for Windows</h3>
@@ -85,7 +92,12 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
               <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/15 text-white grid place-items-center">
                 <Laptop className="w-6 h-6" />
               </div>
-              <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-slate-200 border border-white/10">{macosReady ? '现可下载' : loading ? '读取中' : '验证中'}</span>
+              <div className="flex items-center gap-2">
+                {platform === 'macos' && (
+                  <span className="inline-flex items-center rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold text-emerald-300 border border-emerald-300/25">你的设备</span>
+                )}
+                <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-slate-200 border border-white/10">{macosReady ? '现可下载' : loading ? '读取中' : '验证中'}</span>
+              </div>
             </div>
             <div className="mt-7 space-y-2">
               <h3 className="text-2xl font-bold">GY输入法 for Mac</h3>

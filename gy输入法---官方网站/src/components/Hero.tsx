@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Download, Shield, Sparkles, Check, ChevronRight, Zap, Command, RefreshCw, Terminal } from 'lucide-react';
 import { BRAND_INFO, TYPING_SCENARIOS } from '../data/content';
+import { useReleaseStatus } from '../hooks/useReleaseStatus';
+import { useUserPlatform } from '../hooks/useUserPlatform';
 
 interface HeroProps {
   onOpenDownload: () => void;
@@ -15,6 +17,24 @@ export const Hero: React.FC<HeroProps> = ({ onOpenDownload, onOpenPrivacy }) => 
   const [isTypingSimulated, setIsTypingSimulated] = useState(false);
 
   const scenario = TYPING_SCENARIOS[selectedScenarioIndex];
+
+  // 按访客设备给主按钮：Mac 直接下 Apple Silicon 包，Windows 走校验弹窗。
+  const platform = useUserPlatform();
+  const { release } = useReleaseStatus();
+  const macos = release?.platforms.macos;
+  const macosReady = Boolean(macos?.available);
+  const primaryLabel = platform === 'macos'
+    ? '免费下载 Mac 版'
+    : platform === 'windows'
+      ? '免费下载 Windows 版'
+      : '免费下载';
+  const handlePrimaryDownload = () => {
+    if (platform === 'macos' && macosReady && macos?.downloadUrl) {
+      window.location.assign(macos.downloadUrl);
+      return;
+    }
+    onOpenDownload();
+  };
 
   // Auto cycling for typing demonstration if user isn't interacting
   useEffect(() => {
@@ -59,11 +79,11 @@ export const Hero: React.FC<HeroProps> = ({ onOpenDownload, onOpenPrivacy }) => 
             {/* Primary Action Buttons */}
             <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 pt-2">
               <button
-                onClick={onOpenDownload}
+                onClick={handlePrimaryDownload}
                 className="w-full sm:w-auto inline-flex items-center justify-center px-7 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold text-base transition-all shadow-xl shadow-blue-600/20 gap-2.5 group active:scale-98"
               >
                 <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
-                免费下载 Windows 版
+                {primaryLabel}
               </button>
 
               <button
