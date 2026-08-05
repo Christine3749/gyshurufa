@@ -370,7 +370,7 @@ void SettingsWindow::Paint(HDC dc) {
   const HGDIOBJ old_pen = SelectObject(dc, outline); const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
   RoundRect(dc, 0, 0, client.right, client.bottom, Scale(dpi_, 14), Scale(dpi_, 14));
   SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(outline);
-  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL);
+  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL), large = Font(dpi_, 16, FW_NORMAL);
   DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, pal.text);
   Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, pal.text, DT_LEFT, title);
   Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
@@ -482,7 +482,7 @@ void SettingsWindow::Paint(HDC dc) {
         // 内容整段双行铺开（换行/Tab 归一为空格），不再只截首行。
         std::wstring content = entry.text;
         std::replace(content.begin(), content.end(), L'\t', L' ');
-        TextWrap(dc, content, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 7), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 41)}, pal.text, normal);
+        TextWrap(dc, content, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 5), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 42)}, pal.text, large);
         Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 43), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 5)}, pal.muted, DT_LEFT, tiny);
       }
       if (overflow > 0) {
@@ -501,7 +501,7 @@ void SettingsWindow::Paint(HDC dc) {
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
   Text(dc, L"完成", done_rect_, kOnAccent, DT_CENTER, medium);
   Text(dc, L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
-  DeleteObject(title); DeleteObject(medium); DeleteObject(tiny); DeleteObject(normal);
+  DeleteObject(title); DeleteObject(medium); DeleteObject(tiny); DeleteObject(normal); DeleteObject(large);
 }
 
 void SettingsWindow::Load() {
