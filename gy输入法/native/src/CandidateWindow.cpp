@@ -319,8 +319,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   } else {
     // Mode popup is a small floating tag, not a candidate row: fixed compact
     // height, independent from the candidate font size setting.
-    const int strip_height = Scale(dpi, 24);
-    mode_rect_ = RECT{padding, padding, padding + mode_width, padding + strip_height};
+    const HFONT tag_font = status_font;
+    const int tag_width = Measure(dc, tag_font, mode_label) + Scale(dpi, 14);
+    const int strip_height = Scale(dpi, 22);
+    mode_rect_ = RECT{padding, padding, padding + tag_width, padding + strip_height};
     right_edge = mode_rect_.right;
   }
   ReleaseDC(nullptr, dc);

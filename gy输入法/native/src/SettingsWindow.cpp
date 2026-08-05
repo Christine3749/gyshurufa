@@ -49,6 +49,13 @@ void Fill(HDC dc, const RECT& rect, COLORREF color) {
   FillRect(dc, &rect, brush);
   DeleteObject(brush);
 }
+
+COLORREF Mix(COLORREF a, COLORREF b, int pct_b) {
+  const int r = GetRValue(a) + (GetRValue(b) - GetRValue(a)) * pct_b / 100;
+  const int g = GetGValue(a) + (GetGValue(b) - GetGValue(a)) * pct_b / 100;
+  const int bl = GetBValue(a) + (GetBValue(b) - GetBValue(a)) * pct_b / 100;
+  return RGB(r, g, bl);
+}
 void Rounded(HDC dc, const RECT& rect, COLORREF fill, COLORREF border, int radius) {
   const HBRUSH brush = CreateSolidBrush(fill);
   const HPEN pen = CreatePen(PS_SOLID, 1, border);
@@ -73,12 +80,40 @@ void Text(HDC dc, const std::wstring& value, RECT rect, COLORREF color, UINT for
   SelectObject(dc, previous);
 }
 
-// 剪贴板卡片内容用多行变体：自动换行填满卡片，超出才省略号。
-void TextWrap(HDC dc, const std::wstring& value, RECT rect, COLORREF color, HFONT font) {
+// Clipboard card body: renders up to two lines with explicit air between them.
+// Greedy pixel wrap (CJK breaks anywhere, Latin prefers spaces); the second
+// line ellipsizes instead of ever clipping a glyph.
+void TextLines2(HDC dc, const std::wstring& value, RECT rect, COLORREF color, HFONT font,
+                int line_height, int line_gap) {
   const HGDIOBJ previous = SelectObject(dc, font);
   SetTextColor(dc, color);
   SetBkMode(dc, TRANSPARENT);
-  DrawTextW(dc, value.c_str(), -1, &rect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+  std::wstring text = value;
+  for (auto& ch : text) { if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' '; }
+  const int max_width = rect.right - rect.left;
+  int y = rect.top;
+  size_t pos = 0;
+  for (int line = 0; line < 2 && pos < text.size(); ++line) {
+    SIZE size{};
+    size_t fit = pos, last_space = std::wstring::npos;
+    for (size_t i = pos; i < text.size(); ++i) {
+      GetTextExtentPoint32W(dc, text.c_str() + pos, static_cast<int>(i - pos + 1), &size);
+      if (size.cx > max_width) break;
+      fit = i + 1;
+      if (text[i] == L' ') last_space = i;
+    }
+    if (fit < text.size() && line == 0 && last_space != std::wstring::npos && last_space > pos) {
+      fit = last_space;  // do not split a Latin word across the two lines
+    }
+    const std::wstring chunk = text.substr(pos, fit - pos);
+    UINT flags = DT_LEFT | DT_SINGLELINE | DT_NOPREFIX;
+    if (line == 1 && fit < text.size()) flags |= DT_END_ELLIPSIS;
+    RECT line_rect{rect.left, y, rect.right, y + line_height};
+    DrawTextW(dc, chunk.c_str(), -1, &line_rect, flags);
+    pos = fit;
+    while (pos < text.size() && text[pos] == L' ') ++pos;
+    y += line_height + line_gap;
+  }
   SelectObject(dc, previous);
 }
 
@@ -344,7 +379,7 @@ void SettingsWindow::Layout() {
                            content_left + card_width, top + Scale(dpi_, 28)};
     clip_history_list_ = {content_left, top + Scale(dpi_, 34), content_left + card_width, done_y - Scale(dpi_, 10)};
     history_entries_ = gy::clipboard_history::ReadAll();
-    const int entry_h = Scale(dpi_, 74);
+    const int entry_h = Scale(dpi_, 80);
     const int visible = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_h);
     history_scroll_ = std::clamp(history_scroll_, 0, std::max(0, static_cast<int>(history_entries_.size()) - visible));
     ShowWindow(phrases_edit_, SW_HIDE);
@@ -465,8 +500,8 @@ void SettingsWindow::Paint(HDC dc) {
   } else {
     // Page::Clipboard：纯历史卡片流（无页头/无标题行），右上角仅保留“清空”。
     Text(dc, L"清空", clip_history_clear_, kBlue, DT_CENTER, medium);
-    const int entry_stride = Scale(dpi_, 74);
-    const int card_h = Scale(dpi_, 64);
+    const int entry_stride = Scale(dpi_, 80);
+    const int card_h = Scale(dpi_, 72);
     const int visible_rows = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_stride);
     const int overflow = static_cast<int>(history_entries_.size()) - visible_rows;
     if (history_entries_.empty()) {
@@ -480,14 +515,15 @@ void SettingsWindow::Paint(HDC dc) {
         RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
         // Bear-style zebra rows: adjacent entries alternate between the two
         // surface tones so the stream is readable without heavy dividers.
-        const COLORREF row_fill = (row % 2 == 0) ? pal.surface : pal.surface_hover;
+        const COLORREF row_alt = Mix(pal.surface, pal.border, 65);
+        const COLORREF row_fill = (row % 2 == 0) ? pal.surface : row_alt;
         Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         // 内容整段双行铺开（换行/Tab 归一为空格），不再只截首行。
-        std::wstring content = entry.text;
-        std::replace(content.begin(), content.end(), L'\t', L' ');
-        // Two full 16px lines need ~40px of room; anything less clips descenders.
-        TextWrap(dc, content, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 3), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 43)}, pal.text, large);
-        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 45), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 4)}, pal.muted, DT_LEFT, tiny);
+        const int line_h = Scale(dpi_, 18);
+        TextLines2(dc, entry.text, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 6),
+                                       card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 6) + 2 * line_h + Scale(dpi_, 7)},
+                   pal.text, large, line_h, Scale(dpi_, 7));
+Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 52), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 6)}, pal.muted, DT_LEFT, tiny);
       }
       if (overflow > 0) {
         RECT track{clip_history_list_.right - Scale(dpi_, 4), clip_history_list_.top + Scale(dpi_, 2),
@@ -646,7 +682,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_MOUSEWHEEL: {
       if (self->page_ != Page::Clipboard) break;
-      const int entry_h = Scale(self->dpi_, 74);
+      const int entry_h = Scale(self->dpi_, 80);
       const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
       const int max_scroll = std::max(0, static_cast<int>(self->history_entries_.size()) - visible);
       if (max_scroll == 0) return 0;
@@ -670,7 +706,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       gy::clipboard_history::AppendFromClipboard();
       if (self->page_ == Page::Clipboard) {
         self->history_entries_ = gy::clipboard_history::ReadAll();
-        const int entry_h = Scale(self->dpi_, 74);
+        const int entry_h = Scale(self->dpi_, 80);
         const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
         self->history_scroll_ = std::clamp(self->history_scroll_, 0, std::max(0, static_cast<int>(self->history_entries_.size()) - visible));
         InvalidateRect(hwnd, nullptr, FALSE);
