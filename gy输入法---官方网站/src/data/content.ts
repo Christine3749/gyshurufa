@@ -230,6 +230,20 @@ export const ECOSYSTEM_MODULES: EcosystemModule[] = [
 
 export const CHANGELOG_HISTORY: VersionInfo[] = [
   {
+    version: 'v0.9.42',
+    date: '2026-08-05',
+    channel: '候选版 (Candidate)',
+    size: '9.6 MB',
+    architecture: 'x64',
+    sha256: '28F6A5D643D0608868396DB0F52AB80379E6830B26C3D36625FDA41C17D3B387',
+    highlights: [
+      '新增：剪贴板历史卡片流——内容自适应 1–4 行高度，Bear 风斑马纹隔行，滚轮浏览最近 20 条',
+      '新增：模式切换蓝徽章——光标旁方正小徽章白字提示，英文模式切窗口自动回中文',
+      '修复：候选窗锚点异常钳制，杜绝跨窗口切换后的候选窗漂移',
+      '优化：设置面板视觉全套打磨（字号、间距、配色对齐大牌笔记应用）',
+    ]
+  },
+  {
     version: 'v0.9.41',
     date: '2026-08-05',
     channel: '候选版 (Candidate)',
