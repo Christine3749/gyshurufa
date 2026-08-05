@@ -328,15 +328,14 @@ void SettingsWindow::Layout() {
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
   } else {
-    // Page::Clipboard：页内只有历史——标题/清空 + 卡片式条目列表（开关在通用页）。
-    // 本页不画页头（剪贴板/副标题），内容直接顶到页头区域上沿。
+    // Page::Clipboard：纯历史卡片流——无页头无标题，右上角仅留“清空”。
     const int top = Scale(dpi_, 100);
     done_y = Scale(dpi_, 616);
-    clip_history_clear_ = {content_left + card_width - Scale(dpi_, 60), top + Scale(dpi_, 2),
-                           content_left + card_width, top + Scale(dpi_, 30)};
-    clip_history_list_ = {content_left, top + Scale(dpi_, 40), content_left + card_width, done_y - Scale(dpi_, 10)};
+    clip_history_clear_ = {content_left + card_width - Scale(dpi_, 60), top,
+                           content_left + card_width, top + Scale(dpi_, 28)};
+    clip_history_list_ = {content_left, top + Scale(dpi_, 34), content_left + card_width, done_y - Scale(dpi_, 10)};
     history_entries_ = gy::clipboard_history::ReadAll();
-    const int entry_h = Scale(dpi_, 54);
+    const int entry_h = Scale(dpi_, 74);
     const int visible = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_h);
     history_scroll_ = std::clamp(history_scroll_, 0, std::max(0, static_cast<int>(history_entries_.size()) - visible));
     ShowWindow(phrases_edit_, SW_HIDE);
@@ -362,7 +361,7 @@ void SettingsWindow::Paint(HDC dc) {
   const HGDIOBJ old_pen = SelectObject(dc, outline); const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
   RoundRect(dc, 0, 0, client.right, client.bottom, Scale(dpi_, 14), Scale(dpi_, 14));
   SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(outline);
-  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL);
+  const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL);
   DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, pal.text);
   Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, pal.text, DT_LEFT, title);
   Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
@@ -455,17 +454,14 @@ void SettingsWindow::Paint(HDC dc) {
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
     Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
   } else {
-    // Page::Clipboard：纯历史卡片列表（开关在通用页）。每条历史一张圆角卡片。
-    const int head_y = clip_history_clear_.top - Scale(dpi_, 2);
-    Text(dc, L"本机历史", RECT{content_left, head_y, clip_history_clear_.left - Scale(dpi_, 16), head_y + Scale(dpi_, 24)}, pal.text, DT_LEFT, medium);
+    // Page::Clipboard：纯历史卡片流（无页头/无标题行），右上角仅保留“清空”。
     Text(dc, L"清空", clip_history_clear_, kBlue, DT_CENTER, medium);
-    Text(dc, L"保留最近 20 条，先进后出；敏感内容仅保存在本机", RECT{content_left, head_y + Scale(dpi_, 24), clip_history_list_.right, head_y + Scale(dpi_, 40)}, pal.muted, DT_LEFT, tiny);
-    const int entry_stride = Scale(dpi_, 54);
-    const int card_h = Scale(dpi_, 46);
+    const int entry_stride = Scale(dpi_, 74);
+    const int card_h = Scale(dpi_, 64);
     const int visible_rows = std::max(1, static_cast<int>(clip_history_list_.bottom - clip_history_list_.top) / entry_stride);
     const int overflow = static_cast<int>(history_entries_.size()) - visible_rows;
     if (history_entries_.empty()) {
-      Text(dc, L"还没有剪贴板历史，复制一段文字试试", clip_history_list_, pal.muted, DT_CENTER, tiny);
+      Text(dc, L"还没有剪贴板历史，复制一段文字试试", clip_history_list_, pal.muted, DT_CENTER, normal);
     } else {
       for (int row = 0; row < visible_rows; ++row) {
         const int index = history_scroll_ + row;
@@ -473,11 +469,11 @@ void SettingsWindow::Paint(HDC dc) {
         const auto& entry = history_entries_[static_cast<size_t>(index)];
         const int top = clip_history_list_.top + row * entry_stride;
         RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
-        Rounded(dc, card, pal.surface, pal.border, Scale(dpi_, 9));
+        Rounded(dc, card, pal.surface, pal.border, Scale(dpi_, 10));
         std::wstring first_line = entry.text.substr(0, entry.text.find_first_of(L"\r\n"));
         std::replace(first_line.begin(), first_line.end(), L'\t', L' ');
-        Text(dc, first_line, RECT{card.left + Scale(dpi_, 12), card.top + Scale(dpi_, 6), card.right - Scale(dpi_, 12), card.top + Scale(dpi_, 26)}, pal.text, DT_LEFT, tiny);
-        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 12), card.top + Scale(dpi_, 27), card.right - Scale(dpi_, 12), card.bottom - Scale(dpi_, 5)}, pal.muted, DT_LEFT, tiny);
+        Text(dc, first_line, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 10), card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 34)}, pal.text, DT_LEFT, normal);
+        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 38), card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
       }
       if (overflow > 0) {
         RECT track{clip_history_list_.right - Scale(dpi_, 4), clip_history_list_.top + Scale(dpi_, 2),
@@ -495,7 +491,7 @@ void SettingsWindow::Paint(HDC dc) {
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
   Text(dc, L"完成", done_rect_, kOnAccent, DT_CENTER, medium);
   Text(dc, L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
-  DeleteObject(title); DeleteObject(medium); DeleteObject(tiny);
+  DeleteObject(title); DeleteObject(medium); DeleteObject(tiny); DeleteObject(normal);
 }
 
 void SettingsWindow::Load() {
@@ -636,7 +632,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_MOUSEWHEEL: {
       if (self->page_ != Page::Clipboard) break;
-      const int entry_h = Scale(self->dpi_, 54);
+      const int entry_h = Scale(self->dpi_, 74);
       const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
       const int max_scroll = std::max(0, static_cast<int>(self->history_entries_.size()) - visible);
       if (max_scroll == 0) return 0;
@@ -660,7 +656,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       gy::clipboard_history::AppendFromClipboard();
       if (self->page_ == Page::Clipboard) {
         self->history_entries_ = gy::clipboard_history::ReadAll();
-        const int entry_h = Scale(self->dpi_, 54);
+        const int entry_h = Scale(self->dpi_, 74);
         const int visible = std::max(1, static_cast<int>(self->clip_history_list_.bottom - self->clip_history_list_.top) / entry_h);
         self->history_scroll_ = std::clamp(self->history_scroll_, 0, std::max(0, static_cast<int>(self->history_entries_.size()) - visible));
         InvalidateRect(hwnd, nullptr, FALSE);
