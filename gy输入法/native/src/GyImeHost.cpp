@@ -75,7 +75,20 @@ SECURITY_ATTRIBUTES* PipeSecurityAttributes() {
     // the Host was ever launched elevated. The user SID comes from our own
     // token, which does not change with elevation. Other local users are
     // still denied either way.
-    std::wstring sddl = L"D:P(A;;GA;;;OW)";
+    //
+    // Two extra entries keep packaged apps (Win11 SearchHost, Start, lock
+    // screen) functional. They run AppContainer tokens at low integrity, so:
+    //  1. (A;;GRGW;;;S-1-15-2-1) grants ALL APPLICATION PACKAGES read/write.
+    //     Package identity is per-user, and the user-SID ACE below still
+    //     scopes the pipe to this account, so this adds no cross-user access.
+    //  2. S:(ML;;NW;;;LW) labels the pipe low-integrity with No-Write-Up.
+    //     Without it a kernel default medium label silently rejects writes
+    //     from every low-integrity (packaged) client no matter what the
+    //     DACL says — that was the Win-key search box showing compositions
+    //     but never a candidate window.
+    constexpr wchar_t kPackageAndLabel[] = L"(A;;GRGW;;;S-1-15-2-1)";
+    constexpr wchar_t kLowIntegrityPolicy[] = L"S:(ML;;NW;;;LW)";
+    std::wstring sddl = std::wstring(L"D:P(A;;GA;;;OW)") + kPackageAndLabel + kLowIntegrityPolicy;
     HANDLE token = nullptr;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
       DWORD size = 0;
@@ -85,7 +98,7 @@ SECURITY_ATTRIBUTES* PipeSecurityAttributes() {
         wchar_t* sid_string = nullptr;
         if (ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid,
                                    &sid_string)) {
-          sddl = L"D:P(A;;GA;;;" + std::wstring(sid_string) + L")";
+          sddl = L"D:P(A;;GA;;;" + std::wstring(sid_string) + L")" + kPackageAndLabel + kLowIntegrityPolicy;
           LocalFree(sid_string);
         }
       }
