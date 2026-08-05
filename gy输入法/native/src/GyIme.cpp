@@ -1,4 +1,4 @@
-﻿#include <windows.h>
+#include <windows.h>
 #include <msctf.h>
 
 #include <algorithm>
@@ -497,17 +497,22 @@ private:
   HRESULT UpdateComposition(ITfContext* edit_context, TfEditCookie cookie) {
     if (!edit_context) return E_FAIL;
     if (!composition_) {
-      TF_SELECTION selection{};
-      ULONG fetched = 0;
-      HRESULT hr = edit_context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-      Trace(L"composition.get-selection", hr);
-      if (FAILED(hr) || fetched != 1) return FAILED(hr) ? hr : E_FAIL;
-
+      // Canonical SampleIME path: ask the host for the insertion range with a
+      // query-only insert instead of cloning the current selection. XAML hosts
+      // (TextInputHost search box, Explorer address bar) assign the range
+      // anchors' gravity themselves; a cloned selection collapsed to
+      // TF_ANCHOR_END keeps OUR gravity, and those hosts leave the visible
+      // caret at the stale anchor after later SetText calls (all S_OK).
+      ITfInsertAtSelection* inserter = nullptr;
+      HRESULT hr = edit_context->QueryInterface(IID_ITfInsertAtSelection,
+                                                reinterpret_cast<void**>(&inserter));
+      Trace(L"composition.get-inserter", hr);
       ITfRange* composition_range = nullptr;
-      hr = selection.range->Clone(&composition_range);
-      Trace(L"composition.clone-selection", hr);
-      if (SUCCEEDED(hr)) hr = composition_range->Collapse(cookie, TF_ANCHOR_END);
-      Trace(L"composition.collapse", hr);
+      if (SUCCEEDED(hr)) {
+        hr = inserter->InsertTextAtSelection(cookie, TF_IAS_QUERYONLY, nullptr, 0,
+                                             &composition_range);
+        Trace(L"composition.query-insert", hr);
+      }
 
       ITfContextComposition* composer = nullptr;
       if (SUCCEEDED(hr)) hr = edit_context->QueryInterface(IID_ITfContextComposition, reinterpret_cast<void**>(&composer));
@@ -519,7 +524,7 @@ private:
       Trace(L"composition.start", hr);
       if (composer) composer->Release();
       if (composition_range) composition_range->Release();
-      selection.range->Release();
+      if (inserter) inserter->Release();
       if (FAILED(hr)) return hr;
       if (!composition_) { Trace(L"composition.rejected", E_FAIL); return E_FAIL; }
     }
