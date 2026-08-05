@@ -12,6 +12,31 @@ static const NSUInteger kCollapsedPageSize = 5;
 static const NSUInteger kExpandedPageSize = 25;
 static const NSUInteger kCandidateFetchLimit = 75;
 
+// Menu actions must target a long-lived object: IMK input controllers are
+// per-client-session and may be deallocated while the system input menu is
+// still showing items that point at them, which makes clicks silently die.
+@interface GYMenuActionTarget : NSObject
++ (instancetype)sharedTarget;
+@end
+
+@implementation GYMenuActionTarget
++ (instancetype)sharedTarget {
+  static GYMenuActionTarget *target;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ target = [[GYMenuActionTarget alloc] init]; });
+  return target;
+}
+- (void)selectMode:(NSMenuItem *)sender {
+  GYInputMode mode = (GYInputMode)sender.tag;
+  GYSettingsStore.sharedStore.inputMode = mode;
+  if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
+}
+- (void)showPreferences:(id)sender {
+  (void)sender;
+  [GYPreferencesController.sharedController show];
+}
+@end
+
 @implementation GYInputController {
   GYRimeBridge *_engine;
   GYCandidateWindow *_candidateWindow;
@@ -259,20 +284,23 @@ static const NSUInteger kCandidateFetchLimit = 75;
 
 - (NSMenu *)menu {
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"输入法.网"];
+  GYInputMode current = GYSettingsStore.sharedStore.inputMode;
   NSArray<NSNumber *> *modes = @[@(GYInputModeSimplified), @(GYInputModeTraditional), @(GYInputModeEnglish)];
   for (NSNumber *value in modes) {
     GYInputMode mode = (GYInputMode)value.integerValue;
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:GYInputModeTitle(mode) action:@selector(selectMode:) keyEquivalent:@""];
-    item.target = self;
+    item.target = GYMenuActionTarget.sharedTarget;
     item.tag = mode;
-    item.state = _mode == mode ? NSControlStateValueOn : NSControlStateValueOff;
+    item.state = current == mode ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:item];
   }
   [menu addItem:NSMenuItem.separatorItem];
   NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
-  preferences.target = self;
+  preferences.target = GYMenuActionTarget.sharedTarget;
   preferences.keyEquivalentModifierMask = NSEventModifierFlagCommand;
-  NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(_mode)] action:nil keyEquivalent:@""];
+  [menu addItem:preferences];
+  [menu addItem:NSMenuItem.separatorItem];
+  NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(current)] action:nil keyEquivalent:@""];
   status.enabled = NO;
   [menu addItem:status];
   return menu;
