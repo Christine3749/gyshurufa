@@ -23,6 +23,7 @@ constexpr COLORREF kOnAccent = RGB(250, 250, 251);
 struct Palette {
   COLORREF ink;            // window background
   COLORREF surface;        // card background
+  COLORREF surface_alt;    // zebra row: same hue, one whisper lighter/darker
   COLORREF surface_hover;  // selected card background
   COLORREF border;
   COLORREF text;           // primary text
@@ -32,11 +33,11 @@ struct Palette {
 Palette PaletteForTheme(int theme) {
   switch (theme) {
     case 1:  // 暖白: warm light surface matching the candidate strip swatch.
-      return {RGB(243, 241, 235), RGB(252, 251, 248), RGB(234, 231, 224), RGB(208, 203, 193), RGB(26, 27, 30), RGB(122, 120, 113)};
+      return {RGB(243, 241, 235), RGB(252, 251, 248), RGB(245, 243, 237), RGB(234, 231, 224), RGB(208, 203, 193), RGB(26, 27, 30), RGB(122, 120, 113)};
     case 2:  // 石墨: neutral graphite without the blue-night cast.
-      return {RGB(21, 23, 28), RGB(30, 33, 40), RGB(36, 40, 48), RGB(54, 59, 70), RGB(244, 245, 247), RGB(148, 154, 168)};
+      return {RGB(21, 23, 28), RGB(30, 33, 40), RGB(39, 43, 51), RGB(36, 40, 48), RGB(54, 59, 70), RGB(244, 245, 247), RGB(148, 154, 168)};
     default:  // GY 蓝夜: the original dark palette.
-      return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
+      return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(38, 43, 51), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
   }
 }
 constexpr UINT kMaxSettingsDpi = 136;
@@ -515,7 +516,7 @@ void SettingsWindow::Paint(HDC dc) {
         RECT card{clip_history_list_.left, top, clip_history_list_.right - Scale(dpi_, overflow > 0 ? 10 : 0), top + card_h};
         // Bear-style zebra rows: adjacent entries alternate between the two
         // surface tones so the stream is readable without heavy dividers.
-        const COLORREF row_alt = theme_ == 1 ? Mix(pal.surface, RGB(0, 0, 0), 5) : Mix(pal.surface, RGB(255, 255, 255), 7);
+        const COLORREF row_alt = pal.surface_alt;
         const COLORREF row_fill = (row % 2 == 0) ? pal.surface : row_alt;
         Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         // 内容整段双行铺开（换行/Tab 归一为空格），不再只截首行。
