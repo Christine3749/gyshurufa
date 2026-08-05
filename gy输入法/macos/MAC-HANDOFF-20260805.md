@@ -114,3 +114,11 @@ sharedStore。另：「设置…」item 创建了却漏 addItem，从未显示�
 - initWithIconRef 导出 TIS 实际持有的图标内容，直接看系统眼里的图
 - NSWorkspace iconForFile 对照组，区分 LS/IconServices 层 vs TIS 层
 - 逆向友商包：plutil 读 WeType/iFlytek 的 Info.plist 抄正确配置
+
+### 追加（同日第 5–6 层，图标战争真正终局）
+5. **模板渲染吞字**：菜单栏把输入源图标当模板图渲染——只取轮廓（alpha），整片涂系统色。
+   白字 GY 画在不透明瓦片上 = alpha 也是实心 → 整瓦片被涂白，字母被自己的颜色吞没。
+   正解：字形必须**镂空**（alpha=0），镂空处透出背景，深场景亮瓦片暗字、浅场景暗瓦片亮字。
+6. **reportlab drawImage mask='alpha' 生成的 PDF 整图透明**（alpha 通道丢失）。
+   正解：Quartz CGPDFContext + CoreText 取字形轮廓 + **奇偶填充规则**（EOFill），
+   字母自动镂空，真矢量。生成器：/tmp/genicon.m（如需再生成可找回提交记录）。
