@@ -12,13 +12,18 @@ notary_profile="${GY_NOTARY_PROFILE:?Set GY_NOTARY_PROFILE to an xcrun notarytoo
 readarray -t release < <(python3 - "$manifest" <<'PY'
 import json, pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
-d = json.loads(p.read_text(encoding='utf-8'))
-v = d.get('version', '')
+d = json.loads(p.read_text(encoding='utf-8-sig'))
+# schemaVersion 2：version/coreVersion/hostVersion 嵌在 "windows" 段；兼容旧平铺格式。
+win = d.get('windows') if isinstance(d.get('windows'), dict) else {}
+v = d.get('version') or win.get('version', '')
+core = d.get('coreVersion', win.get('coreVersion'))
+host = d.get('hostVersion', win.get('hostVersion'))
+channel = d.get('channel', 'candidate')
 if not re.fullmatch(r'\d+\.\d+\.\d+', v): raise SystemExit('Invalid canonical version')
-if d.get('coreVersion') != v or d.get('hostVersion') != v: raise SystemExit('Cross-platform version mismatch')
-if d.get('channel') not in {'candidate', 'beta', 'stable'}: raise SystemExit('Invalid release channel')
+if core != v or host != v: raise SystemExit('Cross-platform version mismatch')
+if channel not in {'candidate', 'beta', 'stable'}: raise SystemExit('Invalid release channel')
 print(v)
-print(d['channel'])
+print(channel)
 PY
 )
 version="${release[0]}"
@@ -58,11 +63,13 @@ manifest_path = pathlib.Path(sys.argv[1])
 package_path = pathlib.Path(sys.argv[2])
 channel = sys.argv[3]
 raw = package_path.read_bytes()
-d = json.loads(manifest_path.read_text(encoding='utf-8'))
-v = d['version']
+d = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
+v = d.get('version') or (d.get('windows') or {}).get('version')
+if not v: raise SystemExit('Canonical version missing from manifest')
 expected = f'GYInput-{v}-arm64.pkg'
 if package_path.name != expected: raise SystemExit('Mac package filename does not match canonical release version')
 d['macos'] = {
+  'version': v,
   'packageFile': expected,
   'sha256': hashlib.sha256(raw).hexdigest().upper(),
   'bytes': len(raw),

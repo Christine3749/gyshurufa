@@ -9,10 +9,14 @@ bucket="${GY_R2_BUCKET:-gy-shurufa-releases}"
 [[ -f "$manifest" ]] || { echo "Canonical release manifest missing: $manifest" >&2; exit 1; }
 readarray -t release < <(python3 - "$manifest" <<'PY'
 import json, pathlib, re, sys
-d=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
-v=d.get('version',''); m=d.get('macos',{})
+d=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))
+# schemaVersion 2：version/coreVersion/hostVersion 嵌在 "windows" 段；兼容旧平铺格式。
+win=d.get('windows') if isinstance(d.get('windows'), dict) else {}
+v=d.get('version') or win.get('version','')
+core=d.get('coreVersion', win.get('coreVersion')); host=d.get('hostVersion', win.get('hostVersion'))
+m=d.get('macos',{})
 if not re.fullmatch(r'\d+\.\d+\.\d+',v): raise SystemExit('Invalid canonical version')
-if d.get('coreVersion') != v or d.get('hostVersion') != v: raise SystemExit('Release versions do not match')
+if core != v or host != v: raise SystemExit('Release versions do not match')
 if m.get('packageFile') != f'GYInput-{v}-arm64.pkg': raise SystemExit('Mac package filename is not canonical')
 if not re.fullmatch(r'[A-Fa-f0-9]{64}', str(m.get('sha256',''))): raise SystemExit('Mac SHA-256 missing')
 if int(m.get('bytes', 0)) <= 0 or not m.get('signed') or not m.get('notarized') or m.get('state') not in {'notarized','stable'}:
