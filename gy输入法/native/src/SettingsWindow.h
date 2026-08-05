@@ -60,7 +60,10 @@ private:
   bool clip_enabled_ = true;
   bool clip_instant_ = true;
   std::vector<gy::clipboard_history::Entry> history_entries_;
+  std::vector<int> history_card_heights_;  // variable: content owns 1..4 lines
   int history_scroll_ = 0;
+  int history_max_scroll_ = 0;
+  void MeasureClipboardCards();
   RECT clip_sync_card_{};
   RECT clip_sync_switch_{};
   RECT clip_instant_card_{};
