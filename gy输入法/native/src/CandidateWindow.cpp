@@ -188,6 +188,21 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   const HFONT status_font = Font(dpi, 12, FW_SEMIBOLD);
   HDC dc = GetDC(nullptr);
 
+  if (mode_popup_) {
+    // 模式徽章：整块窗口就是徽章本身，不复用候选条几何（旧实现是 12pt 小字
+    // 700ms，用户根本注意不到模式已经切换）。中英对比色在 Paint。
+    previous_page_rect_ = {}; next_page_rect_ = {}; page_indicator_rect_ = {};
+    expand_rect_ = {}; pinyin_rect_ = {};
+    content_width_ = Scale(dpi, 148);
+    content_height_ = Scale(dpi, 60);
+    mode_rect_ = RECT{0, 0, content_width_, content_height_};
+    candidate_strip_rect_ = RECT{0, 0, content_width_, content_height_};
+    ReleaseDC(nullptr, dc);
+    DeleteObject(candidate_font);
+    DeleteObject(status_font);
+    return;
+  }
+
   const std::wstring mode_label = ModeLabel(input_mode_);
   const int mode_width = Measure(dc, status_font, mode_label) + Scale(dpi, 18);
   const int page_button_width = Scale(dpi, 26);
@@ -421,7 +436,7 @@ void CandidateWindow::ShowMode(const RECT& caret, int input_mode) {
   input_mode_ = std::clamp(input_mode, 0, 2);
   english_mode_ = input_mode_ == 2;
   ShowInternal(caret, L"", {}, 0, 0);
-  if (hwnd_) SetTimer(hwnd_, 1, 700, nullptr);
+  if (hwnd_) SetTimer(hwnd_, 1, 1500, nullptr);
 }
 void CandidateWindow::OpenSettings() {
   if (!open_settings_ || !hwnd_) return;
@@ -541,7 +556,21 @@ void CandidateWindow::Paint(HDC dc) {
   const HFONT candidate_font = Font(dpi_, candidate_point_size_, FW_SEMIBOLD);
   const HFONT key_font = Font(dpi_, 10, FW_SEMIBOLD);
   const HFONT status_font = Font(dpi_, 12, FW_SEMIBOLD);
-  Text(dc, ModeLabel(input_mode_), mode_rect_, kGyBlue, DT_CENTER, status_font);
+  if (mode_popup_) {
+    // 中英对比色大徽章：中文=GY 蓝，EN=琥珀；副行教会用户 Shift 切回。
+    const bool en = input_mode_ == 2;
+    const COLORREF badge_color = en ? RGB(240, 163, 50) : kGyBlue;
+    const HFONT badge_font = Font(dpi_, 22, FW_BOLD);
+    const HFONT badge_sub = Font(dpi_, 10, FW_NORMAL);
+    RECT main_rect{mode_rect_.left, mode_rect_.top + Scale(dpi_, 8), mode_rect_.right, mode_rect_.top + Scale(dpi_, 38)};
+    RECT sub_rect{mode_rect_.left, mode_rect_.top + Scale(dpi_, 38), mode_rect_.right, mode_rect_.bottom - Scale(dpi_, 5)};
+    Text(dc, en ? L"EN" : (input_mode_ == 1 ? L"繁" : L"简"), main_rect, badge_color, DT_CENTER, badge_font);
+    Text(dc, en ? L"英文输入 · Shift 切回中文" : (input_mode_ == 1 ? L"繁体中文" : L"简体中文"), sub_rect, muted, DT_CENTER, badge_sub);
+    DeleteObject(badge_font);
+    DeleteObject(badge_sub);
+  } else {
+    Text(dc, ModeLabel(input_mode_), mode_rect_, kGyBlue, DT_CENTER, status_font);
+  }
   if (!mode_popup_ && !IsRectEmpty(&expand_rect_)) {
     const int divider = expand_rect_.right + Scale(dpi_, 1);
     Fill(dc, RECT{divider, expand_rect_.top + Scale(dpi_, 7), divider + 1,

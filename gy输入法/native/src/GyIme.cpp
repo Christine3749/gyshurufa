@@ -178,7 +178,7 @@ public:
     // ShouldEat() treats ordinary letters as application shortcuts.
     ResetTransientKeyboardState();
     if (!focused) CancelComposition();
-    else SynchronizeInputMode(false);
+    else { ResetEnglishOnFocusIn(); SynchronizeInputMode(false); }
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
@@ -326,6 +326,7 @@ public:
     // The mode is persisted by Settings / Shift. Re-read it after every
     // document focus change so a tab with a stale TSF instance cannot leave
     // the newly focused field in EN while the user has selected Chinese.
+    ResetEnglishOnFocusIn();
     SynchronizeInputMode(false);
     return S_OK;
   }
@@ -426,6 +427,15 @@ private:
     const int next_mode = gy::input_mode::IsEnglish(input_mode_) ? chinese_mode_ : gy::input_mode::kEnglish;
     gy::input_mode::Write(next_mode);
     ApplyInputMode(next_mode, true);
+  }
+  void ResetEnglishOnFocusIn() {
+    // 契约 C：EN 是焦点内的临时状态。新焦点一律回中文——EN 不再跨应用跟随，
+    // 用户永远不会在别的窗口“突然发现输入法丢了”。
+    if (!gy::input_mode::IsEnglish(gy::input_mode::Read())) return;
+    const int chinese = chinese_mode_;
+    gy::input_mode::Write(chinese);
+    ApplyInputMode(chinese, true);
+    Trace(L"mode.reset-on-focus", S_OK, chinese);
   }
   void ApplyInputMode(int mode, bool announce) {
     mode = gy::input_mode::Normalize(mode);
