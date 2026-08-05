@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Download, ShieldCheck, Check, Copy, Laptop, FileText, ExternalLink } from 'lucide-react';
 import { BRAND_INFO } from '../../data/content';
 import { formatReleaseBytes, formatReleaseDate, useReleaseStatus } from '../../hooks/useReleaseStatus';
+import { useUserPlatform } from '../../hooks/useUserPlatform';
 
 interface DownloadModalProps {
   isOpen: boolean;
@@ -12,27 +13,40 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const [copiedHash, setCopiedHash] = useState(false);
   const [downloadStarted, setDownloadStarted] = useState(false);
   const { release, loading } = useReleaseStatus();
+  // 平台感知：Mac 访客看到的是 Mac 包的地址与校验，不再是 Windows 包。
+  const platform = useUserPlatform();
+  const isMac = platform === 'macos';
   const windows = release?.platforms.windows;
-  const windowsReady = Boolean(windows?.available);
+  const macos = release?.platforms.macos;
+  const current = isMac ? macos : windows;
+  const ready = Boolean(current?.available);
 
   if (!isOpen) return null;
 
   const handleCopyHash = () => {
-    if (!windowsReady) return;
-    navigator.clipboard.writeText(windows.sha256);
+    if (!ready) return;
+    navigator.clipboard.writeText(current.sha256);
     setCopiedHash(true);
     setTimeout(() => setCopiedHash(false), 2000);
   };
 
   const handleTriggerDownload = () => {
-    if (!windowsReady || !windows?.downloadUrl) return;
+    if (!ready || !current?.downloadUrl) return;
     setDownloadStarted(true);
-    window.location.assign(windows.downloadUrl);
+    window.location.assign(current.downloadUrl);
   };
+
+  const title = isMac ? 'GY输入法 for Mac' : 'GY输入法 for Windows';
+  const subtitle = isMac
+    ? '官方预览安装包 · macOS · Apple Silicon (M1 / M2 / M3 / M4)'
+    : '官方预览安装包 · Windows 10 / 11 (64-bit)';
+  const osRequirement = isMac
+    ? 'macOS 13 (Ventura) 或更高版本\nApple Silicon 芯片（M1 及更新）'
+    : 'Windows 11 (22H2 / 23H2)\nWindows 10 (21H2 或更高版本)';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
-      <div 
+      <div
         className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden text-slate-800"
         onClick={(e) => e.stopPropagation()}
       >
@@ -44,12 +58,12 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                GY输入法 for Windows
+                {title}
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  {windows ? `v${windows.version}` : loading ? '读取中' : '验证中'}
+                  {current ? `v${current.version}` : loading ? '读取中' : '验证中'}
                 </span>
               </h3>
-              <p className="text-xs text-slate-500">官方预览安装包 · Windows 10 / 11 (64-bit)</p>
+              <p className="text-xs text-slate-500">{subtitle}</p>
             </div>
           </div>
           <button
@@ -67,9 +81,9 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
           <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-semibold text-slate-900">{windows?.filename ?? 'Windows 安装包验证中'}</p>
+                <p className="text-sm font-semibold text-slate-900">{current?.filename ?? '安装包验证中'}</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
-                  <span>文件大小：{formatReleaseBytes(windows?.bytes)}</span>
+                  <span>文件大小：{formatReleaseBytes(current?.bytes)}</span>
                   <span>•</span>
                   <span>更新日期：{formatReleaseDate(release?.publishedAtUtc)}</span>
                 </div>
@@ -77,17 +91,17 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
               <button
                 onClick={handleTriggerDownload}
-                disabled={!windowsReady}
+                disabled={!ready}
                 className="inline-flex items-center justify-center px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed text-white font-medium text-sm transition-all shadow-lg shadow-blue-600/20 gap-2 shrink-0"
               >
                 <Download className="w-4 h-4" />
-                {windowsReady ? (downloadStarted ? '重新下载' : '立即免费下载') : '安装包验证中'}
+                {ready ? (downloadStarted ? '重新下载' : '立即免费下载') : '安装包验证中'}
               </button>
             </div>
 
-            {!windows && (
+            {!current && (
               <div className="p-3 rounded-lg bg-amber-50 text-amber-800 border border-amber-200/60 text-xs">
-                当前没有可验证的 Windows 安装包。为避免混装，下载入口会保持关闭。
+                当前没有可验证的{isMac ? ' macOS ' : ' Windows '}安装包。为避免混装，下载入口会保持关闭。
               </div>
             )}
             {downloadStarted && (
@@ -107,24 +121,24 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               </span>
               <button
                 onClick={handleCopyHash}
-                disabled={!windowsReady}
+                disabled={!ready}
                 className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
               >
                 {copiedHash ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    <Check className="w-4 h-4 text-emerald-600" />
                     已复制哈希值
                   </>
                 ) : (
                   <>
-                    <Copy className="w-3.5 h-3.5" />
+                    <Copy className="w-4 h-4" />
                     复制完整哈希
                   </>
                 )}
               </button>
             </div>
             <div className="p-3 rounded-lg bg-slate-900 text-slate-300 font-mono text-xs break-all leading-relaxed select-all">
-              {windowsReady ? (windows?.sha256 || '发布验证中') : '待校验' }
+              {ready ? (current?.sha256 || '发布验证中') : '待校验' }
             </div>
           </div>
 
@@ -134,7 +148,9 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               <Laptop className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
               <div>
                 <p className="font-semibold text-slate-800">操作系统支持</p>
-                <p className="text-slate-500 mt-0.5">Windows 11 (22H2 / 23H2)<br />Windows 10 (21H2 或更高版本)</p>
+                {osRequirement.split('\n').map((line) => (
+                  <p key={line} className="text-slate-500 mt-0.5">{line}</p>
+                ))}
               </div>
             </div>
             <div className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 flex items-start gap-2.5">
@@ -156,8 +172,8 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
         {/* Footer */}
         <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
           <span>官方域名: {BRAND_INFO.domain}</span>
-          <a 
-            href="#privacy" 
+          <a
+            href="#privacy"
             onClick={onClose}
             className="text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-1"
           >
@@ -168,7 +184,3 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     </div>
   );
 };
-
-
-
-

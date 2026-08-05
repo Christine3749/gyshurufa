@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Download, Shield, Sparkles, Layers, Menu, X, ChevronRight, HardDrive } from 'lucide-react';
 import { BRAND_INFO } from '../data/content';
+import { useReleaseStatus } from '../hooks/useReleaseStatus';
+import { useUserPlatform } from '../hooks/useUserPlatform';
 
 interface NavbarProps {
   onOpenDownload: () => void;
@@ -17,6 +19,20 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // 与 Hero 同一套识别：Mac 访客直接下 Apple Silicon 包，其余走弹窗。
+  const platform = useUserPlatform();
+  const { release } = useReleaseStatus();
+  const macos = release?.platforms.macos;
+  const macosReady = Boolean(macos?.available);
+  const downloadLabel = platform === 'macos' ? '下载 Mac 版' : '下载 Windows 版';
+  const handleDownloadClick = () => {
+    if (platform === 'macos' && macosReady && macos?.downloadUrl) {
+      window.location.assign(macos.downloadUrl);
+      return;
+    }
+    onOpenDownload();
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -99,18 +115,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
 
             <button
-              onClick={onOpenDownload}
+              onClick={handleDownloadClick}
               className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs shadow-md shadow-blue-600/15 transition-all gap-1.5 active:scale-95"
             >
               <Download className="w-3.5 h-3.5" />
-              下载 Windows 版
+              {downloadLabel}
             </button>
           </div>
 
           {/* Mobile Toggle Button */}
           <div className="flex sm:hidden items-center gap-2">
             <button
-              onClick={onOpenDownload}
+              onClick={handleDownloadClick}
               className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium shadow-sm"
             >
               下载
