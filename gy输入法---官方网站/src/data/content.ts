@@ -230,6 +230,22 @@ export const ECOSYSTEM_MODULES: EcosystemModule[] = [
 
 export const CHANGELOG_HISTORY: VersionInfo[] = [
   {
+    version: 'v0.9.41',
+    date: '2026-08-05',
+    channel: '候选版 (Candidate)',
+    size: '9.6 MB',
+    architecture: 'x64',
+    sha256: '',
+    highlights: [
+      '性能：按键全链路延迟从 61.5ms 降至 1.17ms（52 倍提升），打字零等待',
+      '新增：设置面板「热启动」开关，常驻引擎秒响应（低配设备可按需关闭）',
+      '修复：Win11 开始菜单搜索框等系统界面候选窗不显示的问题',
+      '修复：记事本等 XAML 应用光标错位，采用微软官方 SampleIME 组合路径',
+      '加固：输入法 IPC 管道权限模型，杜绝提权污染与沙盒应用拦截',
+      '优化：升级自动清理旧版本残留，卸载不再留痕'
+    ]
+  },
+  {
     version: 'v0.9.40',
     date: '2026-08-05',
     channel: '候选版 (Candidate)',

@@ -86,6 +86,7 @@ Source: "{#MyPayloadDir}\rime-data\*"; DestDir: "{#MyVersionRoot}\rime-data"; Fl
 Source: "{#SourcePath}\Set-GYKeyboard.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\Validate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\Rollback-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -222,6 +223,24 @@ begin
                     GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'registered-pending-client-reload'), False);
 end;
 
+procedure PruneOldVersions();
+var
+  ResultCode: Integer;
+  Args: String;
+begin
+  // Every release keeps its own versioned directory; without pruning they
+  // accumulate forever. Keep exactly N (this release) and N-1 (the rollback
+  // target captured before activation), sweep anything older, and defer
+  // locked files to the next install via pending-prune.txt. Best-effort:
+  // pruning must never abort or roll back a successful activation.
+  Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Prune-GYOldVersions.ps1') +
+          '" -InstallRoot "' + ExpandConstant('{app}') + '" -KeepVersions "{#MyAppVersion}';
+  if PreviousStateAvailable and (PreviousHostVersion <> '') and (CompareText(PreviousHostVersion, '{#MyAppVersion}') <> 0) then
+    Args := Args + ',' + PreviousHostVersion;
+  Args := Args + '"';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure SaveActiveGyState();
 begin
   SaveStringToFile(ExpandConstant('{app}\install-state.json'),
@@ -312,6 +331,7 @@ begin
     end;
     SaveActiveGyState();
     SaveCapturedPreviousGyState();
+    PruneOldVersions();
     KeyboardAdded := UpdateKeyboardList(True);
     if not KeyboardAdded then begin
       MsgBox('GY 输入法已安装，但未能自动加入当前账户的键盘列表。请在随后打开的 Windows 输入法设置中添加“GY 输入法（拼音）”。', mbInformation, MB_OK);
@@ -345,6 +365,12 @@ begin
       RegDeleteValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath');
       RegDeleteValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion');
     end;
+    // Full uninstall means no version may stay behind: sweep every versioned
+    // directory (including ones installed by older/newer setups), both state
+    // manifests, and queue locked files for the rename-then-delete fallback.
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+         '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Prune-GYOldVersions.ps1') +
+         '" -InstallRoot "' + ExpandConstant('{app}') + '" -All', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
