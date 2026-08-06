@@ -292,6 +292,15 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   GYDrawText(@"基础输入始终离线可用", NSMakeRect(90, 48, 300, 14), self.palette.muted, GYAuxFont(), NSTextAlignmentLeft);
   GYDrawText(@"所有基础输入设置仅保存在本机", NSMakeRect(24, kWindowH - 24 - 42, 260, 42),
              self.palette.muted, GYAuxFont(), NSTextAlignmentLeft);
+  // Every test build must be self-identifying from the running app alone —
+  // no version label here meant nobody could tell which build was installed
+  // without reaching for a terminal.
+  NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+  NSString *marketing = info[@"CFBundleShortVersionString"] ?: @"?";
+  NSString *build = info[@"CFBundleVersion"] ?: @"?";
+  GYDrawText([NSString stringWithFormat:@"v%@ (%@)", marketing, build],
+             NSMakeRect(24, kWindowH - 24 - 42 + 18, 260, 16),
+             self.palette.muted, GYAuxFont(), NSTextAlignmentLeft);
 }
 @end
 

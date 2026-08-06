@@ -22,6 +22,15 @@ static const NSUInteger kCandidateFetchLimit = 75;
 + (instancetype)sharedTarget;
 @end
 
+// The system Input Menu is served by GYMenuActionTarget, a singleton wholly
+// decoupled from any specific GYInputController instance. Writing
+// GYSettingsStore alone leaves the *currently active* controller instance —
+// its mode badge, engine mode and candidate window — unchanged until the
+// next composition-free keystroke happens to poll the store. That reads to
+// the user as "clicking 简/繁/EN does nothing." Broadcasting this
+// notification lets every live instance apply the change immediately.
+static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInputModeMenuDidSelectNotification";
+
 @implementation GYMenuActionTarget
 + (instancetype)sharedTarget {
   static GYMenuActionTarget *target;
@@ -33,6 +42,7 @@ static const NSUInteger kCandidateFetchLimit = 75;
   GYInputMode mode = (GYInputMode)sender.tag;
   GYSettingsStore.sharedStore.inputMode = mode;
   if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
+  [NSNotificationCenter.defaultCenter postNotificationName:GYInputModeMenuDidSelectNotification object:nil];
 }
 - (void)showPreferences:(id)sender {
   (void)sender;
@@ -99,7 +109,24 @@ static const NSUInteger kCandidateFetchLimit = 75;
   _doubleQuoteOpen = YES;
   _mode = GYSettingsStore.sharedStore.inputMode;
   [_engine setInputMode:_mode];
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                          selector:@selector(handleMenuModeChange:)
+                                              name:GYInputModeMenuDidSelectNotification
+                                            object:nil];
   return self;
+}
+
+- (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self name:GYInputModeMenuDidSelectNotification object:nil];
+}
+
+// The system Input Menu (GYMenuActionTarget, a singleton) broadcasts this so
+// every live controller instance — not just whichever one happens to see the
+// next keystroke — applies the switch immediately: mode badge, engine mode
+// and candidate window all update right away instead of only on next type.
+- (void)handleMenuModeChange:(NSNotification *)notification {
+  (void)notification;
+  [self applyInputMode:GYSettingsStore.sharedStore.inputMode];
 }
 
 - (void)applyInputMode:(GYInputMode)mode {
