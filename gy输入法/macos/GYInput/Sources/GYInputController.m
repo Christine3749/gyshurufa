@@ -6,12 +6,13 @@
 #import "GYClipboardHistory.h"
 #import "GYCandidateWindow.h"
 #import "GYCandidateGovernance.h"
+#import "GYCandidateGridMath.h"
+#import "GYPunctuationPolicy.h"
 #import <Carbon/Carbon.h>
 
 // WINDOWS-DESIGN.md §4/§5: collapsed strip shows 5, expanded grid is 5×5,
 // the pool holds up to 75 candidates (3 pages of 25), PageUp/Down flip 25.
-static const NSUInteger kCollapsedPageSize = 5;
-static const NSUInteger kExpandedPageSize = 25;
+static const NSUInteger kCollapsedPageSize = kGYCollapsedPageSize;
 static const NSUInteger kCandidateFetchLimit = 75;
 
 // Menu actions must target a long-lived object: IMK input controllers are
@@ -50,6 +51,8 @@ static const NSUInteger kCandidateFetchLimit = 75;
   NSUInteger _pageStart;
   BOOL _expanded;
   BOOL _shiftAwaitingSoleRelease;
+  BOOL _singleQuoteOpen;
+  BOOL _doubleQuoteOpen;
 }
 
 - (instancetype)initWithServer:(IMKServer *)server delegate:(id)delegate client:(id)client {
@@ -92,6 +95,8 @@ static const NSUInteger kCandidateFetchLimit = 75;
   _pageStart = 0;
   _expanded = NO;
   _shiftAwaitingSoleRelease = NO;
+  _singleQuoteOpen = YES;
+  _doubleQuoteOpen = YES;
   _mode = GYSettingsStore.sharedStore.inputMode;
   [_engine setInputMode:_mode];
   return self;
@@ -124,6 +129,13 @@ static const NSUInteger kCandidateFetchLimit = 75;
   [self applyInputMode:_mode == GYInputModeEnglish
       ? GYSettingsStore.sharedStore.lastChineseMode
       : GYInputModeEnglish];
+}
+
+// Chinese punctuation set, matching Windows PunctuationPolicy.h exactly:
+// shift-combo book titles/brackets/dun-comma plus a stateful smart-quote
+// toggle for the ' and " keys.
+- (nullable NSString *)chinesePunctuationForString:(NSString *)string {
+  return GYChinesePunctuationLookup(string, &_singleQuoteOpen, &_doubleQuoteOpen);
 }
 
 - (NSRect)caretRectForClient:(id)client {
@@ -179,75 +191,55 @@ static const NSUInteger kCandidateFetchLimit = 75;
                       inputMode:(NSInteger)_mode];
 }
 
-// PageUp/PageDown flip a whole 25-candidate page in both strip and grid.
-// PageUp/PageDown flip a whole 25-candidate page in both strip and grid.
+// PageUp/PageDown flip a whole 25-candidate page in the grid, but only a
+// 5-candidate row in the collapsed strip — matching Windows
+// PageSizeForCurrentView(). This is a pure clamp within the already-fetched
+// pool (byte-for-byte ported from GyIme.cpp's MovePage()). It must NOT
+// re-query the Rime engine at the pool boundary: candidatesUpToCount: already
+// walked Rime's own deep pages once to build the full ≤75-candidate pool, so
+// calling engine pageUp/pageDown here would advance Rime's session page
+// out from under that stable pool and could re-fetch a different, shifted
+// candidate set — a real product-contract violation Windows has no
+// equivalent of.
 - (void)pageCandidateWindow:(NSInteger)direction client:(id)client {
-  if (direction > 0) {
-    if (_pageStart + kExpandedPageSize < _candidates.count) {
-      _pageStart += kExpandedPageSize;
-      _selected = _pageStart;
-    } else if ([_engine pageDown]) {
-      [self setCandidateSelectionsFromRimeCandidates:[_engine candidatesUpToCount:kCandidateFetchLimit]
-                                             forCode:_composition];
-      _pageStart = 0;
-      _selected = 0;
-    }
-  } else {
-    if (_pageStart > 0) {
-      _pageStart -= kExpandedPageSize;
-      _selected = _pageStart;
-    } else if ([_engine pageUp]) {
-      [self setCandidateSelectionsFromRimeCandidates:[_engine candidatesUpToCount:kCandidateFetchLimit]
-                                             forCode:_composition];
-      _pageStart = _candidates.count != 0 ? ((_candidates.count - 1) / kExpandedPageSize) * kExpandedPageSize : 0;
-      _selected = _pageStart;
-    }
-  }
+  const NSUInteger pageSize = GYPageSizeForState(_expanded);
+  const GYPageMoveResult result = GYMovePageTransition(_pageStart, direction, pageSize, _candidates.count);
+  _pageStart = result.pageStart;
+  _selected = result.selected;
   [self updateCandidateWindowForClient:client];
 }
 
-// Grid navigation (expanded state). All movements clamp to real candidates;
-// the last, possibly short, row never invents a cell.
+// Collapsed strip left/right: move the highlighted candidate by one with
+// wraparound over the whole fetched pool, matching Windows MoveSelection().
+- (void)moveSelectionCollapsed:(NSInteger)delta client:(id)client {
+  if (_candidates.count == 0) return;
+  _selected = GYMoveCollapsedSelection(_selected, delta, _candidates.count);
+  _pageStart = (_selected / kCollapsedPageSize) * kCollapsedPageSize;
+  [self updateCandidateWindowForClient:client];
+}
+
+// Grid navigation (expanded state), byte-for-byte ported from
+// CandidateLayout.h's MoveExpandedLeft/Right/Down/Up so short final rows,
+// page-bottom column crossing and clamping match Windows exactly.
 - (void)moveSelectionHorizontally:(NSInteger)delta client:(id)client {
-  const NSInteger next = (NSInteger)_selected + delta;
-  if (next >= 0 && next < (NSInteger)_candidates.count) {
-    _selected = (NSUInteger)next;
-    if (_selected < _pageStart) _pageStart -= kExpandedPageSize;
-    if (_selected >= _pageStart + kExpandedPageSize) _pageStart += kExpandedPageSize;
-  }
+  _selected = delta < 0
+      ? GYMoveExpandedLeft(_selected, _pageStart, _candidates.count)
+      : GYMoveExpandedRight(_selected, _pageStart, _candidates.count);
   [self updateCandidateWindowForClient:client];
 }
 
 - (void)moveSelectionDownWithClient:(id)client {
-  const NSUInteger count = _candidates.count;
-  const NSUInteger next = _selected + kCollapsedPageSize;
-  if (next < count) {
-    _selected = next;
-    if (_selected >= _pageStart + kExpandedPageSize) _pageStart += kExpandedPageSize;
-  } else if (_pageStart + kExpandedPageSize < count) {
-    // Page bottom: cross to the next page in the same column.
-    const NSUInteger column = (_selected - _pageStart) % kCollapsedPageSize;
-    const NSUInteger target = _pageStart + kExpandedPageSize + column;
-    if (target < count) {
-      _selected = target;
-      _pageStart += kExpandedPageSize;
-    }
-  }
+  const GYCandidateNavResult result = GYExpandedDownTransition(_selected, _pageStart, _candidates.count);
+  _selected = result.selected;
+  _pageStart = result.pageStart;
   [self updateCandidateWindowForClient:client];
 }
 
 - (void)moveSelectionUpWithClient:(id)client {
-  if (_selected - _pageStart >= kCollapsedPageSize) {
-    _selected -= kCollapsedPageSize;
-  } else if (_pageStart > 0) {
-    _pageStart -= kExpandedPageSize;
-    _selected -= kCollapsedPageSize;
-  } else {
-    // First page, first row: ↑ collapses back to the single-row strip.
-    _expanded = NO;
-    _pageStart = 0;
-    _selected = 0;
-  }
+  const GYCandidateNavResult result = GYExpandedUpTransition(_selected, _pageStart, _candidates.count);
+  _selected = result.selected;
+  _pageStart = result.pageStart;
+  _expanded = result.expanded;
   [self updateCandidateWindowForClient:client];
 }
 
@@ -382,9 +374,9 @@ static const NSUInteger kCandidateFetchLimit = 75;
     return YES;
   }
   if (keyCode == kVK_Space && _candidates.count != 0) {
-    // Collapsed commits the strip's first candidate; expanded the highlight.
-    [self commitCandidateSelectionAtIndex:_expanded ? _selected : _pageStart
-                                   suffix:nil client:client];
+    // Space always commits the current highlight, matching Windows Space
+    // behavior in both collapsed and expanded state.
+    [self commitCandidateSelectionAtIndex:_selected suffix:nil client:client];
     return YES;
   }
   if (keyCode == kVK_PageUp && _composition.length != 0) {
@@ -400,7 +392,7 @@ static const NSUInteger kCandidateFetchLimit = 75;
   // the arrows move the highlight and cross page boundaries.
   if (keyCode == kVK_DownArrow && _candidates.count != 0) {
     if (!_expanded) {
-      if (_candidates.count > kCollapsedPageSize) _expanded = YES;
+      if (GYShouldEnterExpandedOnDown(_candidates.count)) _expanded = YES;
       [self updateCandidateWindowForClient:client];
     } else {
       [self moveSelectionDownWithClient:client];
@@ -408,28 +400,35 @@ static const NSUInteger kCandidateFetchLimit = 75;
     return YES;
   }
   if (keyCode == kVK_UpArrow) {
-    if (_expanded && _candidates.count != 0) {
+    if (_candidates.count == 0) return NO;
+    if (_expanded) {
       [self moveSelectionUpWithClient:client];
-      return YES;
+    } else {
+      // Collapsed ↑ pages back by one row, matching Windows MovePage(-1, 5).
+      [self pageCandidateWindow:-1 client:client];
     }
-    return NO; // collapsed: pass through
+    return YES;
   }
   if (keyCode == kVK_LeftArrow || keyCode == kVK_RightArrow) {
-    if (_expanded && _candidates.count != 0) {
-      [self moveSelectionHorizontally:keyCode == kVK_LeftArrow ? -1 : 1 client:client];
-      return YES;
+    if (_candidates.count == 0) return NO;
+    const NSInteger delta = keyCode == kVK_LeftArrow ? -1 : 1;
+    if (_expanded) {
+      [self moveSelectionHorizontally:delta client:client];
+    } else {
+      // Collapsed ←/→ move the highlight, matching Windows MoveSelection().
+      [self moveSelectionCollapsed:delta client:client];
     }
-    return NO; // collapsed: pass through
+    return YES;
   }
 
   if (keyCode >= kVK_ANSI_1 && keyCode <= kVK_ANSI_5 && _candidates.count != 0) {
     const NSUInteger digit = (NSUInteger)(keyCode - kVK_ANSI_1);
     if (_expanded) {
-      // Row of the highlight, column N; a short last row must not misselect.
-      const NSUInteger rowStart = _pageStart + ((_selected - _pageStart) / kCollapsedPageSize) * kCollapsedPageSize;
-      const NSUInteger rowCount = MIN(kCollapsedPageSize, _candidates.count - rowStart);
-      if (digit < rowCount) {
-        [self commitCandidateSelectionAtIndex:rowStart + digit suffix:nil client:client];
+      // Row of the highlight, column N; ported so a short last row can never
+      // misselect a cell that doesn't exist, matching Windows exactly.
+      const NSUInteger candidate = GYExpandedDigitCandidate(_selected, _pageStart, _candidates.count, digit + 1);
+      if (candidate < _candidates.count) {
+        [self commitCandidateSelectionAtIndex:candidate suffix:nil client:client];
       }
     } else {
       const NSUInteger index = _pageStart + digit;
@@ -441,15 +440,16 @@ static const NSUInteger kCandidateFetchLimit = 75;
   }
 
   if (GYInputModeIsChinese(_mode)) {
-    NSDictionary<NSString *, NSString *> *punctuation = @{@",": @"，", @".": @"。", @"?": @"？", @"!": @"！", @";": @"；", @":": @"："};
-    NSString *converted = punctuation[string];
+    NSString *converted = [self chinesePunctuationForString:string];
     if (converted != nil) {
       if (_composition.length == 0) {
         [self commitText:converted];
       } else if (_candidates.count != 0) {
-        // Mid-composition: commit the top candidate plus the punctuation, and
-        // keep any Rime remainder alive via the selection path.
-        [self commitCandidateSelectionAtIndex:0 suffix:converted client:client];
+        // Mid-composition: commit the currently highlighted candidate plus
+        // the punctuation, matching Windows (which always commits selected_
+        // through the same InsertText path), and keep any Rime remainder
+        // alive via the selection path.
+        [self commitCandidateSelectionAtIndex:_selected suffix:converted client:client];
       } else {
         // No candidates: commit the raw pinyin followed by the punctuation.
         [self commitText:[_composition stringByAppendingString:converted]];

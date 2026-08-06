@@ -39,4 +39,22 @@ targets:
         DEVELOPMENT_TEAM: ""
         OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime"
     scheme:
-      testTargets: []
+      testTargets:
+        - GYInputTests
+  GYInputTests:
+    type: bundle.unit-test
+    platform: macOS
+    # The app stays on macOS 13 (its real deployment target). XCTest itself
+    # only ships from macOS 14 on this Xcode toolchain, so the test bundle
+    # (never shipped to users) is pinned separately to avoid a link-time
+    # deployment-target mismatch warning.
+    deploymentTarget: "14.0"
+    sources:
+      - path: GYInputTests
+      - path: GYInput/Sources/GYCandidateGridMath.h
+      - path: GYInput/Sources/GYPunctuationPolicy.h
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.inputmethod.GYInputTests
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"

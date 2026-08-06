@@ -11,7 +11,7 @@ static const CGFloat kWindowW = 520;
 static const CGFloat kWindowH = 680;
 
 @interface GYPalette : NSObject
-@property(nonatomic, strong) NSColor *ink, *surface, *surfaceHover, *border, *text, *muted, *accent, *onAccent;
+@property(nonatomic, strong) NSColor *ink, *surface, *surfaceAlt, *surfaceHover, *border, *text, *muted, *accent, *onAccent;
 + (instancetype)forTheme:(NSInteger)theme;
 @end
 
@@ -21,14 +21,15 @@ static const CGFloat kWindowH = 680;
   NSColor *(^rgb)(NSUInteger, NSUInteger, NSUInteger) = ^NSColor *(NSUInteger r, NSUInteger g, NSUInteger b) {
     return [NSColor colorWithSRGBRed:r / 255.0 green:g / 255.0 blue:b / 255.0 alpha:1];
   };
+  // surfaceAlt (zebra row) values match Windows SettingsWindow.cpp PaletteForTheme exactly.
   if (theme == 1) { // 暖白
-    p.ink = rgb(243, 241, 235); p.surface = rgb(252, 251, 248); p.surfaceHover = rgb(234, 231, 224);
+    p.ink = rgb(243, 241, 235); p.surface = rgb(252, 251, 248); p.surfaceAlt = rgb(238, 235, 227); p.surfaceHover = rgb(234, 231, 224);
     p.border = rgb(208, 203, 193); p.text = rgb(26, 27, 30); p.muted = rgb(122, 120, 113);
   } else if (theme == 2) { // 石墨
-    p.ink = rgb(21, 23, 28); p.surface = rgb(30, 33, 40); p.surfaceHover = rgb(36, 40, 48);
+    p.ink = rgb(21, 23, 28); p.surface = rgb(30, 33, 40); p.surfaceAlt = rgb(46, 51, 60); p.surfaceHover = rgb(36, 40, 48);
     p.border = rgb(54, 59, 70); p.text = rgb(244, 245, 247); p.muted = rgb(148, 154, 168);
   } else { // GY 蓝夜
-    p.ink = rgb(16, 18, 22); p.surface = rgb(29, 33, 40); p.surfaceHover = rgb(35, 39, 47);
+    p.ink = rgb(16, 18, 22); p.surface = rgb(29, 33, 40); p.surfaceAlt = rgb(46, 51, 60); p.surfaceHover = rgb(35, 39, 47);
     p.border = rgb(52, 58, 69); p.text = rgb(250, 250, 251); p.muted = rgb(155, 163, 179);
   }
   p.accent = rgb(43, 96, 221);
@@ -185,12 +186,15 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 @interface GYCardView : NSView
 @property(nonatomic, strong) GYPalette *palette;
 @property(nonatomic) CGFloat radius;
+// Per-entry zebra striping (clipboard history list), matching Windows
+// SettingsWindow.cpp's row_fill = index % 2 == 0 ? pal.surface : pal.surface_alt.
+@property(nonatomic) BOOL altRow;
 @end
 @implementation GYCardView
 - (BOOL)isFlipped { return YES; } // children use top-down coordinates
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
-  [self.palette.surface setFill];
+  [(self.altRow ? self.palette.surfaceAlt : self.palette.surface) setFill];
   [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:self.radius yRadius:self.radius] fill];
   [self.palette.border setStroke];
   [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:self.radius yRadius:self.radius] stroke];
@@ -891,6 +895,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   }
 
   CGFloat y = 0;
+  NSInteger entryIndex = 0;
   for (GYClipboardEntry *entry in entries) {
     NSString *displayText = entry.text.length == 0 ? @"（空白内容已过滤）" : entry.text;
     const NSInteger lineCount = [self clipboardLineCountForText:displayText width:textWidth];
@@ -900,6 +905,8 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
     GYCardView *card = [[GYCardView alloc] initWithFrame:NSMakeRect(sidePad, y, cardWidth, cardHeight)];
     card.palette = palette;
     card.radius = 10;
+    card.altRow = (entryIndex % 2) != 0;
+    ++entryIndex;
     [_clipboardListView addSubview:card];
 
     NSTextField *text = [self labelWithText:displayText font:GYAuxFont()];
