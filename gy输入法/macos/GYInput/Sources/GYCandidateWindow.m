@@ -276,18 +276,25 @@ static NSColor *GYHex(NSUInteger rgb) {
 - (void)mouseUp:(NSEvent *)event {
   if (_modePopup) return;
   const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  // Candidates are the most specific, most frequently-clicked target — check
+  // them first. The trailing controls (mode label, pager, disclosure arrow)
+  // sit immediately to the right of the last candidate with only a few
+  // points of gap; if that gap ever computes tighter than intended (long
+  // candidate text, DPI rounding), checking the broader controls first would
+  // silently swallow clicks meant for the last candidate(s) — exactly the
+  // "candidate 4/5 won't click" symptom this order previously produced.
+  for (NSUInteger i = 0; i < _candidateRects.count; ++i) {
+    if (NSPointInRect(point, _candidateRects[i].rectValue)) {
+      if (_choose) _choose(_pageStart + i);
+      return;
+    }
+  }
   if (NSPointInRect(point, _modeRect)) { if (_settings) _settings(); return; }
   if (!NSEqualRects(_prevRect, NSZeroRect) && NSPointInRect(point, _prevRect)) { if (_page) _page(-1); return; }
   if (!NSEqualRects(_nextRect, NSZeroRect) && NSPointInRect(point, _nextRect)) { if (_page) _page(1); return; }
   if (!NSEqualRects(_expandRect, NSZeroRect) && NSPointInRect(point, _expandRect)) {
     if (_disclosure) _disclosure(!_expanded);
     return;
-  }
-  for (NSUInteger i = 0; i < _candidateRects.count; ++i) {
-    if (NSPointInRect(point, _candidateRects[i].rectValue)) {
-      if (_choose) _choose(_pageStart + i);
-      return;
-    }
   }
 }
 
