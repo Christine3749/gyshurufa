@@ -40,6 +40,9 @@ static const CGFloat kWindowH = 680;
 static NSFont *GYTitleFont(void) { return [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold]; }
 static NSFont *GYControlFont(void) { return [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]; }
 static NSFont *GYAuxFont(void) { return [NSFont systemFontOfSize:10 weight:NSFontWeightRegular]; }
+static CGFloat GYDefaultLineHeight(NSFont *font) {
+  return ceil(font.ascender - font.descender + font.leading);
+}
 
 static void GYDrawText(NSString *text, NSRect rect, NSColor *color, NSFont *font, NSTextAlignment alignment) {
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -852,7 +855,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 
 - (NSInteger)clipboardLineCountForText:(NSString *)text width:(CGFloat)width {
   NSFont *font = GYAuxFont();
-  const CGFloat lineHeight = ceil([NSLayoutManager defaultLineHeightForFont:font]);
+  const CGFloat lineHeight = GYDefaultLineHeight(font);
   NSRect measured = [text boundingRectWithSize:NSMakeSize(width, CGFLOAT_MAX)
                                        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                                     attributes:@{NSFontAttributeName: font}
@@ -861,7 +864,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 }
 
 - (CGFloat)clipboardCardHeightForLineCount:(NSInteger)lineCount {
-  const CGFloat lineHeight = ceil([NSLayoutManager defaultLineHeightForFont:GYAuxFont()]);
+  const CGFloat lineHeight = GYDefaultLineHeight(GYAuxFont());
   const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;
   return 10 + textHeight + 8 + 16 + 8;
 }
@@ -875,7 +878,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   const CGFloat textWidth = cardWidth - 32;
   const CGFloat gap = 12;
   const CGFloat sidePad = 0;
-  const CGFloat lineHeight = ceil([NSLayoutManager defaultLineHeightForFont:GYAuxFont()]);
+  const CGFloat lineHeight = GYDefaultLineHeight(GYAuxFont());
 
   if (entries.count == 0) {
     NSTextField *empty = [self labelWithText:@"还没有剪贴板历史，复制一段文字试试" font:GYAuxFont()];
@@ -1023,4 +1026,3 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 }
 
 @end
-
