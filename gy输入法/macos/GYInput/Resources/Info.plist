@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>13</string>
+	<key>GYUpdateChannel</key>
+	<string>beta</string>
 	<key>ComponentInputModeDict</key>
 	<dict>
 		<key>tsInputModeListKey</key>
@@ -89,3 +91,5 @@
 	<string>GYMenuIcon.pdf</string>
 </dict>
 </plist>
+
+

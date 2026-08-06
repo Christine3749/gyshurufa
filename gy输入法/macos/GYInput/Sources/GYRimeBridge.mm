@@ -1,4 +1,5 @@
 #import "GYRimeBridge.h"
+#import <CommonCrypto/CommonDigest.h>
 
 #if __has_include(<rime_api.h>)
 #define GY_HAS_RIME 1
@@ -15,34 +16,87 @@ static void GYInitializeRimeOnce(RimeApi *api, RimeTraits *traits) {
   });
 }
 
-static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, NSString **diagnostic) {
-  NSURL *source = [sharedDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
-  NSURL *destination = [userDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
-  NSURL *deployedSchema = [destination URLByAppendingPathComponent:@"luna_pinyin.schema.yaml"];
-  if ([NSFileManager.defaultManager fileExistsAtPath:deployedSchema.path]) return YES;
+static NSArray<NSString *> *GYBundledWorkspaceFiles(void) {
+  return @[@"default.yaml", @"luna_pinyin.prism.bin", @"luna_pinyin.reverse.bin", @"luna_pinyin.schema.yaml", @"luna_pinyin.table.bin"];
+}
 
-  NSError *error = nil;
-  if (![NSFileManager.defaultManager createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:&error]) {
-    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot create Rime user workspace: %@", error.localizedDescription];
-    return NO;
-  }
-  NSArray<NSString *> *files = @[@"default.yaml", @"luna_pinyin.prism.bin", @"luna_pinyin.reverse.bin", @"luna_pinyin.schema.yaml", @"luna_pinyin.table.bin"];
-  for (NSString *file in files) {
-    NSURL *from = [source URLByAppendingPathComponent:file];
-    NSURL *to = [destination URLByAppendingPathComponent:file];
-    if (![NSFileManager.defaultManager fileExistsAtPath:from.path]) {
+static NSString *GYWorkspaceFingerprint(NSURL *source, NSString **diagnostic) {
+  NSMutableString *fingerprint = [NSMutableString string];
+  for (NSString *file in GYBundledWorkspaceFiles()) {
+    NSURL *url = [source URLByAppendingPathComponent:file];
+    NSData *data = [NSData dataWithContentsOfURL:url options:0 error:nil];
+    if (data == nil) {
       if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"bundled Rime workspace is missing %@", file];
-      return NO;
+      return nil;
     }
-    error = nil;
-    if (![NSFileManager.defaultManager copyItemAtURL:from toURL:to error:&error]) {
-      if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot deploy Rime workspace: %@", error.localizedDescription];
-      return NO;
-    }
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    [fingerprint appendFormat:@"%@:", file];
+    for (NSUInteger index = 0; index < CC_SHA256_DIGEST_LENGTH; ++index) [fingerprint appendFormat:@"%02x", digest[index]];
+    [fingerprint appendString:@"\n"];
+  }
+  return fingerprint;
+}
+
+static BOOL GYWorkspaceMatchesFingerprint(NSURL *destination, NSString *fingerprint) {
+  NSURL *stampURL = [destination URLByAppendingPathComponent:@".gy-workspace.sha256"];
+  NSString *stamp = [NSString stringWithContentsOfURL:stampURL encoding:NSUTF8StringEncoding error:nil];
+  if (![stamp isEqualToString:fingerprint]) return NO;
+  for (NSString *file in GYBundledWorkspaceFiles()) {
+    if (![NSFileManager.defaultManager fileExistsAtPath:[destination URLByAppendingPathComponent:file].path]) return NO;
   }
   return YES;
 }
 
+static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, NSString **diagnostic) {
+  NSURL *source = [sharedDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
+  NSURL *destination = [userDataURL URLByAppendingPathComponent:@"build" isDirectory:YES];
+  NSString *fingerprint = GYWorkspaceFingerprint(source, diagnostic);
+  if (fingerprint == nil) return NO;
+  if (GYWorkspaceMatchesFingerprint(destination, fingerprint)) return YES;
+
+  NSFileManager *fileManager = NSFileManager.defaultManager;
+  NSURL *staging = [userDataURL URLByAppendingPathComponent:@"build.gy-staging" isDirectory:YES];
+  NSURL *backup = [userDataURL URLByAppendingPathComponent:@"build.gy-previous" isDirectory:YES];
+  [fileManager removeItemAtURL:staging error:nil];
+  [fileManager removeItemAtURL:backup error:nil];
+
+  NSError *error = nil;
+  if (![fileManager createDirectoryAtURL:staging withIntermediateDirectories:YES attributes:nil error:&error]) {
+    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot create Rime workspace staging directory: %@", error.localizedDescription];
+    return NO;
+  }
+  for (NSString *file in GYBundledWorkspaceFiles()) {
+    NSURL *from = [source URLByAppendingPathComponent:file];
+    NSURL *to = [staging URLByAppendingPathComponent:file];
+    error = nil;
+    if (![fileManager copyItemAtURL:from toURL:to error:&error]) {
+      [fileManager removeItemAtURL:staging error:nil];
+      if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot stage Rime workspace: %@", error.localizedDescription];
+      return NO;
+    }
+  }
+  error = nil;
+  if (![fingerprint writeToURL:[staging URLByAppendingPathComponent:@".gy-workspace.sha256"] atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+    [fileManager removeItemAtURL:staging error:nil];
+    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot stamp Rime workspace: %@", error.localizedDescription];
+    return NO;
+  }
+
+  if ([fileManager fileExistsAtPath:destination.path] && ![fileManager moveItemAtURL:destination toURL:backup error:&error]) {
+    [fileManager removeItemAtURL:staging error:nil];
+    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot prepare Rime workspace update: %@", error.localizedDescription];
+    return NO;
+  }
+  error = nil;
+  if (![fileManager moveItemAtURL:staging toURL:destination error:&error]) {
+    if ([fileManager fileExistsAtPath:backup.path]) [fileManager moveItemAtURL:backup toURL:destination error:nil];
+    if (diagnostic != NULL) *diagnostic = [NSString stringWithFormat:@"cannot activate Rime workspace update: %@", error.localizedDescription];
+    return NO;
+  }
+  [fileManager removeItemAtURL:backup error:nil];
+  return YES;
+}
 // Candidate governance gate (WINDOWS-DESIGN.md §6): pure CJK ideographs,
 // at most 12 characters; emoji, PUA, symbols and duplicates are filtered.
 static BOOL GYIsQualityCandidate(NSString *text) {
@@ -78,13 +132,11 @@ static BOOL GYIsQualityCandidate(NSString *text) {
   _sharedDataURL = sharedDataURL;
   _userDataURL = userDataURL;
 #if GY_HAS_RIME
-#if GY_HAS_RIME
   NSString *workspaceError = nil;
   if (sharedDataURL == nil || !GYEnsureBundledWorkspace(sharedDataURL, userDataURL, &workspaceError)) {
     _diagnostic = workspaceError ?: @"bundled Rime workspace is unavailable";
     return self;
   }
-#endif
   const char *sharedPath = sharedDataURL.path.UTF8String;
   const char *userPath = userDataURL.path.UTF8String;
   RIME_STRUCT(RimeTraits, traits);
@@ -92,7 +144,8 @@ static BOOL GYIsQualityCandidate(NSString *text) {
   traits.user_data_dir = userPath;
   traits.distribution_name = "GY Input Method";
   traits.distribution_code_name = "gyinput-macos";
-  traits.distribution_version = "0.9.15";
+  NSString *bundleVersion = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+  traits.distribution_version = bundleVersion.length > 0 ? bundleVersion.UTF8String : "0.9.42";
   traits.app_name = "rime.gyinput.macos";
   traits.min_log_level = 2;
   _api = rime_get_api();
