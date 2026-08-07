@@ -179,10 +179,16 @@ static const NSUInteger kCandidateFetchLimit = 75;
 //
 // IMK 的菜单派发不走 NSMenu 常规的 target/action：系统输入菜单由
 // TextInputMenuAgent 跨进程呈现，选中后 IMK 把 action 发给**当前活着的
-// IMKInputController**，菜单项上设的 target 未必被理会。证据是 `设置…`
-// 一直能用（showPreferences: 控制器上有），而三个切换项一直没反应
-// （旧版 selectMode: 控制器上有但 tag 丢失恒为 0；新版 selector 控制器上
-// 根本没有）。两条路各实现一份，无论 IMK 走哪边都成立。
+// IMKInputController**。这一条是实测确认的，不是推断——2026-08-08 在
+// macOS 26 上点「切换至英文输入」，日志只出现
+// `GY menu: EN (controller)`，单例那条从未触发。
+//
+// 这也解释了此前的现象：`设置…` 一直能用（showPreferences: 控制器上有），
+// 而三个切换项一直没反应（旧版 selectMode: 控制器上有，但 tag 跨进程不保留、
+// 恒为 0；改名后 selector 又只加在单例上，控制器上没有）。
+//
+// GYMenuActionTarget 上的同名实现保留作为兜底：菜单也可能在没有活动客户端
+// 会话、因而没有控制器可派发的情况下被打开。删掉它需要先验证那个场景。
 - (void)switchToSimplified:(id)sender {
   (void)sender;
   NSLog(@"GY menu: 简 (controller)");
