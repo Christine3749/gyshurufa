@@ -23,8 +23,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)commitCandidateAtAbsoluteIndex:(NSUInteger)index;
 // Raw pinyin Rime still holds after a partial commit; nil when fully consumed.
 - (nullable NSString *)remainingCompositionInput;
-- (BOOL)pageUp;
-- (BOOL)pageDown;
 - (void)clearComposition;
 
 // Class method to move the learning database to trash.

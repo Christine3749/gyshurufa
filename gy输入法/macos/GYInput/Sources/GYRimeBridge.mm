@@ -340,21 +340,6 @@ static BOOL GYIsQualityCandidate(NSString *text) {
 }
 
 
-- (BOOL)pageUp {
-#if GY_HAS_RIME
-  return [self isReady] && _api->change_page(_session, True);
-#else
-  return NO;
-#endif
-}
-
-- (BOOL)pageDown {
-#if GY_HAS_RIME
-  return [self isReady] && _api->change_page(_session, False);
-#else
-  return NO;
-#endif
-}
 + (BOOL)moveLearningDatabaseToTrash:(NSError * _Nullable * _Nullable)error {
   NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                         inDomains:NSUserDomainMask].firstObject;

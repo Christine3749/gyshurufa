@@ -1,5 +1,6 @@
 #import "GYCandidateWindow.h"
 #import "GYSettingsStore.h"
+#import "GYCandidateGridMath.h"
 
 // Locked brand tokens (GY_VISUAL_IDENTITY.md / Windows CandidateWindow.cpp).
 static const NSUInteger kGYInk = 0x111318;
@@ -81,14 +82,18 @@ static NSColor *GYHex(NSUInteger rgb) {
   const CGFloat wordRoom = MAX(fourCharW,
       MAX(22, (maxWidth - x - padding - collapsedControls - totalGap) / MAX(1, (CGFloat)visible) - nonWordW));
 
-  const NSUInteger gridCols = MIN(kExpandedColumns, MAX(1, visible));
+  // Expanded mode is a fixed five-column matrix, matching Windows: do not
+  // shrink it to the visible candidate count. Six candidates render as
+  // 5 + 1, never 3 x 2.
+  const NSUInteger gridCols = expandedGrid ? kExpandedColumns : MAX(1, visible);
   // Two-pass natural width (WINDOWS-DESIGN.md §5): measure the widest visible
   // word including the number gutter, then clamp to 82…110. Longer words fall
   // back to the ellipsis inside the 110 cell; four-character words always fit.
+  // Insets (21 + 5 + 8 = 34) match Windows CandidateWindow.cpp's cell_insets.
   CGFloat naturalCell = 0;
   for (NSUInteger i = 0; i < visible; ++i) {
     naturalCell = MAX(naturalCell,
-        [self measure:_candidates[_pageStart + i] font:self.candidateFont] + 26);
+        [self measure:_candidates[_pageStart + i] font:self.candidateFont] + 34);
   }
   const CGFloat cellW = expandedGrid ? MAX(82, MIN(110, naturalCell)) : 0;
 
@@ -100,10 +105,17 @@ static NSColor *GYHex(NSUInteger rgb) {
     const CGFloat left = expandedGrid ? padding + col * (chipW + gap) : x;
     const CGFloat top = expandedGrid ? padding + row * (chipH + gap) : padding;
     [_candidateRects addObject:[NSValue valueWithRect:NSMakeRect(left, top, chipW, chipH)]];
-    if (!expandedGrid) x += chipW + gap;
-    rightEdge = expandedGrid ? left + chipW : MAX(rightEdge, x - gap);
+    if (!expandedGrid) {
+      x += chipW + gap;
+      rightEdge = MAX(rightEdge, x - gap);
+    }
   }
-  const CGFloat gridRight = rightEdge;
+  // The right edge of a fixed grid must come from the grid geometry itself
+  // (padding + columns * cellW + (columns-1) * gap), never from whichever
+  // candidate happens to be last on a short final page — matching Windows
+  // CandidateLayout::GridRight. Otherwise a 1-4 candidate last page shrinks
+  // the panel and the page/prev buttons can land at negative coordinates.
+  const CGFloat gridRight = expandedGrid ? GYExpandedGridRight(padding, cellW, gap, gridCols) : rightEdge;
   _modeRect = _prevRect = _nextRect = _indicatorRect = _expandRect = NSZeroRect;
 
   if (!_modePopup) {
@@ -202,7 +214,7 @@ static NSColor *GYHex(NSUInteger rgb) {
   [self drawText:self.modeLabel inRect:_modeRect color:GYHex(kGYBlue) font:self.statusFont
        alignment:NSTextAlignmentCenter allowEllipsis:YES];
 
-  if (!_modePopup && !NSEqualRects(_expandRect, NSZeroRect) && !_expanded) {
+  if (!_modePopup && !NSEqualRects(_expandRect, NSZeroRect)) {
     const CGFloat divider = NSMaxX(_expandRect) + 1;
     [border setFill];
     NSRectFill(NSMakeRect(divider, NSMinY(_expandRect) + 7, 1, NSHeight(_expandRect) - 14));
@@ -222,11 +234,14 @@ static NSColor *GYHex(NSUInteger rgb) {
              color:selected ? selectedText : muted font:self.keyFont
          alignment:NSTextAlignmentCenter allowEllipsis:NO];
     NSString *word = _candidates[index];
-    const BOOL normalWord = word.length <= 4; // four Han chars must never ellipsize
+    // Candidate text is an input decision, not decorative copy — matching
+    // Windows, ellipsis is only ever the honest last resort for a row that
+    // physically overflows its (already width-negotiated) cell, never a
+    // decision made from word length alone.
     [self drawText:word
             inRect:NSMakeRect(NSMinX(chip) + 21, NSMinY(chip), NSWidth(chip) - 21 - 5, NSHeight(chip))
              color:selected ? selectedText : text font:self.candidateFont
-         alignment:NSTextAlignmentLeft allowEllipsis:!normalWord];
+         alignment:NSTextAlignmentLeft allowEllipsis:YES];
   }
 
   if (!_modePopup && !NSEqualRects(_nextRect, NSZeroRect)) {
@@ -261,18 +276,25 @@ static NSColor *GYHex(NSUInteger rgb) {
 - (void)mouseUp:(NSEvent *)event {
   if (_modePopup) return;
   const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  // Candidates are the most specific, most frequently-clicked target — check
+  // them first. The trailing controls (mode label, pager, disclosure arrow)
+  // sit immediately to the right of the last candidate with only a few
+  // points of gap; if that gap ever computes tighter than intended (long
+  // candidate text, DPI rounding), checking the broader controls first would
+  // silently swallow clicks meant for the last candidate(s) — exactly the
+  // "candidate 4/5 won't click" symptom this order previously produced.
+  for (NSUInteger i = 0; i < _candidateRects.count; ++i) {
+    if (NSPointInRect(point, _candidateRects[i].rectValue)) {
+      if (_choose) _choose(_pageStart + i);
+      return;
+    }
+  }
   if (NSPointInRect(point, _modeRect)) { if (_settings) _settings(); return; }
   if (!NSEqualRects(_prevRect, NSZeroRect) && NSPointInRect(point, _prevRect)) { if (_page) _page(-1); return; }
   if (!NSEqualRects(_nextRect, NSZeroRect) && NSPointInRect(point, _nextRect)) { if (_page) _page(1); return; }
   if (!NSEqualRects(_expandRect, NSZeroRect) && NSPointInRect(point, _expandRect)) {
     if (_disclosure) _disclosure(!_expanded);
     return;
-  }
-  for (NSUInteger i = 0; i < _candidateRects.count; ++i) {
-    if (NSPointInRect(point, _candidateRects[i].rectValue)) {
-      if (_choose) _choose(_pageStart + i);
-      return;
-    }
   }
 }
 
