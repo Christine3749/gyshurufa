@@ -4,10 +4,14 @@
 
 static NSUInteger const kGYClipboardMaxEntries = 20;
 static NSUInteger const kGYClipboardMaxBytes = 1024 * 1024;  // 1 MiB per entry
-// macOS 没有剪贴板变化通知，只能轮询 changeCount。0.15s 让"复制→出现在列表"
-// 接近瞬时，同时把"两次复制挨得太近、只发现一次"的窗口压到最窄。
-// changeCount 是一次很轻的读取，这个频率的开销可以忽略。
-static NSTimeInterval const kGYPasteboardPollInterval = 0.15;
+// macOS 没有剪贴板变化通知，只能轮询 changeCount。
+// 最坏发现延迟 ≈ 200ms，平均 ≈ 100ms，常驻进程开销可忽略。
+//
+// 必须如实说明：系统不提供剪贴板历史队列，所以**任何**轮询间隔都无法在数学上
+// 保证捕获间隔内发生的两次极速复制——第二次会覆盖第一次，第一次无从得知。
+// 缩短间隔只能把概率压小。而"延迟供给导致的永久丢失"是另一回事，那个由下面
+// 的记账顺序修复为零。
+static NSTimeInterval const kGYPasteboardPollInterval = 0.2;
 // 延迟供给的剪贴板最多等这么多轮（约 1.2 秒）。有上限才不会为纯图片、
 // 纯文件的复制无限重试下去。
 static NSInteger const kGYPasteboardMaxDeferredPolls = 8;
@@ -48,6 +52,11 @@ static BOOL GYIsAcceptableText(NSString *text) {
   // 正在等待数据到位的那次 changeCount，以及已经等了几轮。
   NSInteger _deferredChangeCount;
   NSInteger _deferredPolls;
+  // 本程序刚写入剪贴板的内容指纹，用于识别"这次变化是我自己造成的"。
+  // 只按内容匹配、不按"跳过下一个 changeCount"，否则用户在我们写入的同一
+  // 瞬间按下 ⌘C，那次复制会被当成自己的写入吞掉。
+  NSString *_selfWrittenText;
+  NSInteger _selfWrittenChangeCount;
 }
 
 + (NSString *)didChangeNotification { return @"GYClipboardHistoryDidChangeNotification"; }
@@ -77,6 +86,7 @@ static BOOL GYIsAcceptableText(NSString *text) {
   _items = [[self readAllDidMigrate:&migrated] mutableCopy] ?: [NSMutableArray array];
   _lastChangeCount = NSPasteboard.generalPasteboard.changeCount;
   _deferredChangeCount = NSNotFound;
+  _selfWrittenChangeCount = NSNotFound;
   if (migrated) [self save];  // 旧的两字段行立即改写为四字段
   return self;
 }
@@ -122,10 +132,28 @@ static BOOL GYIsAcceptableText(NSString *text) {
     _deferredChangeCount = changeCount;
     _deferredPolls = 0;
   }
+  // changeCount 只增不减，所以一旦越过我们写入的那一次，指纹再也不可能命中，
+  // 及时释放（内容最大可达 1 MiB）。
+  if (_selfWrittenChangeCount != NSNotFound && changeCount > _selfWrittenChangeCount) {
+    _selfWrittenText = nil;
+    _selfWrittenChangeCount = NSNotFound;
+  }
 
   // 只收纯文本。复制截图/图片时这里得到 nil，历史不增、Keep 不传，
   // 而且我们没有碰剪贴板，图片仍然可以正常粘贴。
   NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
+
+  // 是不是我们自己刚写进去的远端内容？必须内容和 changeCount 同时对上才算。
+  // 只要用户在我们写入的那一瞬间也复制了东西，内容就对不上，于是照常当作
+  // 一次真实复制处理 —— 这正是"按指纹匹配"要防住的情形。
+  if (_selfWrittenText != nil && changeCount == _selfWrittenChangeCount &&
+      [text isEqualToString:_selfWrittenText]) {
+    _selfWrittenText = nil;
+    _selfWrittenChangeCount = NSNotFound;
+    [self commitChangeCount:changeCount];  // 记账但不入库，避免回传成环
+    return;
+  }
+
   if (![text isKindOfClass:NSString.class] || text.length == 0) {
     // 关键：拿不到文本时**不能**直接记账。很多程序（浏览器、Office、
     // Electron 系）是先 clearContents 把 changeCount 顶上去，之后才把数据
@@ -141,7 +169,9 @@ static BOOL GYIsAcceptableText(NSString *text) {
     if ((declaresText || declaresNothingYet) && ++_deferredPolls < kGYPasteboardMaxDeferredPolls) {
       return;  // 不记账：下一轮还会回到这次 changeCount
     }
-    [self commitChangeCount:changeCount];
+    // 走到这里说明确实不是文字。按类型分流，而不是笼统当成"没内容"吞掉——
+    // 图片和文件各自是独立分支，wire-v2 的 PNG 支持接进来时就落在这里。
+    [self handleNonTextPasteboard:pasteboard changeCount:changeCount];
     return;
   }
   // 读到内容之后才记账。
@@ -166,6 +196,23 @@ static BOOL GYIsAcceptableText(NSString *text) {
 
   [self save];
   [self postDidChange];
+}
+
+/// 明确判定为"当前版本不同步的类型"后的处理。记账在这里发生，所以这一次
+/// changeCount 不会被反复重试拖住后面的复制。
+///
+/// 第一版只同步文字。图片（PNG）已经在服务端就绪（`format=wire-v2` 的 I 行
+/// 加 /api/clipboard/images/<id>），接入时替换掉对应分支即可；文档与文件之后
+/// 进入同一条 Keep 信息流，不另建时间线。
+- (void)handleNonTextPasteboard:(NSPasteboard *)pasteboard changeCount:(NSInteger)changeCount {
+  [self commitChangeCount:changeCount];
+  if ([pasteboard availableTypeFromArray:@[NSPasteboardTypePNG, NSPasteboardTypeTIFF]] != nil) {
+    return;  // TODO(image-sync): 上传 PNG，走 wire-v2 的 I 行
+  }
+  if ([pasteboard availableTypeFromArray:@[NSPasteboardTypeFileURL]] != nil) {
+    return;  // TODO(file-sync): 文件块，先同步元数据卡片
+  }
+  // 其余（RTF 专有格式、自定义 UTI 等）：本版不处理，但已明确记账。
 }
 
 - (void)clear {
@@ -221,9 +268,14 @@ static BOOL GYIsAcceptableText(NSString *text) {
     NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
     [pasteboard clearContents];
     [pasteboard setString:text forType:NSPasteboardTypeString];
-    // 吞掉自己造成的变化：否则下一次轮询会把它当成用户复制再传回 Keep，形成回环。
-    // 同时清掉延迟等待状态，避免把这次写入误当成"还在等数据"的那一次。
-    [self commitChangeCount:pasteboard.changeCount];
+    // 记下"我刚写了什么"，而不是直接把 _lastChangeCount 推到当前值。
+    //
+    // 直接记账是有害的：从 setString: 返回到读取 changeCount 之间，用户完全
+    // 可能按下 ⌘C。那样读到的是**用户那次**的 changeCount，一记账就把用户
+    // 的复制永久吞掉了。改成留指纹后，轮询只在"内容和 changeCount 同时对上"
+    // 时才认作自己的写入；用户插进来的那次内容对不上，会照常被捕获。
+    self->_selfWrittenText = [text copy];
+    self->_selfWrittenChangeCount = pasteboard.changeCount;
   };
   if (NSThread.isMainThread) write();
   else dispatch_sync(dispatch_get_main_queue(), write);
