@@ -311,6 +311,18 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 @interface GYPreferencesController () <NSTextFieldDelegate>
 @end
 
+// NSWindowStyleMaskBorderless 的窗口，canBecomeKeyWindow 默认返回 NO：
+// makeKeyAndOrderFront: 会被 AppKit 拒绝（日志里是
+// "makeKeyWindow called on ... which returned NO from canBecomeKeyWindow"），
+// 窗口拿不到 key，里面任何 NSTextField 都无法获得焦点——点不进去也打不了字。
+// 设置面板要收邮箱和密码，就必须能成为 key window。
+@interface GYSettingsWindow : NSWindow
+@end
+@implementation GYSettingsWindow
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
 @implementation GYPreferencesController {
   NSWindow *_window;
   GYSettingsRootView *_rootView;
@@ -424,10 +436,10 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
 }
 
 - (void)buildWindow {
-  _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWindowW, kWindowH)
-                                        styleMask:NSWindowStyleMaskBorderless
-                                          backing:NSBackingStoreBuffered
-                                            defer:NO];
+  _window = [[GYSettingsWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWindowW, kWindowH)
+                                                styleMask:NSWindowStyleMaskBorderless
+                                                  backing:NSBackingStoreBuffered
+                                                    defer:NO];
   _window.level = NSFloatingWindowLevel;
   _window.opaque = NO;
   _window.backgroundColor = NSColor.clearColor;
