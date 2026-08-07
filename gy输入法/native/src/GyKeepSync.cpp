@@ -26,12 +26,16 @@ constexpr wchar_t kKeepHost[] = L"keep.gyenbox.com";
 constexpr DWORD kKeepPort = INTERNET_DEFAULT_HTTPS_PORT;
 constexpr DWORD kMaxResponseBytes = 48 * 1024 * 1024;
 constexpr DWORD kPollMilliseconds = 750;
+constexpr DWORD kSseFallbackPollMilliseconds = 5000;
 
 std::atomic_bool g_running{false};
 std::atomic_bool g_enabled{true};
 std::atomic_bool g_instant_paste{true};
+std::atomic_bool g_sse_available{false};
 HANDLE g_wake_event = nullptr;
+HANDLE g_stream_wake_event = nullptr;
 std::thread g_worker;
+std::thread g_stream_worker;
 std::mutex g_token_mutex;
 std::wstring g_access_token;
 std::int64_t g_access_expiry = 0;
@@ -41,6 +45,8 @@ std::mutex g_remote_head_mutex;
 // remote HEAD means "write it to the system clipboard".  Tracking both with
 // one ID avoids turning a successful local ACK into a lossy clipboard rewrite.
 std::wstring g_last_handled_head_id;
+std::mutex g_stream_request_mutex;
+HINTERNET g_active_stream_request = nullptr;
 
 struct HttpResponse {
   DWORD status = 0;
@@ -53,6 +59,10 @@ struct SyncPage {
   bool has_more = false;
   bool snapshot = false;
 };
+
+enum class StreamResult { Change, KeepAlive, Unavailable };
+
+void Wake();
 
 void Wipe(std::wstring* value) {
   if (!value) return;
@@ -211,6 +221,101 @@ bool Request(const wchar_t* method, const wchar_t* path, const std::wstring& acc
   WinHttpCloseHandle(session);
   if (!ok) Wipe(&response->body);
   return ok;
+}
+
+void CancelActiveStreamRequest() {
+  HINTERNET request = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    request = g_active_stream_request;
+    g_active_stream_request = nullptr;
+  }
+  if (request) WinHttpCloseHandle(request);
+}
+
+StreamResult WaitForSseSignal(const std::wstring& access_token, unsigned long long cursor) {
+  if (!IsSafeBearerToken(access_token)) return StreamResult::Unavailable;
+  HINTERNET session = WinHttpOpen(L"GYInput/0.10", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) return StreamResult::Unavailable;
+  // Keep closes an idle SSE response after 12 seconds.  The receive timeout is
+  // intentionally slightly higher and Stop()/account changes cancel the
+  // request handle directly, so this helper never delays local-copy uploads.
+  WinHttpSetTimeouts(session, 5000, 5000, 10000, 15000);
+  HINTERNET connect = WinHttpConnect(session, kKeepHost, kKeepPort, 0);
+  if (!connect) { WinHttpCloseHandle(session); return StreamResult::Unavailable; }
+  const std::wstring path = L"/api/clipboard/stream?cursor=" + std::to_wstring(cursor);
+  HINTERNET request = WinHttpOpenRequest(connect, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                         WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!request) {
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    return StreamResult::Unavailable;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    if (!g_running.load() || !g_enabled.load()) {
+      WinHttpCloseHandle(request);
+      WinHttpCloseHandle(connect);
+      WinHttpCloseHandle(session);
+      return StreamResult::Unavailable;
+    }
+    g_active_stream_request = request;
+  }
+
+  StreamResult result = StreamResult::Unavailable;
+  const ULONGLONG opened_at = GetTickCount64();
+  bool saw_live_preamble = false;
+  const std::wstring headers = L"Accept: text/event-stream\r\nCache-Control: no-cache\r\nAuthorization: Bearer " + access_token + L"\r\n";
+  const BOOL sent = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+                                       WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+  bool ok = sent != FALSE && WinHttpReceiveResponse(request, nullptr) != FALSE;
+  DWORD status = 0;
+  if (ok) {
+    DWORD size = sizeof(status);
+    ok = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
+                             WINHTTP_NO_HEADER_INDEX) != FALSE;
+  }
+  std::string body;
+  while (ok && status == 200) {
+    DWORD available = 0;
+    if (!WinHttpQueryDataAvailable(request, &available)) { ok = false; break; }
+    if (available == 0) break;
+    if (available > kMaxResponseBytes || body.size() > kMaxResponseBytes - available) { ok = false; break; }
+    const size_t offset = body.size();
+    body.resize(offset + available);
+    DWORD read = 0;
+    if (!WinHttpReadData(request, body.data() + offset, available, &read)) { ok = false; break; }
+    body.resize(offset + read);
+    // A buffering proxy can return an apparently valid 200 response only once
+    // the server closes it.  Treat SSE as available only when its preamble
+    // arrives promptly; otherwise the ordinary 750ms cursor poll stays active.
+    if (!saw_live_preamble && GetTickCount64() - opened_at <= 2000 &&
+        body.find("retry: 1000\n") != std::string::npos) {
+      saw_live_preamble = true;
+    }
+    if (read == 0) break;
+  }
+  if (ok && status == 200 && saw_live_preamble) {
+    result = body.find("event: clipboard\n") != std::string::npos
+        ? StreamResult::Change
+        : StreamResult::KeepAlive;
+  }
+  Wipe(&body);
+
+  bool close_request = false;
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    if (g_active_stream_request == request) {
+      g_active_stream_request = nullptr;
+      close_request = true;
+    }
+  }
+  if (close_request) WinHttpCloseHandle(request);
+  WinHttpCloseHandle(connect);
+  WinHttpCloseHandle(session);
+  return result;
 }
 
 bool JsonPayloadField(const std::string& body, std::string* payload) {
@@ -668,8 +773,45 @@ void WorkerMain() {
   while (g_running.load()) {
     Synchronize();
     if (!g_wake_event) break;
-    WaitForSingleObject(g_wake_event, kPollMilliseconds);
+    WaitForSingleObject(g_wake_event, g_sse_available.load() ? kSseFallbackPollMilliseconds : kPollMilliseconds);
     ResetEvent(g_wake_event);
+  }
+}
+
+void StreamWorkerMain() {
+  while (g_running.load()) {
+    if (!g_enabled.load()) {
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    std::wstring access_token;
+    unsigned long long cursor = 0;
+    if (!GetAccessToken(&access_token) || !LoadCursor(&cursor)) {
+      Wipe(&access_token);
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    const StreamResult result = WaitForSseSignal(access_token, cursor);
+    Wipe(&access_token);
+    if (!g_running.load()) break;
+    if (result == StreamResult::Unavailable) {
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    g_sse_available.store(true);
+    if (result == StreamResult::Change) Wake();
   }
 }
 
@@ -683,15 +825,29 @@ void Start() {
   bool expected = false;
   if (!g_running.compare_exchange_strong(expected, true)) return;
   g_wake_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
-  if (!g_wake_event) { g_running.store(false); return; }
+  g_stream_wake_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+  if (!g_wake_event || !g_stream_wake_event) {
+    if (g_wake_event) CloseHandle(g_wake_event);
+    if (g_stream_wake_event) CloseHandle(g_stream_wake_event);
+    g_wake_event = nullptr;
+    g_stream_wake_event = nullptr;
+    g_running.store(false);
+    return;
+  }
   g_worker = std::thread(WorkerMain);
+  g_stream_worker = std::thread(StreamWorkerMain);
 }
 
 void Stop() {
   if (!g_running.exchange(false)) return;
+  g_sse_available.store(false);
+  CancelActiveStreamRequest();
   Wake();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   if (g_worker.joinable()) g_worker.join();
+  if (g_stream_worker.joinable()) g_stream_worker.join();
   if (g_wake_event) { CloseHandle(g_wake_event); g_wake_event = nullptr; }
+  if (g_stream_wake_event) { CloseHandle(g_stream_wake_event); g_stream_wake_event = nullptr; }
   std::lock_guard<std::mutex> lock(g_token_mutex);
   Wipe(&g_access_token);
   g_access_expiry = 0;
@@ -708,11 +864,17 @@ void NotifyAccountChanged() {
     Wipe(&g_access_token);
     g_access_expiry = 0;
   }
+  g_sse_available.store(false);
+  CancelActiveStreamRequest();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   Wake();
 }
 
 void SetEnabled(bool enabled) {
   g_enabled.store(enabled);
+  g_sse_available.store(false);
+  if (!enabled) CancelActiveStreamRequest();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   Wake();
 }
 
