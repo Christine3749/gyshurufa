@@ -4,6 +4,7 @@
 #import "GYSettingsStore.h"
 #import "GYPreferencesController.h"
 #import "GYClipboardHistory.h"
+#import "GYKeepSync.h"
 #import "GYCandidateWindow.h"
 #import "GYCandidateGovernance.h"
 #import "GYCandidateGridMath.h"
@@ -78,6 +79,9 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   [NSFileManager.defaultManager createDirectoryAtURL:user withIntermediateDirectories:YES attributes:nil error:nil];
   _engine = [[GYRimeBridge alloc] initWithSharedDataURL:shared userDataURL:user];
   [[GYClipboardHistory sharedHistory] startCapture];
+  // Keep 同步是后台服务：只在自己的串行队列上跑网络，
+  // 不参与组合、候选或 Rime 路径。两者都幂等，重复调用无副作用。
+  [[GYKeepSync sharedSync] start];
 
   __weak typeof(self) weakSelf = self;
   _candidateWindow = [[GYCandidateWindow alloc]

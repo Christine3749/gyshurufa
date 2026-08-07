@@ -3,6 +3,8 @@
 #import "GYRimeBridge.h"
 #import "GYInputMode.h"
 #import "GYClipboardHistory.h"
+#import "GYAccountAuth.h"
+#import "GYKeepSync.h"
 
 // SETTINGS-PANEL-DESIGN.md: fixed 520×680, four pages, palette follows the
 // candidate theme, only 完成 persists (× discards with a confirmation).
@@ -324,13 +326,51 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   BOOL _phrasesToggleIsFinish;
   NSScrollView *_clipboardScroll;
   NSView *_clipboardListView;
+  // GY 账户登录卡状态
+  NSTextField *_loginEmailField;
+  NSSecureTextField *_loginPasswordField;
+  NSString *_loginEmailDraft;
+  NSString *_loginError;
 }
+
+// 剪贴板页与账户页的页码，供通知回调判断是否需要重建。
+enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
 
 + (instancetype)sharedController {
   static GYPreferencesController *controller;
   static dispatch_once_t once;
   dispatch_once(&once, ^{ controller = [[GYPreferencesController alloc] init]; });
   return controller;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (!self) return nil;
+  _loginEmailDraft = @"";
+  // 账户状态变化要重画登录卡与剪贴板页的状态行。
+  // 剪贴板历史变化只重画剪贴板页——后台同步合并时若连账户页一起重建，
+  // 会把用户正在输入的密码清掉。
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(gyAccountDidChange:)
+                                             name:GYAccountAuthDidChangeNotification
+                                           object:nil];
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(gyClipboardDidChange:)
+                                             name:GYClipboardHistory.didChangeNotification
+                                           object:nil];
+  return self;
+}
+
+- (void)gyAccountDidChange:(NSNotification *)notification {
+  (void)notification;
+  if (!_window.isVisible) return;
+  if (_page == kGYAccountPageIndex || _page == kGYClipboardPageIndex) [self rebuildPage];
+}
+
+- (void)gyClipboardDidChange:(NSNotification *)notification {
+  (void)notification;
+  if (!_window.isVisible || _page != kGYClipboardPageIndex) return;
+  [self rebuildPage];
 }
 
 - (GYPalette *)palette { return [GYPalette forTheme:GYSettingsStore.sharedStore.candidateTheme]; }
@@ -477,6 +517,10 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 
 - (void)rebuildPage {
   for (NSView *subview in [_contentView.subviews copy]) [subview removeFromSuperview];
+  // 旧的输入框已经脱离视图树；清掉 ivar，避免关闭时读到已移除的控件。
+  _accountField = nil;
+  _loginEmailField = nil;
+  _loginPasswordField = nil;
   switch (_page) {
     case 0: [self buildGeneralPage]; break;
     case 1: [self buildInputPage]; break;
@@ -588,7 +632,8 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   GYSwitchView *syncSwitch = [[GYSwitchView alloc] initWithFrame:NSMakeRect(384 - 16 - 48, 26, 48, 26)];
   syncSwitch.palette = palette;
   syncSwitch.on = store.clipboardSyncEnabled;
-  syncSwitch.onToggle = ^(BOOL on) { store.clipboardSyncEnabled = on; };
+  // 经 GYKeepSync 落设置：它除了写 store 还要唤醒/停下同步循环。
+  syncSwitch.onToggle = ^(BOOL on) { [GYKeepSync.sharedSync setEnabled:on]; };
   [sync addSubview:syncSwitch];
 
   GYCardView *instant = [[GYCardView alloc] initWithFrame:NSMakeRect(0, switchY + 78 + 14, 384, 78)];
@@ -610,7 +655,9 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   GYSwitchView *instantSwitch = [[GYSwitchView alloc] initWithFrame:NSMakeRect(384 - 16 - 48, 26, 48, 26)];
   instantSwitch.palette = palette;
   instantSwitch.on = store.clipboardInstantPaste;
-  instantSwitch.onToggle = ^(BOOL on) { store.clipboardInstantPaste = on; };
+  // 同上；重新打开时它会清掉 lastAppliedRemoteHeadId，
+  // 让当前远端最新一条补写一次系统剪贴板。
+  instantSwitch.onToggle = ^(BOOL on) { [GYKeepSync.sharedSync setInstantPasteEnabled:on]; };
   [instant addSubview:instantSwitch];
 }
 
@@ -840,6 +887,20 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   GYPalette *palette = self.palette;
   __weak typeof(self) weakSelf = self;
 
+  // 连接状态：Keep 是权威层，这一行必须如实反映能不能同步。
+  NSString *statusText;
+  if (GYAccountAuth.sharedAuth.status != GYAccountStatusLoggedIn) {
+    statusText = @"登录 GY 账户后可同步到 Keep";
+  } else if (!GYSettingsStore.sharedStore.clipboardSyncEnabled) {
+    statusText = @"Keep 同步已关闭 · 仅保存在本机";
+  } else {
+    statusText = @"已连接 Keep · 自动同步中";
+  }
+  NSTextField *statusLabel = [self labelWithText:statusText font:GYAuxFont()];
+  statusLabel.textColor = palette.muted;
+  statusLabel.frame = NSMakeRect(2, 8, 300, 14);
+  [_contentView addSubview:statusLabel];
+
   const CGFloat toolbarHeight = 34;
   _clipboardScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, toolbarHeight, 384, _contentView.bounds.size.height - toolbarHeight)];
   _clipboardScroll.hasVerticalScroller = YES;
@@ -950,7 +1011,10 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 
 - (void)clearClipboardHistory {
   NSAlert *alert = [[NSAlert alloc] init];
-  alert.messageText = @"清空本机剪贴板历史？不影响其他设备。";
+  // Keep 是权威层：清空只影响本机，而且下一轮同步会把 Keep 的最新 20 条拉回来。
+  // 文案必须说清楚，不能让用户以为这是在删云端记录。
+  alert.messageText = @"清空此 Mac 的本机历史？Keep 中的内容不会删除。";
+  alert.informativeText = @"下次同步会重新拉取 Keep 中最新的 20 条。";
   [alert addButtonWithTitle:@"清空"];
   [alert addButtonWithTitle:@"取消"];
   if ([alert runModal] != NSAlertFirstButtonReturn) return;
@@ -994,7 +1058,11 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   _accountField.delegate = self;
   [account addSubview:_accountField];
 
-  GYCardView *gy = [[GYCardView alloc] initWithFrame:NSMakeRect(0, 64, 384, 72)];
+  const GYAccountStatus status = GYAccountAuth.sharedAuth.status;
+  const BOOL signedIn = status == GYAccountStatusLoggedIn;
+  const BOOL busy = status == GYAccountStatusLoggingIn;
+
+  GYCardView *gy = [[GYCardView alloc] initWithFrame:NSMakeRect(0, 64, 384, signedIn ? 146 : 194)];
   gy.palette = palette;
   gy.radius = 9;
   [_contentView addSubview:gy];
@@ -1002,10 +1070,108 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   gyTitle.textColor = palette.text;
   gyTitle.frame = NSMakeRect(16, 12, 200, 18);
   [gy addSubview:gyTitle];
-  NSTextField *gyBody = [self labelWithText:@"同步、跨设备词库和 AI 权益将在账户接入后开放。" font:GYAuxFont()];
+
+  __weak typeof(self) weakSelf = self;
+  if (signedIn) {
+    NSTextField *email = [self labelWithText:GYAccountAuth.sharedAuth.email font:GYControlFont()];
+    email.textColor = palette.text;
+    email.frame = NSMakeRect(16, 36, 340, 18);
+    email.lineBreakMode = NSLineBreakByTruncatingTail;
+    [gy addSubview:email];
+
+    NSTextField *connected = [self labelWithText:@"已连接 Keep" font:GYAuxFont()];
+    connected.textColor = palette.accent;
+    connected.frame = NSMakeRect(16, 58, 340, 14);
+    [gy addSubview:connected];
+
+    NSTextField *note = [self labelWithText:@"会话仅保存在这台 Mac 的加密钥匙串中" font:GYAuxFont()];
+    note.textColor = palette.muted;
+    note.frame = NSMakeRect(16, 78, 340, 14);
+    [gy addSubview:note];
+
+    GYButtonView *logout = [[GYButtonView alloc] initWithFrame:NSMakeRect(16, 100, 110, 34)];
+    logout.palette = palette;
+    logout.title = @"退出登录";
+    logout.onClick = ^{ [weakSelf performLogout]; };
+    [gy addSubview:logout];
+    return;
+  }
+
+  NSTextField *gyBody = [self labelWithText:@"登录后，复制内容会自动同步到 Keep" font:GYAuxFont()];
   gyBody.textColor = palette.muted;
-  gyBody.frame = NSMakeRect(16, 34, 340, 16);
+  gyBody.frame = NSMakeRect(16, 32, 340, 16);
   [gy addSubview:gyBody];
+
+  _loginEmailField = [self loginFieldWithPlaceholder:@"邮箱" secure:NO frame:NSMakeRect(16, 54, 352, 30)];
+  _loginEmailField.stringValue = _loginEmailDraft ?: @"";
+  _loginEmailField.enabled = !busy;
+  [gy addSubview:_loginEmailField];
+
+  _loginPasswordField =
+      (NSSecureTextField *)[self loginFieldWithPlaceholder:@"密码" secure:YES frame:NSMakeRect(16, 90, 352, 30)];
+  _loginPasswordField.enabled = !busy;
+  [gy addSubview:_loginPasswordField];
+
+  if (_loginError.length != 0) {
+    NSTextField *error = [self labelWithText:_loginError font:GYAuxFont()];
+    error.textColor = [NSColor colorWithSRGBRed:229 / 255.0 green:83 / 255.0 blue:75 / 255.0 alpha:1];
+    error.frame = NSMakeRect(16, 126, 352, 14);
+    [gy addSubview:error];
+  }
+
+  GYButtonView *login = [[GYButtonView alloc] initWithFrame:NSMakeRect(16, 146, 110, 34)];
+  login.palette = palette;
+  login.primary = YES;
+  login.title = busy ? @"登录中…" : @"登录";
+  if (!busy) login.onClick = ^{ [weakSelf performLogin]; };
+  [gy addSubview:login];
+}
+
+- (NSTextField *)loginFieldWithPlaceholder:(NSString *)placeholder
+                                    secure:(BOOL)secure
+                                     frame:(NSRect)frame {
+  GYPalette *palette = self.palette;
+  NSTextField *field =
+      secure ? [[NSSecureTextField alloc] initWithFrame:frame] : [[NSTextField alloc] initWithFrame:frame];
+  field.placeholderString = placeholder;
+  field.font = GYControlFont();
+  field.textColor = palette.text;
+  field.bordered = NO;
+  field.drawsBackground = YES;
+  field.backgroundColor = palette.ink;
+  field.wantsLayer = YES;
+  field.layer.cornerRadius = 7;
+  field.layer.borderWidth = 1;
+  field.layer.borderColor = palette.border.CGColor;
+  return field;
+}
+
+- (void)performLogin {
+  NSString *email = _loginEmailField.stringValue ?: @"";
+  NSString *password = _loginPasswordField.stringValue ?: @"";
+  _loginEmailDraft = email;
+  _loginError = nil;
+  __weak typeof(self) weakSelf = self;
+  [GYAccountAuth.sharedAuth loginWithEmail:email
+                                  password:password
+                                completion:^(BOOL success, NSString *message) {
+                                  typeof(self) self_ = weakSelf;
+                                  if (self_ == nil) return;
+                                  self_->_loginError = success ? nil : message;
+                                  if (success) self_->_loginEmailDraft = @"";
+                                  [GYKeepSync.sharedSync accountDidChange];
+                                  if (self_->_page == kGYAccountPageIndex) [self_ rebuildPage];
+                                }];
+  [self rebuildPage];  // 立刻画出禁用/登录中状态
+}
+
+- (void)performLogout {
+  // 只忘掉这台 Mac 上的会话；不删除 Keep 里的任何笔记。
+  [GYAccountAuth.sharedAuth logout];
+  [GYKeepSync.sharedSync accountDidChange];
+  _loginError = nil;
+  _loginEmailDraft = @"";
+  [self rebuildPage];
 }
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
