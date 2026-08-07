@@ -404,6 +404,12 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
 
 - (void)showAbout { [self show]; }
 
+- (void)showClipboardPage {
+  [self show];
+  _page = kGYClipboardPageIndex;
+  [self reloadChrome];
+}
+
 - (void)captureSnapshot {
   GYSettingsStore *store = GYSettingsStore.sharedStore;
   _snapshot = @{
@@ -789,6 +795,9 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
   segment.selectedIndex = (NSInteger)store.inputMode;
   segment.onSelect = ^(NSInteger index) {
     GYSettingsStore.sharedStore.inputMode = (GYInputMode)index;
+    // 只写 store 是不够的：活着的控制器各自持有 _mode 副本，不广播就会漂移，
+    // 之后菜单和面板都推不动它。菜单不再提供切换后，这里是改简繁的主入口。
+    [NSNotificationCenter.defaultCenter postNotificationName:GYInputModeDidChangeNotification object:nil];
     [weakSelf reloadChrome];
   };
   [_contentView addSubview:segment];
