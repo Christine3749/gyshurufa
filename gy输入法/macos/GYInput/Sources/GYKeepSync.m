@@ -209,6 +209,7 @@ static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base6
                  if (self_ == nil) return;
                  const NSInteger code = ((NSHTTPURLResponse *)response).statusCode;
                  const BOOL accepted = error == nil && (code == 200 || code == 201);
+                 if (!accepted) NSLog(@"GY keep: upload rejected (HTTP %ld)", (long)code);
                  dispatch_async(self_->_queue, ^{
                    if (accepted) {
                      entry.pendingUpload = NO;
@@ -244,6 +245,10 @@ static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base6
                    id base64Payload = payload[@"payload"];
                    remote = GYParseWirePayload([base64Payload isKindOfClass:NSString.class] ? base64Payload : nil);
                  }
+                 // 只记条数与状态码，绝不记正文——但没有这行，
+                 // wire 格式对不上时表现为"什么都没发生"，无从查起。
+                 NSLog(@"GY keep: pull HTTP %ld → %lu entries", (long)code,
+                       (unsigned long)remote.count);
                  dispatch_async(self_->_queue, ^{
                    if (remote == nil) {
                      // Pull failed: still persist the upload flags cleared above

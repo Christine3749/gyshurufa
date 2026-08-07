@@ -164,6 +164,10 @@ static NSString *_Nullable GYStringValue(id value) {
     dispatch_async(dispatch_get_main_queue(), ^{ completion(success, message); });
   };
   if (trimmed.length == 0 || password.length == 0) {
+    // 诊断用，不含任何凭据内容：如果这条出现而用户明明填了，
+    // 说明读取时机不对（文本框还没结束编辑），而不是用户没填。
+    NSLog(@"GY account: login aborted before any request — empty email=%d password=%d",
+          trimmed.length == 0, password.length == 0);
     [self setStatus:GYAccountStatusFailed email:nil];
     finish(NO, @"请输入邮箱和密码。");
     return;
@@ -182,6 +186,7 @@ static NSString *_Nullable GYStringValue(id value) {
                  typeof(self) self_ = weakSelf;
                  if (self_ == nil) return;
                  if (error != nil) {
+                   NSLog(@"GY account: login transport error (NSURLError %ld)", (long)error.code);
                    [self_ setStatus:GYAccountStatusFailed email:nil];
                    finish(NO, @"网络连接失败，请稍后再试。");
                    return;
@@ -191,6 +196,8 @@ static NSString *_Nullable GYStringValue(id value) {
                  NSString *accessToken = GYStringValue(payload[@"access_token"]);
                  NSString *refreshToken = GYStringValue(payload[@"refresh_token"]);
                  if (code < 200 || code > 299 || accessToken == nil || refreshToken == nil) {
+                   NSLog(@"GY account: login rejected (HTTP %ld, access_token=%d refresh_token=%d)",
+                         (long)code, accessToken != nil, refreshToken != nil);
                    [self_ setStatus:GYAccountStatusFailed email:nil];
                    finish(NO, code == 401 || code == 400 ? @"邮箱或密码不正确。" : @"登录失败，请稍后再试。");
                    return;
@@ -260,6 +267,10 @@ static NSString *_Nullable GYStringValue(id value) {
                                              ? nil
                                              : GYSessionPayload([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]);
                  NSString *accessToken = GYStringValue(payload[@"access_token"]);
+                 if (accessToken == nil) {
+                   NSLog(@"GY account: session refresh failed (HTTP %ld, NSURLError %ld)",
+                         (long)code, (long)error.code);
+                 }
                  dispatch_async(self_->_queue, ^{
                    if (accessToken != nil) {
                      NSDictionary *user = [payload[@"user"] isKindOfClass:NSDictionary.class] ? payload[@"user"] : nil;

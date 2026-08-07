@@ -1147,6 +1147,10 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
 }
 
 - (void)performLogin {
+  // 登录按钮是自绘的 GYClickView，不是 NSButton：点击它不会把第一响应者
+  // 从文本框拿走，字段编辑器仍持有用户刚输入的内容，此时 stringValue 返回的
+  // 是上一次提交的值（通常是空）。必须先强制结束编辑再读。
+  [_window makeFirstResponder:nil];
   NSString *email = _loginEmailField.stringValue ?: @"";
   NSString *password = _loginPasswordField.stringValue ?: @"";
   _loginEmailDraft = email;
