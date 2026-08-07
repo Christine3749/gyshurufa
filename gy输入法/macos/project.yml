@@ -37,7 +37,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: GYInput/Resources/GYInput.entitlements
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
-        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -lrime"
+        # Security: Keychain 存放 GY 账户的 refresh token（GYAccountAuth）。
+        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -framework Security -lrime"
     scheme:
       testTargets:
         - GYInputTests

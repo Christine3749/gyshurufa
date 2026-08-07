@@ -1,5 +1,7 @@
 #import "GYInputMode.h"
 
+NSNotificationName const GYInputModeDidChangeNotification = @"GYInputModeDidChangeNotification";
+
 NSString *GYInputModeTitle(GYInputMode mode) {
   switch (mode) {
     // This compact title is used by the input-source menu and status line.

@@ -4,6 +4,7 @@
 #import "GYSettingsStore.h"
 #import "GYPreferencesController.h"
 #import "GYClipboardHistory.h"
+#import "GYKeepSync.h"
 #import "GYCandidateWindow.h"
 #import "GYCandidateGovernance.h"
 #import "GYCandidateGridMath.h"
@@ -14,6 +15,7 @@
 // the pool holds up to 75 candidates (3 pages of 25), PageUp/Down flip 25.
 static const NSUInteger kCollapsedPageSize = kGYCollapsedPageSize;
 static const NSUInteger kCandidateFetchLimit = 75;
+
 
 // Menu actions must target a long-lived object: IMK input controllers are
 // per-client-session and may be deallocated while the system input menu is
@@ -29,7 +31,6 @@ static const NSUInteger kCandidateFetchLimit = 75;
 // next composition-free keystroke happens to poll the store. That reads to
 // the user as "clicking 简/繁/EN does nothing." Broadcasting this
 // notification lets every live instance apply the change immediately.
-static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInputModeMenuDidSelectNotification";
 
 @implementation GYMenuActionTarget
 + (instancetype)sharedTarget {
@@ -38,11 +39,33 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   dispatch_once(&once, ^{ target = [[GYMenuActionTarget alloc] init]; });
   return target;
 }
-- (void)selectMode:(NSMenuItem *)sender {
-  GYInputMode mode = (GYInputMode)sender.tag;
+// 每个模式一个独立 selector，不再从 sender.tag 取值。
+//
+// 系统输入菜单由 TextInputMenuAgent 跨进程呈现，回传时能可靠带回来的是
+// selector，tag 不在契约里。旧实现三个菜单项共用 selectMode: 再读 tag，
+// 只要 tag 没被保留就恒等于 0（简体），配合 applyInputMode: 的早退，
+// 表现就是"怎么点都不动"。
+- (void)applyMenuMode:(GYInputMode)mode {
+  NSLog(@"GY menu: mode %ld (singleton target)", (long)mode);
   GYSettingsStore.sharedStore.inputMode = mode;
   if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
-  [NSNotificationCenter.defaultCenter postNotificationName:GYInputModeMenuDidSelectNotification object:nil];
+  [NSNotificationCenter.defaultCenter postNotificationName:GYInputModeDidChangeNotification object:nil];
+}
+- (void)switchToSimplified:(id)sender {
+  (void)sender;
+  [self applyMenuMode:GYInputModeSimplified];
+}
+- (void)switchToTraditional:(id)sender {
+  (void)sender;
+  [self applyMenuMode:GYInputModeTraditional];
+}
+- (void)switchToEnglish:(id)sender {
+  (void)sender;
+  [self applyMenuMode:GYInputModeEnglish];
+}
+- (void)showClipboard:(id)sender {
+  (void)sender;
+  [GYPreferencesController.sharedController showClipboardPage];
 }
 - (void)showPreferences:(id)sender {
   (void)sender;
@@ -77,6 +100,9 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   [NSFileManager.defaultManager createDirectoryAtURL:user withIntermediateDirectories:YES attributes:nil error:nil];
   _engine = [[GYRimeBridge alloc] initWithSharedDataURL:shared userDataURL:user];
   [[GYClipboardHistory sharedHistory] startCapture];
+  // Keep 同步是后台服务：只在自己的串行队列上跑网络，
+  // 不参与组合、候选或 Rime 路径。两者都幂等，重复调用无副作用。
+  [[GYKeepSync sharedSync] start];
 
   __weak typeof(self) weakSelf = self;
   _candidateWindow = [[GYCandidateWindow alloc]
@@ -111,13 +137,13 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   [_engine setInputMode:_mode];
   [NSNotificationCenter.defaultCenter addObserver:self
                                           selector:@selector(handleMenuModeChange:)
-                                              name:GYInputModeMenuDidSelectNotification
+                                              name:GYInputModeDidChangeNotification
                                             object:nil];
   return self;
 }
 
 - (void)dealloc {
-  [NSNotificationCenter.defaultCenter removeObserver:self name:GYInputModeMenuDidSelectNotification object:nil];
+  [NSNotificationCenter.defaultCenter removeObserver:self name:GYInputModeDidChangeNotification object:nil];
 }
 
 // The system Input Menu (GYMenuActionTarget, a singleton) broadcasts this so
@@ -130,12 +156,18 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
 }
 
 - (void)applyInputMode:(GYInputMode)mode {
+  // 先落 store，再判断要不要动本控制器。
+  //
+  // 以前这里是先 `if (_mode == mode) return;`，store 的写入排在早退之后。
+  // 一旦控制器的 _mode 和 store 漂移（设置面板就是直接写 store 的），
+  // 请求"切到 store 已经在的那个模式"会被早退挡掉、store 也不会被纠正，
+  // 于是菜单和面板都再也推不动它——表现就是"简繁切不了"。
+  GYSettingsStore.sharedStore.inputMode = mode;
+  if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
   if (_mode == mode) return;
   // Switching away mid-composition cancels the preedit; nothing is committed.
   [self cancelComposition];
   _mode = mode;
-  GYSettingsStore.sharedStore.inputMode = mode;
-  if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
   [_engine setInputMode:mode];
   id client = self.client;
   if (client != nil) {
@@ -143,8 +175,38 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   }
 }
 
-- (void)selectMode:(NSMenuItem *)sender {
-  [self applyInputMode:(GYInputMode)sender.tag];
+// 菜单动作在控制器上**也**实现一份。
+//
+// IMK 的菜单派发不走 NSMenu 常规的 target/action：系统输入菜单由
+// TextInputMenuAgent 跨进程呈现，选中后 IMK 把 action 发给**当前活着的
+// IMKInputController**。这一条是实测确认的，不是推断——2026-08-08 在
+// macOS 26 上点「切换至英文输入」，日志只出现
+// `GY menu: EN (controller)`，单例那条从未触发。
+//
+// 这也解释了此前的现象：`设置…` 一直能用（showPreferences: 控制器上有），
+// 而三个切换项一直没反应（旧版 selectMode: 控制器上有，但 tag 跨进程不保留、
+// 恒为 0；改名后 selector 又只加在单例上，控制器上没有）。
+//
+// GYMenuActionTarget 上的同名实现保留作为兜底：菜单也可能在没有活动客户端
+// 会话、因而没有控制器可派发的情况下被打开。删掉它需要先验证那个场景。
+- (void)switchToSimplified:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: 简 (controller)");
+  [self applyInputMode:GYInputModeSimplified];
+}
+- (void)switchToTraditional:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: 繁 (controller)");
+  [self applyInputMode:GYInputModeTraditional];
+}
+- (void)switchToEnglish:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: EN (controller)");
+  [self applyInputMode:GYInputModeEnglish];
+}
+- (void)showClipboard:(id)sender {
+  (void)sender;
+  [GYPreferencesController.sharedController showClipboardPage];
 }
 - (void)showPreferences:(id)sender {
   (void)sender;
@@ -320,27 +382,43 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
   [super deactivateServer:sender];
 }
 
+// 借鉴微信输入法的菜单写法：用动作命名代替勾选列表。
+//
+// 旧版列出 简 ✓ / 繁 / EN，底部再补一行「GY Input · 繁」，同一个信息出现两遍。
+// 现在只列"你还没在的那些模式"，写成「切换至繁体输入」——当前状态由剩下哪些
+// 选项隐含表达，既不重复也不会歧义。
 - (NSMenu *)menu {
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"输入法.网"];
-  GYInputMode current = GYSettingsStore.sharedStore.inputMode;
-  NSArray<NSNumber *> *modes = @[@(GYInputModeSimplified), @(GYInputModeTraditional), @(GYInputModeEnglish)];
-  for (NSNumber *value in modes) {
-    GYInputMode mode = (GYInputMode)value.integerValue;
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:GYInputModeTitle(mode) action:@selector(selectMode:) keyEquivalent:@""];
-    item.target = GYMenuActionTarget.sharedTarget;
-    item.tag = mode;
-    item.state = current == mode ? NSControlStateValueOn : NSControlStateValueOff;
-    [menu addItem:item];
-  }
-  [menu addItem:NSMenuItem.separatorItem];
+  const GYInputMode current = GYSettingsStore.sharedStore.inputMode;
+  GYMenuActionTarget *target = GYMenuActionTarget.sharedTarget;
+
   NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
-  preferences.target = GYMenuActionTarget.sharedTarget;
+  preferences.target = target;
   preferences.keyEquivalentModifierMask = NSEventModifierFlagCommand;
   [menu addItem:preferences];
+
+  NSMenuItem *clipboard = [[NSMenuItem alloc] initWithTitle:@"剪贴板" action:@selector(showClipboard:) keyEquivalent:@""];
+  clipboard.target = target;
+  [menu addItem:clipboard];
+
   [menu addItem:NSMenuItem.separatorItem];
-  NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"GY Input · %@", GYInputModeTitle(current)] action:nil keyEquivalent:@""];
-  status.enabled = NO;
-  [menu addItem:status];
+
+  // 每项一个专属 selector，不依赖 tag 跨进程回传。
+  if (current != GYInputModeSimplified) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"切换至简体输入" action:@selector(switchToSimplified:) keyEquivalent:@""];
+    item.target = target;
+    [menu addItem:item];
+  }
+  if (current != GYInputModeTraditional) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"切换至繁体输入" action:@selector(switchToTraditional:) keyEquivalent:@""];
+    item.target = target;
+    [menu addItem:item];
+  }
+  if (current != GYInputModeEnglish) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"切换至英文输入" action:@selector(switchToEnglish:) keyEquivalent:@""];
+    item.target = target;
+    [menu addItem:item];
+  }
   return menu;
 }
 
@@ -448,8 +526,9 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
     return YES;
   }
 
-  if (keyCode >= kVK_ANSI_1 && keyCode <= kVK_ANSI_5 && _candidates.count != 0) {
-    const NSUInteger digit = (NSUInteger)(keyCode - kVK_ANSI_1);
+  const NSInteger digitOrNegative = GYDigitForKeyCode(keyCode);
+  if (digitOrNegative >= 0 && _candidates.count != 0) {
+    const NSUInteger digit = (NSUInteger)digitOrNegative;
     if (_expanded) {
       // Row of the highlight, column N; ported so a short last row can never
       // misselect a cell that doesn't exist, matching Windows exactly.

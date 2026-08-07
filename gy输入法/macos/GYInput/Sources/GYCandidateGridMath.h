@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <Carbon/Carbon.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -165,6 +166,23 @@ NS_INLINE GYPageMoveResult GYMovePageTransition(NSUInteger pageStart, NSInteger 
   if (targetPage > lastPage) targetPage = lastPage;
   const NSUInteger newPageStart = (NSUInteger)targetPage * pageSize;
   return (GYPageMoveResult){.pageStart = newPageStart, .selected = newPageStart};
+}
+
+// macOS's ANSI virtual key codes for the number row are NOT sequential:
+// 1=0x12 2=0x13 3=0x14 4=0x15 6=0x16 5=0x17 — 5 and 6 are swapped relative to
+// reading order. `keyCode - kVK_ANSI_1` silently breaks exactly on key 5 (it
+// computes a digit one past the last valid candidate slot, so 5 can never
+// select) and misattributes key 6 to slot 5. Map explicitly instead of doing
+// arithmetic on the raw keycodes. Returns -1 for anything outside 1-5.
+NS_INLINE NSInteger GYDigitForKeyCode(unsigned short keyCode) {
+  switch (keyCode) {
+    case kVK_ANSI_1: return 0;
+    case kVK_ANSI_2: return 1;
+    case kVK_ANSI_3: return 2;
+    case kVK_ANSI_4: return 3;
+    case kVK_ANSI_5: return 4;
+    default: return -1;
+  }
 }
 
 // The right edge of a fixed grid must come from the grid geometry itself,

@@ -5,9 +5,31 @@
 #import "GYRimeRuntime.h"
 #import "GYUpdateService.h"
 
+// TISRegisterInputSource only makes the system AWARE of the source (it shows
+// up in System Settings > Keyboard > Input Sources > Edit…), it does NOT add
+// it to the user's AppleEnabledInputSources — the list the live menu-bar
+// switcher actually reads. Skipping the enable step is exactly why GY could
+// be present in "Edit Input Sources…" yet completely absent from the input
+// menu after a reinstall: registered but never enabled.
 static int RegisterInputSource(void) {
   NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
-  return bundleURL != nil && TISRegisterInputSource((__bridge CFURLRef)bundleURL) == noErr ? 0 : 1;
+  if (bundleURL == nil || TISRegisterInputSource((__bridge CFURLRef)bundleURL) != noErr) return 1;
+
+  NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+  if (bundleID.length == 0) return 1;
+
+  NSDictionary *filter = @{(__bridge NSString *)kTISPropertyBundleID: bundleID};
+  CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+  if (sources == NULL) return 1;
+
+  const CFIndex count = CFArrayGetCount(sources);
+  BOOL enabledAny = NO;
+  for (CFIndex i = 0; i < count; ++i) {
+    TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
+    if (TISEnableInputSource(source) == noErr) enabledAny = YES;
+  }
+  CFRelease(sources);
+  return enabledAny ? 0 : 1;
 }
 
 int main(int argc, const char *argv[]) {
