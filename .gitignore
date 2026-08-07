@@ -9,6 +9,8 @@
 !/release/release.schema.json
 !/release/RELEASE_WORKFLOW.md
 !/release/ACCOUNT_CONTRACT.md
+!/release/notes/
+!/release/notes/*.txt
 **/native/runtime/
 # The macOS app must ship a precompiled, offline Rime workspace. Keep the
 # runtime tree ignored everywhere else, but allow this curated workspace to be
