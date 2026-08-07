@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Version,
   [ValidateSet('Release')][string]$Configuration = 'Release',
   [string]$OutputRoot = (Join-Path $PSScriptRoot 'release')
@@ -25,12 +25,21 @@ Copy-Item -LiteralPath (Join-Path $binaryRoot 'GyImeHost.exe') -Destination (Joi
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'GyImeHealth.exe') -Destination (Join-Path $payloadRoot "GyImeHealth-$Version.exe")
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\assets\gy.ico') -Destination (Join-Path $payloadRoot 'gy.ico')
+
+$workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$notesSource = Join-Path $workspaceRoot "release\notes\$Version.txt"
+if (-not (Test-Path -LiteralPath $notesSource)) { throw "Release notes are missing: $notesSource" }
+Copy-Item -LiteralPath $notesSource -Destination (Join-Path $payloadRoot 'release-notes.txt')
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime.dll') -Destination (Join-Path $payloadRoot 'rime.dll')
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime-data') -Destination (Join-Path $payloadRoot 'rime-data') -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Install-GYInput.ps1') -Destination (Join-Path $packageRoot 'Install-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1') -Destination (Join-Path $packageRoot 'Validate-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientReload.ps1') -Destination (Join-Path $packageRoot 'Finalize-GYClientReload.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Prune-GYOldVersions.ps1') -Destination (Join-Path $packageRoot 'Prune-GYOldVersions.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Register-GYInputActivationTasks.ps1') -Destination (Join-Path $packageRoot 'Register-GYInputActivationTasks.ps1')
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'LICENSES') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer/GYInputTransaction.ps1') -Destination (Join-Path $packageRoot 'GYInputTransaction.ps1')
 Copy-Item -LiteralPath (Get-GYReleaseManifestPath) -Destination (Join-Path $packageRoot 'release.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $packageRoot 'LICENSES\librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $packageRoot 'LICENSES\rime-data-license.txt')
@@ -62,7 +71,7 @@ ZIP 是离线/高级用户备用包
 - 安装器会先运行独立的离线引擎自检程序；自检失败时保留旧 Host，不会切换到异常版本。
 - 以后词库、拼音算法、排序和候选窗外观都由 Host 更新：下一次输入会使用新 Host，无需关闭应用或重启电脑。
 - 仅从 0.5 或更早版本首次升级到 0.6.x 时需要注销一次；之后候选窗与交互更新只升级 Host，不会向其他应用注入按键。
-- 仅极少数 TSF 协议或安全修复会更新稳定连接器；这类升级才需要重新打开已开启的应用。
+- TSF DLL/核心连接器升级会先暂存新版本，重启 Windows 时自动激活并清理旧版本；Host、词库和候选窗更新不需要重启。
 
 卸载：在 PowerShell 中运行 .\Install-GYInput.ps1 -Uninstall，或使用 Windows“已安装的应用”中的 GY 输入法。
 本发行包完全离线运行，不上传输入内容。

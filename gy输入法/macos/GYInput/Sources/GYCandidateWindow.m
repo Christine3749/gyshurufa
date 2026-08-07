@@ -282,6 +282,9 @@ static NSColor *GYHex(NSUInteger rgb) {
   NSPanel *_panel;
   GYCandidateView *_view;
   NSTimer *_modeTimer;
+  NSPoint _lastStableAnchor;
+  CGFloat _lastStableLineHeight;
+  BOOL _hasStableAnchor;
   void (^_choose)(NSUInteger);
   void (^_disclosure)(BOOL);
   void (^_page)(NSInteger);
@@ -328,16 +331,17 @@ static NSColor *GYHex(NSUInteger rgb) {
 - (void)handleSettings { if (_settings) _settings(); }
 
 - (NSScreen *)screenForCaret:(NSRect)caret {
+  const NSPoint caretPoint = NSMakePoint(NSMidX(caret), NSMidY(caret));
   NSScreen *best = nil;
-  CGFloat bestArea = 0;
+  CGFloat bestArea = -1;
   for (NSScreen *screen in NSScreen.screens) {
+    if (NSPointInRect(caretPoint, screen.frame)) return screen;
     const NSRect intersection = NSIntersectionRect(screen.frame, caret);
     const CGFloat area = NSWidth(intersection) * NSHeight(intersection);
     if (area > bestArea) { bestArea = area; best = screen; }
   }
   return best ?: NSScreen.mainScreen;
 }
-
 - (void)showAtCaret:(NSRect)caret
          candidates:(NSArray<NSString *> *)candidates
            selected:(NSUInteger)selected
@@ -382,6 +386,23 @@ static NSColor *GYHex(NSUInteger rgb) {
 }
 
 - (void)showInternalAtCaret:(NSRect)caret {
+  const CGFloat lineHeight = MAX(1, NSHeight(caret));
+  if (!_hasStableAnchor) {
+    _lastStableAnchor = caret.origin;
+    _lastStableLineHeight = lineHeight;
+    _hasStableAnchor = YES;
+  } else {
+    const CGFloat horizontalDelta = fabs(NSMinX(caret) - _lastStableAnchor.x);
+    const CGFloat verticalDelta = fabs(NSMinY(caret) - _lastStableAnchor.y);
+    const CGFloat verticalLimit = MAX(18, _lastStableLineHeight * 1.5);
+    if (horizontalDelta > 96 || verticalDelta > verticalLimit) {
+      caret.origin = _lastStableAnchor;
+    } else {
+      _lastStableAnchor = caret.origin;
+      _lastStableLineHeight = lineHeight;
+    }
+  }
+
   NSScreen *screen = [self screenForCaret:caret];
   const NSRect visible = screen.visibleFrame;
   // Product rule: fixed 5×5 expanded grid; screen size caps width, never columns.
@@ -406,6 +427,7 @@ static NSColor *GYHex(NSUInteger rgb) {
 }
 
 - (void)hide {
+  _hasStableAnchor = NO;
   [_modeTimer invalidate];
   _modeTimer = nil;
   [_panel orderOut:nil];

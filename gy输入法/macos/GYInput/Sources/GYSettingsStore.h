@@ -3,6 +3,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSNotificationName const GYSettingsStoreWarmStartDidChangeNotification;
+
 /// Persistent per-user settings shared by every IMK input session. Values live
 /// in Application Support so a future Preferences app edits the same file.
 @interface GYSettingsStore : NSObject
@@ -21,15 +23,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSString *accountName;
 @property(nonatomic) BOOL automaticUpdateChecks;
 @property(nonatomic) NSTimeInterval lastUpdateCheckTimestamp;
+/// 热启动：常驻引擎秒响应（低配设备可关闭，契约 CROSS-PLATFORM-CONTRACT §3）。
+@property(nonatomic) BOOL warmStartEnabled;
+/// 跨设备剪贴板同步开关（账户接入前仅本机历史生效）。
+@property(nonatomic) BOOL clipboardSyncEnabled;
+/// 复制即同步粘贴，默认开（CLIPBOARD-PAGE-DESIGN 产品决策）。
+@property(nonatomic) BOOL clipboardInstantPaste;
 
 /// Per-code local phrase lists.  Multiple phrases for one code are kept in
 /// their saved order, matching the Windows settings format (`code=a|b`).
 - (NSDictionary<NSString *, NSArray<NSString *> *> *)customPhrases;
 - (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)candidates forCode:(NSString *)code;
-- (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)candidates forCode:(NSString *)code;
-- (NSArray<NSString *> *)customPhrasesForCode:(NSString *)code;
-- (NSArray<NSString *> *)candidatesByAddingCustomPhrases:(NSArray<NSString *> *)candidates forCode:(NSString *)code;
-- (NSArray<NSString *> *)customPhrasesForCode:(NSString *)code;
 - (NSArray<NSString *> *)customPhrasesForCode:(NSString *)code;
 - (void)setCustomPhrase:(NSString *)phrase forCode:(NSString *)code;
 - (void)setCustomPhrases:(NSArray<NSString *> *)phrases forCode:(NSString *)code;

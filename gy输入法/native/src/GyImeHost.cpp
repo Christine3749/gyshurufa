@@ -1,5 +1,6 @@
 #include "CandidateWindow.h"
 #include "ClipboardHistory.h"
+#include "GyKeepSync.h"
 #include "HostProtocol.h"
 #include "PerformanceSettings.h"
 #include "PinyinEngine.h"
@@ -45,7 +46,9 @@ void DebugStep(const wchar_t* step) {
 // WM_CLIPBOARDUPDATE，与候选窗/设置窗共用这条 UI 消息循环。纯本地、零网络。
 LRESULT CALLBACK ClipboardListenerProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
   if (message == WM_CLIPBOARDUPDATE) {
-    gy::clipboard_history::AppendFromClipboard();
+    if (gy::clipboard_history::AppendFromClipboard()) {
+      gy::keep_sync::NotifyLocalClipboardChanged();
+    }
     return 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -375,6 +378,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     DestroyWindow(clipboard_listener);
     clipboard_listener = nullptr;
   }
+  gy::keep_sync::Start();
   DebugStep(L"step: before engine");
   PinyinEngine engine(ModuleDirectory());
   DebugStep(L"step: engine ready");
@@ -401,6 +405,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     DispatchMessageW(&message);
   }
 
+  gy::keep_sync::Stop();
   if (clipboard_listener) {
     RemoveClipboardFormatListener(clipboard_listener);
     DestroyWindow(clipboard_listener);

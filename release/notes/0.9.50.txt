@@ -1,0 +1,6 @@
+GY 输入法 0.9.50
+
+- 修复 Finalizer 对 Global\\GYInputFinalizePending 的重复递归获取，确保事务锁严格成对获取和释放。
+- 安装器、Finalizer、回滚和卸载继续共享同一事务锁，保护版本激活、任务和状态文件变更。
+- 保持版本独立目录、ONSTART/ONLOGON 自愈、旧版本保留与安装后完整验证。
+- 更新候选框、方向键、Logo、设置页版本信息和离线引擎验收测试。

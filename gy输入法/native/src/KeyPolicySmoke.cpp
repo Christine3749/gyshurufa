@@ -61,11 +61,16 @@ int wmain() {
   // Chinese mode owns letters, Chinese punctuation and composition navigation.
   if (!gy::input_capture::ShouldCapture(false, false, false, false, 0, 'A') ||
       !gy::input_capture::ShouldCapture(false, false, false, false, 0, VK_OEM_COMMA) ||
+      !gy::input_capture::ShouldCapture(false, false, false, false, 5, VK_DOWN) ||
       !gy::input_capture::ShouldCapture(false, false, false, true, 5, VK_DOWN) ||
       !gy::input_capture::ShouldCapture(false, false, false, true, 5, VK_RETURN) ||
       !gy::input_capture::ShouldCapture(false, false, false, true, 5, '5') ||
       gy::input_capture::ShouldCapture(false, false, false, true, 4, '5') ||
       gy::input_capture::ShouldCapture(false, false, true, true, 5, 'A')) return 12;
+
+  // Regression: candidates may remain visible while TSF composition is empty.
+  if (!gy::input_capture::ShouldCapture(false, false, false, false, 0, 5, VK_DOWN) ||
+      !gy::input_capture::ShouldCapture(false, false, false, false, 0, 5, VK_UP)) return 14;
 
   return 0;
 }

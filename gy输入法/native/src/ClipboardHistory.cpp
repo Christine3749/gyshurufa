@@ -1,15 +1,88 @@
 #include "ClipboardHistory.h"
 
 #include <windows.h>
+#include <objbase.h>
+#include <objidl.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <ctime>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace gy::clipboard_history {
 namespace {
 
-// 每行一条：<unix_ts>\t<escaped text>\n，文件按时间正序追加，最旧在最前。
-// 转义只处理会破坏行结构的字符：\t \r \n \\。UTF-8 落盘，无 BOM。
+// v3: <id>\t<unix_ts>\t<pending>\t<T|I>\t<escaped text>\t<escaped sha256>\n.
+// PNG bytes are never embedded in the history manifest. v1 and v2 text rows
+// are retained and migrated when the next sync atomically rewrites the file.
+
+std::mutex g_suppression_mutex;
+std::wstring g_remote_clipboard_text;
+bool g_remote_clipboard_image = false;
+ULONGLONG g_remote_clipboard_until = 0;
+
+std::wstring RootDirectory() {
+  wchar_t root[MAX_PATH]{};
+  if (!GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH)) return {};
+  const std::wstring directory = std::wstring(root) + L"\\GYInput";
+  CreateDirectoryW(directory.c_str(), nullptr);
+  return directory;
+}
+
+std::wstring ImagesDirectory() {
+  const std::wstring root = RootDirectory();
+  if (root.empty()) return {};
+  const std::wstring directory = root + L"\\clipboard-assets";
+  CreateDirectoryW(directory.c_str(), nullptr);
+  return directory;
+}
+
+std::wstring ImagePath(const std::wstring& id) {
+  const std::wstring directory = ImagesDirectory();
+  return directory.empty() || id.empty() ? std::wstring{} : directory + L"\\" + id + L".png";
+}
+
+std::wstring CreateEntryId() {
+  GUID guid{};
+  if (CoCreateGuid(&guid) != S_OK) return {};
+  wchar_t buffer[40]{};
+  if (StringFromGUID2(guid, buffer, 40) != 39) return {};
+  return std::wstring(buffer + 1, 36);
+}
+
+bool IsSuppressedRemoteText(const std::wstring& text) {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  if (GetTickCount64() > g_remote_clipboard_until) {
+    g_remote_clipboard_text.clear();
+    g_remote_clipboard_image = false;
+    return false;
+  }
+  return text == g_remote_clipboard_text;
+}
+
+bool TakeSuppressedRemoteImage() {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  if (GetTickCount64() > g_remote_clipboard_until || !g_remote_clipboard_image) return false;
+  g_remote_clipboard_image = false;
+  return true;
+}
+
+void SuppressRemoteText(const std::wstring& text) {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  g_remote_clipboard_text = text;
+  g_remote_clipboard_image = false;
+  g_remote_clipboard_until = GetTickCount64() + 2000;
+}
+
+void SuppressRemoteImage() {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  g_remote_clipboard_text.clear();
+  g_remote_clipboard_image = true;
+  g_remote_clipboard_until = GetTickCount64() + 2000;
+}
 
 std::wstring Escape(const std::wstring& text) {
   std::wstring out;
@@ -44,171 +117,331 @@ std::wstring Unescape(const std::wstring& text) {
 
 std::string ToUtf8(const std::wstring& text) {
   if (text.empty()) return {};
-  const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
-                                         nullptr, 0, nullptr, nullptr);
+  const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
   if (length <= 0) return {};
   std::string out(static_cast<size_t>(length), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
-                      out.data(), length, nullptr, nullptr);
+  if (!WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), out.data(), length, nullptr, nullptr)) return {};
   return out;
 }
 
 std::wstring FromUtf8(const std::string& text) {
   if (text.empty()) return {};
-  const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                                         nullptr, 0);
+  const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
   if (length <= 0) return {};
   std::wstring out(static_cast<size_t>(length), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                      out.data(), length);
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), length)) return {};
   return out;
 }
 
-// 密码管理器用来声明“不要进剪贴板历史”的两个公开格式。
-// ExcludeClipboardContentFromMonitorProcessing：出现即排除（1Password 等）。
-// CanIncludeInClipboardHistory：值为 0 表示排除（Windows 剪贴板历史约定）。
-UINT ExcludeFormat() {
-  static const UINT format = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
-  return format;
+UINT ExcludeFormat() { static const UINT format = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing"); return format; }
+UINT HistoryOptInFormat() { static const UINT format = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory"); return format; }
+
+ULONG_PTR GdiPlusToken() {
+  static const ULONG_PTR token = []() {
+    Gdiplus::GdiplusStartupInput startup{};
+    ULONG_PTR value = 0;
+    return Gdiplus::GdiplusStartup(&value, &startup, nullptr) == Gdiplus::Ok ? value : static_cast<ULONG_PTR>(0);
+  }();
+  return token;
 }
-UINT HistoryOptInFormat() {
-  static const UINT format = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
-  return format;
+
+bool PngEncoder(CLSID* result) {
+  if (!result || !GdiPlusToken()) return false;
+  UINT count = 0, bytes = 0;
+  if (Gdiplus::GetImageEncodersSize(&count, &bytes) != Gdiplus::Ok || bytes == 0) return false;
+  std::vector<BYTE> buffer(bytes);
+  auto* codecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
+  if (Gdiplus::GetImageEncoders(count, bytes, codecs) != Gdiplus::Ok) return false;
+  for (UINT i = 0; i < count; ++i) {
+    if (codecs[i].MimeType && wcscmp(codecs[i].MimeType, L"image/png") == 0) { *result = codecs[i].Clsid; return true; }
+  }
+  return false;
+}
+
+bool EncodeBitmapAsPng(HBITMAP bitmap, std::string* png) {
+  if (!bitmap || !png || !GdiPlusToken()) return false;
+  png->clear();
+  Gdiplus::Bitmap image(bitmap, nullptr);
+  if (image.GetLastStatus() != Gdiplus::Ok) return false;
+  CLSID encoder{};
+  if (!PngEncoder(&encoder)) return false;
+  IStream* stream = nullptr;
+  if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) != S_OK) return false;
+  const Gdiplus::Status status = image.Save(stream, &encoder, nullptr);
+  HGLOBAL memory = nullptr;
+  const bool got_memory = status == Gdiplus::Ok && GetHGlobalFromStream(stream, &memory) == S_OK;
+  SIZE_T size = got_memory && memory ? GlobalSize(memory) : 0;
+  const void* data = size > 0 ? GlobalLock(memory) : nullptr;
+  if (data && size <= kMaxImageBytes) png->assign(static_cast<const char*>(data), size);
+  if (data) GlobalUnlock(memory);
+  stream->Release();
+  return !png->empty();
+}
+
+HBITMAP BitmapFromDib(HANDLE handle) {
+  if (!handle) return nullptr;
+  const BYTE* base = static_cast<const BYTE*>(GlobalLock(handle));
+  if (!base) return nullptr;
+  const auto* header = reinterpret_cast<const BITMAPINFOHEADER*>(base);
+  HBITMAP bitmap = nullptr;
+  if (header->biSize >= sizeof(BITMAPINFOHEADER) && header->biSize <= 4096 && header->biWidth > 0 && header->biHeight != 0) {
+    size_t palette = 0;
+    if (header->biBitCount <= 8) palette = static_cast<size_t>(header->biClrUsed ? header->biClrUsed : (1u << header->biBitCount)) * sizeof(RGBQUAD);
+    else if (header->biCompression == BI_BITFIELDS && header->biSize == sizeof(BITMAPINFOHEADER)) palette = 3 * sizeof(DWORD);
+    const BYTE* bits = base + header->biSize + palette;
+    HDC dc = GetDC(nullptr);
+    bitmap = CreateDIBitmap(dc, header, CBM_INIT, bits, reinterpret_cast<const BITMAPINFO*>(base), DIB_RGB_COLORS);
+    ReleaseDC(nullptr, dc);
+  }
+  GlobalUnlock(handle);
+  return bitmap;
+}
+
+bool CaptureClipboardPng(std::string* png) {
+  if (!png) return false;
+  HBITMAP bitmap = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
+  if (bitmap) return EncodeBitmapAsPng(bitmap, png);
+  HANDLE dib = GetClipboardData(CF_DIBV5);
+  if (!dib) dib = GetClipboardData(CF_DIB);
+  HBITMAP converted = BitmapFromDib(dib);
+  if (!converted) return false;
+  const bool ok = EncodeBitmapAsPng(converted, png);
+  DeleteObject(converted);
+  return ok;
+}
+
+bool WriteBytesAtomically(const std::wstring& path, const std::string& bytes) {
+  if (path.empty() || bytes.empty() || bytes.size() > kMaxImageBytes) return false;
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size();
+  CloseHandle(file);
+  if (!ok) { DeleteFileW(temporary.c_str()); return false; }
+  return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
 bool WriteAll(const std::vector<Entry>& entries) {
   const std::wstring path = HistoryPath();
   if (path.empty()) return false;
   std::wstring wide;
-  for (auto it = entries.rbegin(); it != entries.rend(); ++it) {  // 最旧的写最前
-    wide += std::to_wstring(it->unix_time);
-    wide += L'\t';
-    wide += Escape(it->text);
-    wide += L'\n';
+  for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+    if (it->id.empty()) return false;
+    wide += it->id + L"\t" + std::to_wstring(it->unix_time) + L"\t" + (it->pending_upload ? L"1" : L"0") + L"\t";
+    wide += it->kind == EntryKind::PngImage ? L"I\t" : L"T\t";
+    wide += Escape(it->text) + L"\t" + Escape(it->image_sha256) + L"\n";
   }
   const std::string utf8 = ToUtf8(wide);
-  const std::wstring temp = path + L".tmp";
-  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
   DWORD written = 0;
-  const bool ok = WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr) &&
-                  written == utf8.size();
+  const bool ok = WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr) && written == utf8.size();
   CloseHandle(file);
-  if (!ok) {
-    DeleteFileW(temp.c_str());
-    return false;
-  }
-  return MoveFileExW(temp.c_str(), path.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+  if (!ok) { DeleteFileW(temporary.c_str()); return false; }
+  return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
 }  // namespace
 
 std::wstring HistoryPath() {
-  wchar_t root[MAX_PATH]{};
-  if (!GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH)) return {};
-  const std::wstring directory = std::wstring(root) + L"\\GYInput";
-  CreateDirectoryW(directory.c_str(), nullptr);
-  return directory + L"\\clipboard-history.tsv";
+  const std::wstring directory = RootDirectory();
+  return directory.empty() ? std::wstring{} : directory + L"\\clipboard-history.tsv";
 }
 
 std::vector<Entry> ReadAll() {
   std::vector<Entry> entries;
   const std::wstring path = HistoryPath();
   if (path.empty()) return entries;
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return entries;
   LARGE_INTEGER size{};
   std::string bytes;
-  if (GetFileSizeEx(file, &size) && size.QuadPart > 0 &&
-      size.QuadPart <= static_cast<LONGLONG>(kMaxEntries) * (kMaxItemBytes + 64)) {
+  if (GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= static_cast<LONGLONG>(kMaxEntries) * (kMaxItemBytes + 256)) {
     bytes.resize(static_cast<size_t>(size.QuadPart));
     DWORD read = 0;
-    if (!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) ||
-        read != bytes.size()) {
-      bytes.clear();
-    }
+    if (!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size()) bytes.clear();
   }
   CloseHandle(file);
-
   const std::wstring wide = FromUtf8(bytes);
   size_t begin = 0;
   while (begin < wide.size()) {
     const size_t end = wide.find(L'\n', begin);
-    const std::wstring line = wide.substr(begin, end == std::wstring::npos ? end : end - begin);
+    const std::wstring line = wide.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
     begin = end == std::wstring::npos ? wide.size() : end + 1;
-    const size_t tab = line.find(L'\t');
-    if (tab == std::wstring::npos) continue;
+    const size_t first = line.find(L'\t');
+    if (first == std::wstring::npos) continue;
     Entry entry{};
-    try {
-      entry.unix_time = std::stoull(line.substr(0, tab));
-    } catch (...) {
-      continue;
+    const size_t second = line.find(L'\t', first + 1);
+    const size_t third = second == std::wstring::npos ? std::wstring::npos : line.find(L'\t', second + 1);
+    if (third == std::wstring::npos) {
+      try { entry.unix_time = std::stoull(line.substr(0, first)); } catch (...) { continue; }
+      entry.id = CreateEntryId();
+      entry.text = Unescape(line.substr(first + 1));
+      entry.pending_upload = !entry.id.empty();
+    } else {
+      entry.id = line.substr(0, first);
+      try { entry.unix_time = std::stoull(line.substr(first + 1, second - first - 1)); } catch (...) { continue; }
+      const std::wstring pending = line.substr(second + 1, third - second - 1);
+      if (entry.id.empty() || (pending != L"0" && pending != L"1")) continue;
+      entry.pending_upload = pending == L"1";
+      const size_t fourth = line.find(L'\t', third + 1);
+      const size_t fifth = fourth == std::wstring::npos ? std::wstring::npos : line.find(L'\t', fourth + 1);
+      if (fourth == std::wstring::npos || fifth == std::wstring::npos) {
+        entry.text = Unescape(line.substr(third + 1));  // v2 text
+      } else {
+        const std::wstring kind = line.substr(third + 1, fourth - third - 1);
+        if (kind == L"T") entry.kind = EntryKind::Text;
+        else if (kind == L"I") entry.kind = EntryKind::PngImage;
+        else continue;
+        entry.text = Unescape(line.substr(fourth + 1, fifth - fourth - 1));
+        entry.image_sha256 = Unescape(line.substr(fifth + 1));
+      }
     }
-    entry.text = Unescape(line.substr(tab + 1));
+    if ((entry.kind == EntryKind::Text && entry.text.empty()) || (entry.kind == EntryKind::PngImage && entry.id.empty())) continue;
     entries.push_back(std::move(entry));
   }
-  // 文件正序存储，接口约定最新在前。
   std::reverse(entries.begin(), entries.end());
   return entries;
 }
 
 bool AppendFromClipboard() {
-  if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return false;
   const UINT exclude = ExcludeFormat();
   if (exclude != 0 && IsClipboardFormatAvailable(exclude)) return false;
-
-  // 复制发生的瞬间剪贴板常被源进程短暂占用，稍等重试几次。
   bool opened = false;
-  for (int attempt = 0; attempt < 5 && !opened; ++attempt) {
-    opened = OpenClipboard(nullptr) != 0;
-    if (!opened) Sleep(10);
-  }
+  for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
   if (!opened) return false;
 
   bool allowed = true;
-  std::wstring text;
   const UINT opt_in = HistoryOptInFormat();
   if (opt_in != 0) {
     if (HANDLE data = GetClipboardData(opt_in)) {
-      if (const DWORD* value = static_cast<const DWORD*>(GlobalLock(data))) {
-        allowed = *value != 0;
-        GlobalUnlock(data);
-      }
+      if (const DWORD* value = static_cast<const DWORD*>(GlobalLock(data))) { allowed = *value != 0; GlobalUnlock(data); }
     }
   }
-  if (allowed) {
+  std::wstring text;
+  std::string png;
+  EntryKind kind = EntryKind::Text;
+  if (allowed && IsClipboardFormatAvailable(CF_UNICODETEXT)) {
     if (HANDLE data = GetClipboardData(CF_UNICODETEXT)) {
-      if (const wchar_t* locked = static_cast<const wchar_t*>(GlobalLock(data))) {
-        text.assign(locked, wcsnlen(locked, kMaxItemBytes / sizeof(wchar_t) + 2));
-        GlobalUnlock(data);
-      }
+      if (const wchar_t* locked = static_cast<const wchar_t*>(GlobalLock(data))) { text.assign(locked, wcsnlen(locked, kMaxItemBytes / sizeof(wchar_t) + 2)); GlobalUnlock(data); }
     }
+  } else if (allowed) {
+    kind = EntryKind::PngImage;
+    CaptureClipboardPng(&png);
   }
   CloseClipboard();
-  if (!allowed || text.empty()) return false;
+  if (!allowed) return false;
 
-  const std::string utf8 = ToUtf8(text);
-  if (utf8.empty() || utf8.size() > kMaxItemBytes) return false;  // 超限不入历史（设计 §0）
+  if (kind == EntryKind::Text) {
+    if (text.empty() || IsSuppressedRemoteText(text)) return false;
+    const std::string utf8 = ToUtf8(text);
+    if (utf8.empty() || utf8.size() > kMaxItemBytes) return false;
+    std::vector<Entry> entries = ReadAll();
+    if (!entries.empty() && entries.front().kind == EntryKind::Text && entries.front().text == text) return false;
+    const std::wstring id = CreateEntryId();
+    if (id.empty()) return false;
+    entries.insert(entries.begin(), Entry{id, static_cast<unsigned long long>(std::time(nullptr)), text, true});
+    if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
+    return WriteAll(entries);
+  }
 
+  if (png.empty() || png.size() > kMaxImageBytes || TakeSuppressedRemoteImage()) return false;
+  const std::wstring id = CreateEntryId();
+  if (id.empty() || !WriteBytesAtomically(ImagePath(id), png)) return false;
   std::vector<Entry> entries = ReadAll();
-  if (!entries.empty() && entries.front().text == text) return false;  // 连续去重
-  entries.insert(entries.begin(), Entry{static_cast<unsigned long long>(std::time(nullptr)), text});
-  if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);  // 先进后出
+  entries.insert(entries.begin(), Entry{id, static_cast<unsigned long long>(std::time(nullptr)), L"[图片]", true, EntryKind::PngImage});
+  if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
   return WriteAll(entries);
+}
+
+bool ReplaceAll(const std::vector<Entry>& entries) {
+  if (entries.size() > kMaxEntries) return false;
+  for (const Entry& entry : entries) {
+    if (entry.id.empty() || (entry.kind == EntryKind::Text && entry.text.empty())) return false;
+    if (entry.kind == EntryKind::PngImage) {
+      std::string png;
+      if (!ReadImagePng(entry, &png)) return false;
+    }
+  }
+  return WriteAll(entries);
+}
+
+bool ReadImagePng(const Entry& entry, std::string* png) {
+  if (!png || entry.kind != EntryKind::PngImage) return false;
+  png->clear();
+  const std::wstring path = ImagePath(entry.id);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > static_cast<LONGLONG>(kMaxImageBytes)) { CloseHandle(file); return false; }
+  png->resize(static_cast<size_t>(size.QuadPart));
+  DWORD read = 0;
+  const bool ok = ReadFile(file, png->data(), static_cast<DWORD>(png->size()), &read, nullptr) && read == png->size();
+  CloseHandle(file);
+  if (!ok) png->clear();
+  return ok;
+}
+
+bool SaveImagePngFromKeep(const Entry& entry, const std::string& png) {
+  return entry.kind == EntryKind::PngImage && !entry.id.empty() && WriteBytesAtomically(ImagePath(entry.id), png);
+}
+
+bool SetSystemClipboardTextFromKeep(const std::wstring& text) {
+  if (text.empty()) return false;
+  bool opened = false;
+  for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
+  if (!opened || !EmptyClipboard()) { if (opened) CloseClipboard(); return false; }
+  const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+  HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (!data) { CloseClipboard(); return false; }
+  void* locked = GlobalLock(data);
+  if (!locked) { GlobalFree(data); CloseClipboard(); return false; }
+  memcpy(locked, text.c_str(), bytes); GlobalUnlock(data);
+  SuppressRemoteText(text);
+  if (!SetClipboardData(CF_UNICODETEXT, data)) { GlobalFree(data); CloseClipboard(); return false; }
+  CloseClipboard();
+  return true;
+}
+
+bool SetSystemClipboardImageFromKeep(const Entry& entry) {
+  std::string png;
+  if (!ReadImagePng(entry, &png) || !GdiPlusToken()) return false;
+  IStream* stream = nullptr;
+  if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) != S_OK) return false;
+  ULONG written = 0;
+  const bool stream_ok = stream->Write(png.data(), static_cast<ULONG>(png.size()), &written) == S_OK && written == png.size();
+  LARGE_INTEGER zero{};
+  if (!stream_ok || stream->Seek(zero, STREAM_SEEK_SET, nullptr) != S_OK) { stream->Release(); return false; }
+  Gdiplus::Bitmap image(stream);
+  HBITMAP bitmap = nullptr;
+  const bool bitmap_ok = image.GetLastStatus() == Gdiplus::Ok && image.GetHBITMAP(Gdiplus::Color::White, &bitmap) == Gdiplus::Ok && bitmap;
+  stream->Release();
+  if (!bitmap_ok) return false;
+  bool opened = false;
+  for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
+  if (!opened || !EmptyClipboard()) { if (opened) CloseClipboard(); DeleteObject(bitmap); return false; }
+  SuppressRemoteImage();
+  if (!SetClipboardData(CF_BITMAP, bitmap)) { DeleteObject(bitmap); CloseClipboard(); return false; }
+  CloseClipboard();
+  return true;
 }
 
 bool Clear() {
   const std::wstring path = HistoryPath();
   if (path.empty()) return false;
   DeleteFileW((path + L".tmp").c_str());
+  const std::wstring images = ImagesDirectory();
+  WIN32_FIND_DATAW found{};
+  HANDLE search = FindFirstFileW((images + L"\\*.png").c_str(), &found);
+  if (search != INVALID_HANDLE_VALUE) {
+    do { DeleteFileW((images + L"\\" + found.cFileName).c_str()); } while (FindNextFileW(search, &found));
+    FindClose(search);
+  }
   return DeleteFileW(path.c_str()) != 0 || GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
-size_t Count() {
-  return ReadAll().size();
-}
+size_t Count() { return ReadAll().size(); }
 
 }  // namespace gy::clipboard_history

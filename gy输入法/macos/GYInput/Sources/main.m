@@ -2,6 +2,8 @@
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
 #import <string.h>
+#import "GYRimeRuntime.h"
+#import "GYUpdateService.h"
 
 static int RegisterInputSource(void) {
   NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
@@ -25,8 +27,13 @@ int main(int argc, const char *argv[]) {
 
     NSApplication *application = NSApplication.sharedApplication;
     [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    GYRimeRuntime *runtime = GYRimeRuntime.sharedRuntime;
+    [runtime start];
+  [GYUpdateService.sharedService checkForUpdatesIfNeeded];
     [application run];
     (void)server;
+    (void)runtime;
   }
   return 0;
 }
+

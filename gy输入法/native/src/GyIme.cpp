@@ -489,7 +489,7 @@ private:
     return gy::input_capture::ShouldCapture(
         gy::input_mode::IsEnglish(input_mode_), HasShortcutModifier(),
         IsDown(VK_SHIFT) || shift_down_, !composition_text_.empty(),
-        CurrentPageCandidateCount(), key);
+        CurrentPageCandidateCount(), static_cast<unsigned>(candidates_.size()), key);
   }
   void SetContext(ITfContext* context) {
     if (context == context_) return;

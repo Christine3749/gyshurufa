@@ -588,7 +588,7 @@ void CandidateWindow::Paint(HDC dc) {
     // will commit. Ellipsis is the honest last resort for rows that physically
     // overflow the panel (clip_overflow_); Layout guarantees it never triggers
     // for candidates that fit.
-    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, clip_overflow_);
+    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, false);
   }
 
   if (!mode_popup_ && !IsRectEmpty(&next_page_rect_)) {

@@ -2,6 +2,7 @@
 #import "GYSettingsStore.h"
 #import "GYRimeBridge.h"
 #import "GYInputMode.h"
+#import "GYClipboardHistory.h"
 
 // SETTINGS-PANEL-DESIGN.md: fixed 520×680, four pages, palette follows the
 // candidate theme, only 完成 persists (× discards with a confirmation).
@@ -39,6 +40,9 @@ static const CGFloat kWindowH = 680;
 static NSFont *GYTitleFont(void) { return [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold]; }
 static NSFont *GYControlFont(void) { return [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]; }
 static NSFont *GYAuxFont(void) { return [NSFont systemFontOfSize:10 weight:NSFontWeightRegular]; }
+static CGFloat GYDefaultLineHeight(NSFont *font) {
+  return ceil(font.ascender - font.descender + font.leading);
+}
 
 static void GYDrawText(NSString *text, NSRect rect, NSColor *color, NSFont *font, NSTextAlignment alignment) {
   NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -230,6 +234,33 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 }
 @end
 
+@interface GYSwitchView : NSView
+@property(nonatomic, strong) GYPalette *palette;
+@property(nonatomic) BOOL on;
+@property(nonatomic, copy) void (^onToggle)(BOOL on);
+@end
+
+@implementation GYSwitchView
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  const CGFloat height = NSHeight(self.bounds);
+  const CGFloat knob = height - 6;
+  NSColor *track = self.on ? self.palette.accent : self.palette.border;
+  [track setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:height / 2 yRadius:height / 2] fill];
+  [self.palette.onAccent setFill];
+  const CGFloat x = self.on ? NSWidth(self.bounds) - knob - 3 : 3;
+  [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, 3, knob, knob)] fill];
+}
+- (void)mouseUp:(NSEvent *)event {
+  const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (!NSPointInRect(point, self.bounds)) return;
+  self.on = !self.on;
+  [self setNeedsDisplay:YES];
+  if (self.onToggle) self.onToggle(self.on);
+}
+- (void)resetCursorRects { [self addCursorRect:self.bounds cursor:NSCursor.pointingHandCursor]; }
+@end
 // MARK: - Root view (background, header, nav, footer)
 
 @interface GYFlippedView : NSView
@@ -278,6 +309,8 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   GYCardView *_phrasesCard;
   GYClickView *_phrasesToggle;
   BOOL _phrasesToggleIsFinish;
+  NSScrollView *_clipboardScroll;
+  NSView *_clipboardListView;
 }
 
 + (instancetype)sharedController {
@@ -288,6 +321,10 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 }
 
 - (GYPalette *)palette { return [GYPalette forTheme:GYSettingsStore.sharedStore.candidateTheme]; }
+
+- (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self];
+}
 
 - (void)show {
   [self captureSnapshot];
@@ -349,8 +386,12 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   _rootView.wantsLayer = YES;
   _rootView.layer.cornerRadius = 14;
   _rootView.layer.masksToBounds = YES;
-  _rootView.pages = @[@"通用", @"输入", @"外观", @"账户"];
+  _rootView.pages = @[@"通用", @"输入", @"外观", @"账户", @"剪贴板"];
   _window.contentView = _rootView;
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(clipboardHistoryDidChange:)
+                                             name:GYClipboardHistory.didChangeNotification
+                                           object:GYClipboardHistory.sharedHistory];
 
   // × close (30×30 hot area, 18 from the top-right corner)
   GYClickView *close = [[GYClickView alloc] initWithFrame:NSMakeRect(kWindowW - 18 - 30, 18, 30, 30)];
@@ -363,7 +404,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   [_rootView addSubview:close];
 
   // Left nav: first item top 118, pitch 47
-  for (NSUInteger i = 0; i < 4; ++i) {
+  for (NSUInteger i = 0; i < 5; ++i) {
     GYNavItemView *item = [[GYNavItemView alloc] initWithFrame:NSMakeRect(18, 118 + i * 47, 72, 30)];
     item.pageIndex = (NSInteger)i;
     item.onClick = ^{
@@ -428,6 +469,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
     case 1: [self buildInputPage]; break;
     case 2: [self buildAppearancePage]; break;
     case 3: [self buildAccountPage]; break;
+    case 4: [self buildClipboardPage]; break;
   }
 }
 
@@ -448,6 +490,7 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   __weak typeof(self) weakSelf = self;
 
   const CGFloat cardH = _phrasesEditing ? 132 : 58;
+  const CGFloat phraseCardGap = 12;
   _phrasesCard = [[GYCardView alloc] initWithFrame:NSMakeRect(0, 0, 384, cardH)];
   _phrasesCard.palette = palette;
   _phrasesCard.radius = 9;
@@ -488,8 +531,8 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
     [_phrasesCard addSubview:scroll];
   }
 
-  // Three-action bar: 清空学习 / 导出 / 导入
-  const CGFloat barY = cardH + 12;
+  // Three-action bar: 清空学习 · 导出 · 导入
+  const CGFloat barY = cardH + phraseCardGap;
   GYCardView *bar = [[GYCardView alloc] initWithFrame:NSMakeRect(0, barY, 384, 42)];
   bar.palette = palette;
   bar.radius = 9;
@@ -514,6 +557,48 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
       [bar addSubview:divider];
     }
   }
+
+  // Windows 对应：剪贴板控制卡为即时生效，开关写入设置后无需点“完成”。
+  const CGFloat switchY = barY + 42 + 14;
+  GYCardView *sync = [[GYCardView alloc] initWithFrame:NSMakeRect(0, switchY, 384, 78)];
+  sync.palette = palette;
+  sync.radius = 9;
+  [_contentView addSubview:sync];
+  NSTextField *syncTitle = [self labelWithText:@"跨设备剪贴板" font:GYControlFont()];
+  syncTitle.textColor = palette.text;
+  syncTitle.frame = NSMakeRect(16, 10, 220, 18);
+  [sync addSubview:syncTitle];
+  NSTextField *syncSub = [self labelWithText:@"在已配对的设备间同步复制内容" font:GYAuxFont()];
+  syncSub.textColor = palette.muted;
+  syncSub.frame = NSMakeRect(16, 30, 300, 30);
+  [sync addSubview:syncSub];
+  GYSwitchView *syncSwitch = [[GYSwitchView alloc] initWithFrame:NSMakeRect(384 - 16 - 48, 26, 48, 26)];
+  syncSwitch.palette = palette;
+  syncSwitch.on = store.clipboardSyncEnabled;
+  syncSwitch.onToggle = ^(BOOL on) { store.clipboardSyncEnabled = on; };
+  [sync addSubview:syncSwitch];
+
+  GYCardView *instant = [[GYCardView alloc] initWithFrame:NSMakeRect(0, switchY + 78 + 14, 384, 78)];
+  instant.palette = palette;
+  instant.radius = 9;
+  [_contentView addSubview:instant];
+  NSTextField *instantTitle = [self labelWithText:@"即时粘贴" font:GYControlFont()];
+  instantTitle.textColor = palette.text;
+  instantTitle.frame = NSMakeRect(16, 10, 220, 18);
+  [instant addSubview:instantTitle];
+  NSTextField *instantSub = [self labelWithText:@"我复制的内容直接写入其他设备的剪贴板，Ctrl+V / ⌘V 即可粘贴" font:GYAuxFont()];
+  instantSub.textColor = palette.muted;
+  instantSub.frame = NSMakeRect(16, 28, 300, 16);
+  [instant addSubview:instantSub];
+  NSTextField *instantTip = [self labelWithText:@"关闭后，收到的内容只进入剪贴板历史，需手动选择" font:GYAuxFont()];
+  instantTip.textColor = palette.muted;
+  instantTip.frame = NSMakeRect(16, 44, 300, 14);
+  [instant addSubview:instantTip];
+  GYSwitchView *instantSwitch = [[GYSwitchView alloc] initWithFrame:NSMakeRect(384 - 16 - 48, 26, 48, 26)];
+  instantSwitch.palette = palette;
+  instantSwitch.on = store.clipboardInstantPaste;
+  instantSwitch.onToggle = ^(BOOL on) { store.clipboardInstantPaste = on; };
+  [instant addSubview:instantSwitch];
 }
 
 - (NSString *)phrasesSummary {
@@ -648,9 +733,31 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
   body.textColor = palette.muted;
   body.frame = NSMakeRect(16, 30, 352, 16);
   [rule addSubview:body];
-}
 
-// MARK: 外观页
+  GYCardView *warm = [[GYCardView alloc] initWithFrame:NSMakeRect(0, 144, 384, 94)];
+  warm.palette = palette;
+  warm.radius = 9;
+  [_contentView addSubview:warm];
+  NSTextField *warmTitle = [self labelWithText:@"热启动加速" font:GYControlFont()];
+  warmTitle.textColor = palette.text;
+  warmTitle.frame = NSMakeRect(16, 8, 180, 18);
+  [warm addSubview:warmTitle];
+  NSTextField *warmBody = [self labelWithText:@"开启后引擎保持热连接，按键零等待；关闭后每次按键重新握手。" font:GYAuxFont()];
+  warmBody.textColor = palette.muted;
+  warmBody.frame = NSMakeRect(16, 28, 300, 20);
+  [warmBody.cell setWraps:YES];
+  [warm addSubview:warmBody];
+  NSTextField *warmBody2 = [self labelWithText:@"建议 4 核 CPU / 8 GB 内存及以上开启；更低配置的设备请关闭。" font:GYAuxFont()];
+  warmBody2.textColor = palette.muted;
+  warmBody2.frame = NSMakeRect(16, 48, 300, 20);
+  [warmBody2.cell setWraps:YES];
+  [warm addSubview:warmBody2];
+  GYSwitchView *warmSwitch = [[GYSwitchView alloc] initWithFrame:NSMakeRect(384 - 16 - 48, 34, 48, 26)];
+  warmSwitch.palette = palette;
+  warmSwitch.on = store.warmStartEnabled;
+  warmSwitch.onToggle = ^(BOOL on) { store.warmStartEnabled = on; };
+  [warm addSubview:warmSwitch];
+}
 
 - (void)buildAppearancePage {
   GYPalette *palette = self.palette;
@@ -716,6 +823,131 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 
 // MARK: 账户页
 
+- (void)buildClipboardPage {
+  GYPalette *palette = self.palette;
+  __weak typeof(self) weakSelf = self;
+
+  const CGFloat toolbarHeight = 34;
+  _clipboardScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, toolbarHeight, 384, _contentView.bounds.size.height - toolbarHeight)];
+  _clipboardScroll.hasVerticalScroller = YES;
+  _clipboardScroll.drawsBackground = NO;
+
+  _clipboardListView = [[GYFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 384, _clipboardScroll.bounds.size.height)];
+  [_clipboardScroll setDocumentView:_clipboardListView];
+
+  const CGFloat clearWidth = 56;
+  GYClickView *clear = [[GYClickView alloc] initWithFrame:NSMakeRect(384 - 16 - clearWidth, 0, clearWidth, 26)];
+  NSTextField *clearLabel = [self labelWithText:@"清空" font:GYAuxFont()];
+  clearLabel.textColor = palette.accent;
+  clearLabel.frame = clear.bounds;
+  clearLabel.alignment = NSTextAlignmentCenter;
+  [clear addSubview:clearLabel];
+  clear.onClick = ^{ [weakSelf clearClipboardHistory]; };
+  [_contentView addSubview:clear];
+
+
+
+
+  [_contentView addSubview:_clipboardScroll];
+
+  [self reloadClipboardCardsWithPalette:palette];
+}
+
+- (NSInteger)clipboardLineCountForText:(NSString *)text width:(CGFloat)width {
+  NSFont *font = GYAuxFont();
+  const CGFloat lineHeight = GYDefaultLineHeight(font);
+  NSRect measured = [text boundingRectWithSize:NSMakeSize(width, CGFLOAT_MAX)
+                                       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                    attributes:@{NSFontAttributeName: font}
+                                       context:nil];
+  return MIN(4, MAX(1, (NSInteger)ceil(NSHeight(measured) / lineHeight)));
+}
+
+- (CGFloat)clipboardCardHeightForLineCount:(NSInteger)lineCount {
+  const CGFloat lineHeight = GYDefaultLineHeight(GYAuxFont());
+  const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;
+  return 10 + textHeight + 8 + 16 + 8;
+}
+
+- (void)reloadClipboardCardsWithPalette:(GYPalette *)palette {
+  if (_clipboardListView == nil) return;
+  for (NSView *sub in [_clipboardListView.subviews copy]) [sub removeFromSuperview];
+
+  NSArray<GYClipboardEntry *> *entries = GYClipboardHistory.sharedHistory.entries;
+  const CGFloat cardWidth = 384;
+  const CGFloat textWidth = cardWidth - 32;
+  const CGFloat gap = 12;
+  const CGFloat sidePad = 0;
+  const CGFloat lineHeight = GYDefaultLineHeight(GYAuxFont());
+
+  if (entries.count == 0) {
+    NSTextField *empty = [self labelWithText:@"还没有剪贴板历史，复制一段文字试试" font:GYAuxFont()];
+    empty.textColor = palette.muted;
+    empty.alignment = NSTextAlignmentCenter;
+    empty.frame = NSMakeRect(0, 80, cardWidth, 20);
+    [_clipboardListView addSubview:empty];
+    _clipboardListView.frame = NSMakeRect(0, 0, cardWidth, 120);
+    return;
+  }
+
+  CGFloat y = 0;
+  for (GYClipboardEntry *entry in entries) {
+    NSString *displayText = entry.text.length == 0 ? @"（空白内容已过滤）" : entry.text;
+    const NSInteger lineCount = [self clipboardLineCountForText:displayText width:textWidth];
+    const CGFloat cardHeight = [self clipboardCardHeightForLineCount:lineCount];
+    const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;
+
+    GYCardView *card = [[GYCardView alloc] initWithFrame:NSMakeRect(sidePad, y, cardWidth, cardHeight)];
+    card.palette = palette;
+    card.radius = 10;
+    [_clipboardListView addSubview:card];
+
+    NSTextField *text = [self labelWithText:displayText font:GYAuxFont()];
+    text.textColor = palette.text;
+    text.frame = NSMakeRect(16, 10, textWidth, textHeight);
+    text.cell.wraps = YES;
+    text.maximumNumberOfLines = lineCount;
+    text.lineBreakMode = NSLineBreakByTruncatingTail;
+    text.alignment = NSTextAlignmentLeft;
+    [card addSubview:text];
+
+    NSTextField *time = [self labelWithText:[self formatClipboardTime:entry.unixTime] font:GYAuxFont()];
+    time.textColor = palette.muted;
+    time.alignment = NSTextAlignmentLeft;
+    time.frame = NSMakeRect(16, cardHeight - 24, textWidth, 16);
+    [card addSubview:time];
+
+    y += cardHeight + gap;
+  }
+
+  const CGFloat totalHeight = MAX(0, y - gap);
+  _clipboardListView.frame = NSMakeRect(0, 0, cardWidth, MAX(_clipboardScroll.bounds.size.height, totalHeight));
+}
+- (NSString *)formatClipboardTime:(NSTimeInterval)unix {
+  static NSDateFormatter *formatter = nil;
+  if (formatter == nil) {
+    formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"HH:mm";
+  }
+  return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:unix]];
+}
+
+- (void)clearClipboardHistory {
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = @"清空本机剪贴板历史？不影响其他设备。";
+  [alert addButtonWithTitle:@"清空"];
+  [alert addButtonWithTitle:@"取消"];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return;
+  [GYClipboardHistory.sharedHistory clear];
+  [self reloadClipboardCardsWithPalette:self.palette];
+}
+
+- (void)clipboardHistoryDidChange:(NSNotification *)note {
+  (void)note;
+  if (_page != 4 || _window == nil || !_window.isVisible) return;
+  GYPalette *palette = self.palette;
+  [self reloadClipboardCardsWithPalette:palette];
+}
 - (void)buildAccountPage {
   GYPalette *palette = self.palette;
   GYSettingsStore *store = GYSettingsStore.sharedStore;

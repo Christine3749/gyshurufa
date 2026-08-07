@@ -4,6 +4,14 @@
 
 #include "ClipboardHistory.h"
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace gy::account_auth {
+struct Result;
+}
+
 class SettingsWindow {
 public:
   void Show(const RECT& anchor);
@@ -21,16 +29,24 @@ private:
   void ClearHistory();
   void ExportBackup();
   void ImportBackup();
+  void BeginAccountLogin();
+  void BeginAccountRestore();
+  void BeginAccountLogout();
+  void FinishAccountRequest(std::uint64_t request_id, gy::account_auth::Result* result);
   bool Hit(const RECT& rect, POINT point) const;
 
-  enum class Page { General, Input, Appearance, Account, Clipboard };
+  enum class Page { General, Input, Appearance, Account, Clipboard, Updates };
+  enum class AccountState { LoggedOut, Restoring, LoggingIn, LoggedIn, Failed };
 
   HWND hwnd_ = nullptr;
   int width_ = 520;
   int height_ = 680;
   HWND account_edit_ = nullptr;
+  HWND account_email_edit_ = nullptr;
+  HWND account_password_edit_ = nullptr;
   HWND phrases_edit_ = nullptr;
   HBRUSH edit_brush_ = nullptr;
+  HBRUSH account_input_brush_ = nullptr;
   // 0 = simplified Chinese, 1 = traditional Chinese, 2 = English passthrough.
   int input_mode_ = 0;
   UINT dpi_ = 96;
@@ -38,12 +54,16 @@ private:
   int size_index_ = 1;
   Page page_ = Page::General;
   RECT input_mode_rects_[3]{};
-  RECT nav_rects_[5]{};
+  RECT nav_rects_[6]{};
   bool phrases_expanded_ = false;
   // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
   // 输入 page card toggles it and annotates the low-spec recommendation.
   bool warm_start_ = true;
   RECT account_rect_{};
+  RECT account_email_rect_{};
+  RECT account_password_rect_{};
+  RECT account_action_rect_{};
+  RECT account_logout_rect_{};
   RECT theme_rects_[3]{};
   RECT size_rects_[3]{};
   RECT phrases_rect_{};
@@ -70,4 +90,22 @@ private:
   RECT clip_instant_switch_{};
   RECT clip_history_clear_{};
   RECT clip_history_list_{};
+  RECT version_card_{};
+  RECT update_card_{};
+  std::wstring release_version_;
+  std::wstring registered_version_;
+  std::vector<std::wstring> release_notes_;
+  std::wstring registered_core_version_;
+  bool versions_consistent_ = false;
+
+  // GY account credentials are never written into settings.ini. The refresh
+  // token is DPAPI-protected in a separate file; the access token lives only
+  // while GyImeHost is running.
+  AccountState account_state_ = AccountState::LoggedOut;
+  std::wstring account_email_;
+  std::wstring account_access_token_;
+  std::int64_t account_token_expiry_ = 0;
+  std::wstring account_status_;
+  std::uint64_t window_instance_id_ = 0;
+  std::uint64_t account_request_id_ = 0;
 };

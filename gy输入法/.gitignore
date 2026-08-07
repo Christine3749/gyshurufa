@@ -1,7 +1,10 @@
 node_modules/
 build/
+.build/
 dist/
 coverage/
+*.xcodeproj/
+macos/Vendor/rime/
 .DS_Store
 *.log
 .env*

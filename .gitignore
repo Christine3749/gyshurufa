@@ -9,7 +9,26 @@
 !/release/release.schema.json
 !/release/RELEASE_WORKFLOW.md
 !/release/ACCOUNT_CONTRACT.md
+!/release/notes/
+!/release/notes/*.txt
 **/native/runtime/
+# The macOS app must ship a precompiled, offline Rime workspace. Keep the
+# runtime tree ignored everywhere else, but allow this curated workspace to be
+# versioned so a clean clone can build without relying on another worktree.
+!gy输入法/native/runtime/
+gy输入法/native/runtime/*
+!gy输入法/native/runtime/rime/
+gy输入法/native/runtime/rime/*
+!gy输入法/native/runtime/rime/shared/
+gy输入法/native/runtime/rime/shared/*
+!gy输入法/native/runtime/rime/shared/build/
+gy输入法/native/runtime/rime/shared/build/*
+!gy输入法/native/runtime/rime/shared/build/default.yaml
+!gy输入法/native/runtime/rime/shared/build/luna_pinyin.schema.yaml
+!gy输入法/native/runtime/rime/shared/build/luna_pinyin.table.bin
+!gy输入法/native/runtime/rime/shared/build/luna_pinyin.reverse.bin
+!gy输入法/native/runtime/rime/shared/build/luna_pinyin.prism.bin
+!gy输入法/native/runtime/rime/shared/build/SHA256SUMS.txt
 test-write.txt
 security-scan-*.jsonl
 **/.wrangler/

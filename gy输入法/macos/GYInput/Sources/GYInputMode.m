@@ -8,9 +8,13 @@ NSString *GYInputModeTitle(GYInputMode mode) {
     case GYInputModeSimplified: return @"简";
     case GYInputModeTraditional: return @"繁";
     case GYInputModeEnglish: return @"EN";
+    // A corrupted persisted value must never produce an undefined title.
+    // Simplified Chinese is the conservative default used by a fresh install.
+    default: return @"简";
   }
 }
 
 BOOL GYInputModeIsChinese(GYInputMode mode) {
   return mode == GYInputModeSimplified || mode == GYInputModeTraditional;
 }
+

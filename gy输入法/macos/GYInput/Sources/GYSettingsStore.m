@@ -1,10 +1,15 @@
 #import "GYSettingsStore.h"
 
+NSNotificationName const GYSettingsStoreWarmStartDidChangeNotification = @"GYSettingsStoreWarmStartDidChangeNotification";
+
 static NSString *const kMode = @"inputMode";
 static NSString *const kLastChineseMode = @"lastChineseMode";
 static NSString *const kCandidateTheme = @"candidateTheme";
 static NSString *const kCandidateFontSize = @"candidateFontSize";
 static NSString *const kAutomaticUpdateChecks = @"automaticUpdateChecks";
+static NSString *const kWarmStartEnabled = @"warmStartEnabled";
+static NSString *const kClipboardSyncEnabled = @"clipboardSyncEnabled";
+static NSString *const kClipboardInstantPaste = @"clipboardInstantPaste";
 static NSString *const kLastUpdateCheckTimestamp = @"lastUpdateCheckTimestamp";
 static NSString *const kCustomPhrases = @"customPhrases";
 static NSString *const kAccountName = @"accountName";
@@ -82,6 +87,11 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
   return result;
 }
 
+static NSInteger GYNormalizedCandidateFontSize(NSInteger value) {
+  if (value <= 13) return 13;
+  if (value >= 17) return 17;
+  return 15;
+}
 @implementation GYSettingsStore {
   NSMutableDictionary *_document;
   NSURL *_url;
@@ -119,6 +129,9 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
   }
   if (_document[kAccountName] == nil) _document[kAccountName] = @"";
   if (_document[kAutomaticUpdateChecks] == nil) _document[kAutomaticUpdateChecks] = @YES;
+  if (_document[kWarmStartEnabled] == nil) _document[kWarmStartEnabled] = @YES;
+  if (_document[kClipboardSyncEnabled] == nil) _document[kClipboardSyncEnabled] = @YES;
+  if (_document[kClipboardInstantPaste] == nil) _document[kClipboardInstantPaste] = @YES;
   if (_document[kLastUpdateCheckTimestamp] == nil) _document[kLastUpdateCheckTimestamp] = @0;
   NSString *phraseMigrationError = nil;
   NSDictionary<NSString *, NSArray<NSString *> *> *phrases = GYValidatedCustomPhrases(_document[kCustomPhrases], &phraseMigrationError);
@@ -145,8 +158,8 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
 }
 - (NSInteger)candidateTheme { return MAX(0, MIN(2, [_document[kCandidateTheme] integerValue])); }
 - (void)setCandidateTheme:(NSInteger)value { _document[kCandidateTheme] = @(MAX(0, MIN(2, value))); [self save]; }
-- (NSInteger)candidateFontSize { return MAX(13, MIN(17, [_document[kCandidateFontSize] integerValue])); }
-- (void)setCandidateFontSize:(NSInteger)value { _document[kCandidateFontSize] = @(MAX(13, MIN(17, value))); [self save]; }
+- (NSInteger)candidateFontSize { return GYNormalizedCandidateFontSize([_document[kCandidateFontSize] integerValue]); }
+- (void)setCandidateFontSize:(NSInteger)value { _document[kCandidateFontSize] = @(GYNormalizedCandidateFontSize(value)); [self save]; }
 - (NSString *)accountName {
   id value = _document[kAccountName];
   return [value isKindOfClass:NSString.class] ? value : @"";
@@ -157,7 +170,20 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
   _document[kAccountName] = trimmed;
   [self save];
 }
-- (BOOL)automaticUpdateChecks { return [_document[kAutomaticUpdateChecks] boolValue]; }- (void)setAutomaticUpdateChecks:(BOOL)value { _document[kAutomaticUpdateChecks] = @(value); [self save]; }
+- (BOOL)automaticUpdateChecks { return [_document[kAutomaticUpdateChecks] boolValue]; }
+- (void)setAutomaticUpdateChecks:(BOOL)value { _document[kAutomaticUpdateChecks] = @(value); [self save]; }
+- (BOOL)warmStartEnabled { return [_document[kWarmStartEnabled] boolValue]; }
+- (void)setWarmStartEnabled:(BOOL)value {
+  value = !!value;
+  if (self.warmStartEnabled == value) return;
+  _document[kWarmStartEnabled] = @(value);
+  [self save];
+  [NSNotificationCenter.defaultCenter postNotificationName:GYSettingsStoreWarmStartDidChangeNotification object:self];
+}
+- (BOOL)clipboardSyncEnabled { return [_document[kClipboardSyncEnabled] boolValue]; }
+- (void)setClipboardSyncEnabled:(BOOL)value { _document[kClipboardSyncEnabled] = @(value); [self save]; }
+- (BOOL)clipboardInstantPaste { return [_document[kClipboardInstantPaste] boolValue]; }
+- (void)setClipboardInstantPaste:(BOOL)value { _document[kClipboardInstantPaste] = @(value); [self save]; }
 - (NSTimeInterval)lastUpdateCheckTimestamp { return MAX(0, [_document[kLastUpdateCheckTimestamp] doubleValue]); }
 - (void)setLastUpdateCheckTimestamp:(NSTimeInterval)value { _document[kLastUpdateCheckTimestamp] = @(MAX(0, value)); [self save]; }
 - (NSDictionary<NSString *,NSArray<NSString *> *> *)customPhrases { return [_document[kCustomPhrases] copy]; }
@@ -209,6 +235,9 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
     kCandidateTheme: @(self.candidateTheme),
     kCandidateFontSize: @(self.candidateFontSize),
     kAutomaticUpdateChecks: @(self.automaticUpdateChecks),
+    kWarmStartEnabled: @(self.warmStartEnabled),
+    kClipboardSyncEnabled: @(self.clipboardSyncEnabled),
+    kClipboardInstantPaste: @(self.clipboardInstantPaste),
     kCustomPhrases: self.customPhrases,
   };
 }
@@ -223,12 +252,17 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
     if (error != NULL) *error = GYSettingsBackupError(@"这不是有效的 GY 输入法设置备份。");
     return NO;
   }
+  const NSInteger version = [backup[@"version"] integerValue];
   NSInteger mode = 0, lastChineseMode = 0, theme = 0, fontSize = 0;
   if (!GYBackupInteger(backup, kMode, GYInputModeSimplified, GYInputModeEnglish, &mode) ||
       !GYBackupInteger(backup, kLastChineseMode, GYInputModeSimplified, GYInputModeTraditional, &lastChineseMode) ||
       !GYBackupInteger(backup, kCandidateTheme, 0, 2, &theme) ||
-      !GYBackupInteger(backup, kCandidateFontSize, 15, 17, &fontSize) ||
-      ![backup[kAutomaticUpdateChecks] isKindOfClass:NSNumber.class]) {
+      !GYBackupInteger(backup, kCandidateFontSize, 13, 17, &fontSize) ||
+      ![backup[kAutomaticUpdateChecks] isKindOfClass:NSNumber.class] ||
+      (version >= 2 &&
+       (![backup[kWarmStartEnabled] isKindOfClass:NSNumber.class] ||
+        ![backup[kClipboardSyncEnabled] isKindOfClass:NSNumber.class] ||
+        ![backup[kClipboardInstantPaste] isKindOfClass:NSNumber.class]))) {
     if (error != NULL) *error = GYSettingsBackupError(@"备份中的设置格式不正确。");
     return NO;
   }
@@ -241,10 +275,18 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *GYValidatedCustomPhrases
   _document[kMode] = @(mode);
   _document[kLastChineseMode] = @(lastChineseMode);
   _document[kCandidateTheme] = @(theme);
-  _document[kCandidateFontSize] = @(fontSize);
+  _document[kCandidateFontSize] = @(GYNormalizedCandidateFontSize(fontSize));
   _document[kAutomaticUpdateChecks] = @([backup[kAutomaticUpdateChecks] boolValue]);
+  _document[kWarmStartEnabled] = version >= 2 ? @([backup[kWarmStartEnabled] boolValue]) : @YES;
+  _document[kClipboardSyncEnabled] = version >= 2 ? @([backup[kClipboardSyncEnabled] boolValue]) : @YES;
+  _document[kClipboardInstantPaste] = version >= 2 ? @([backup[kClipboardInstantPaste] boolValue]) : @YES;
   _document[kCustomPhrases] = phrases;
   [self save];
+  [NSNotificationCenter.defaultCenter postNotificationName:GYSettingsStoreWarmStartDidChangeNotification object:self];
   return YES;
 }
 @end
+
+
+
+

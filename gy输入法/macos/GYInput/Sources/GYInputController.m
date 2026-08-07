@@ -3,7 +3,9 @@
 #import "GYInputMode.h"
 #import "GYSettingsStore.h"
 #import "GYPreferencesController.h"
+#import "GYClipboardHistory.h"
 #import "GYCandidateWindow.h"
+#import "GYCandidateGovernance.h"
 #import <Carbon/Carbon.h>
 
 // WINDOWS-DESIGN.md §4/§5: collapsed strip shows 5, expanded grid is 5×5,
@@ -41,6 +43,7 @@ static const NSUInteger kCandidateFetchLimit = 75;
   GYRimeBridge *_engine;
   GYCandidateWindow *_candidateWindow;
   NSArray<NSString *> *_candidates;
+  NSArray<GYCandidateSelection *> *_candidateSelections;
   NSString *_composition;
   GYInputMode _mode;
   NSUInteger _selected;
@@ -60,6 +63,7 @@ static const NSUInteger kCandidateFetchLimit = 75;
                            URLByAppendingPathComponent:@"rime" isDirectory:YES];
   [NSFileManager.defaultManager createDirectoryAtURL:user withIntermediateDirectories:YES attributes:nil error:nil];
   _engine = [[GYRimeBridge alloc] initWithSharedDataURL:shared userDataURL:user];
+  [[GYClipboardHistory sharedHistory] startCapture];
 
   __weak typeof(self) weakSelf = self;
   _candidateWindow = [[GYCandidateWindow alloc]
@@ -140,10 +144,27 @@ static const NSUInteger kCandidateFetchLimit = 75;
 
 // Fetches the governed 75-candidate pool and merges per-code custom phrases
 // at the front, like the Windows pipeline.
+// Keep the candidate window presentation as plain strings while retaining the
+// exact selection owner. Local phrases never enter Rime; Rime entries retain
+// their filtered display index so GYRimeBridge can translate it to raw Rime.
+- (void)setCandidateSelectionsFromRimeCandidates:(NSArray<NSString *> *)rimeCandidates
+                                          forCode:(NSString *)code {
+  _candidateSelections = [GYCandidateGovernance
+      selectionsForRimeCandidates:rimeCandidates
+                     customPhrases:[GYSettingsStore.sharedStore customPhrasesForCode:code]];
+  NSMutableArray<NSString *> *texts = [NSMutableArray arrayWithCapacity:_candidateSelections.count];
+  for (GYCandidateSelection *selection in _candidateSelections) {
+    [texts addObject:selection.text];
+  }
+  _candidates = texts.copy;
+}
+
+// Fetches the governed 75-candidate pool and merges per-code custom phrases
+// at the front, like the Windows pipeline.
 - (void)refetchCandidatesForCode:(NSString *)code {
   NSArray<NSString *> *rime = [_engine candidatesForCode:code];
   rime = rime.count != 0 ? [_engine candidatesUpToCount:kCandidateFetchLimit] : @[];
-  _candidates = [GYSettingsStore.sharedStore candidatesByAddingCustomPhrases:rime forCode:code];
+  [self setCandidateSelectionsFromRimeCandidates:rime forCode:code];
   _selected = 0;
   _pageStart = 0;
 }
@@ -159,15 +180,15 @@ static const NSUInteger kCandidateFetchLimit = 75;
 }
 
 // PageUp/PageDown flip a whole 25-candidate page in both strip and grid.
+// PageUp/PageDown flip a whole 25-candidate page in both strip and grid.
 - (void)pageCandidateWindow:(NSInteger)direction client:(id)client {
   if (direction > 0) {
     if (_pageStart + kExpandedPageSize < _candidates.count) {
       _pageStart += kExpandedPageSize;
       _selected = _pageStart;
     } else if ([_engine pageDown]) {
-      _candidates = [GYSettingsStore.sharedStore
-          candidatesByAddingCustomPhrases:[_engine candidatesUpToCount:kCandidateFetchLimit]
-                                  forCode:_composition];
+      [self setCandidateSelectionsFromRimeCandidates:[_engine candidatesUpToCount:kCandidateFetchLimit]
+                                             forCode:_composition];
       _pageStart = 0;
       _selected = 0;
     }
@@ -176,9 +197,8 @@ static const NSUInteger kCandidateFetchLimit = 75;
       _pageStart -= kExpandedPageSize;
       _selected = _pageStart;
     } else if ([_engine pageUp]) {
-      _candidates = [GYSettingsStore.sharedStore
-          candidatesByAddingCustomPhrases:[_engine candidatesUpToCount:kCandidateFetchLimit]
-                                  forCode:_composition];
+      [self setCandidateSelectionsFromRimeCandidates:[_engine candidatesUpToCount:kCandidateFetchLimit]
+                                             forCode:_composition];
       _pageStart = _candidates.count != 0 ? ((_candidates.count - 1) / kExpandedPageSize) * kExpandedPageSize : 0;
       _selected = _pageStart;
     }
@@ -234,27 +254,26 @@ static const NSUInteger kCandidateFetchLimit = 75;
 // Commits the displayed candidate at index, then refreshes any composition
 // remainder Rime kept (sentence-style partial commits). A custom phrase at
 // index 0 bypasses Rime, so the engine composition is cleared instead.
+// Commits a governed selection. Local phrases bypass Rime; every Rime entry
+// keeps the bridge display index even when local phrases were prepended.
 - (void)commitCandidateSelectionAtIndex:(NSUInteger)index
                                  suffix:(nullable NSString *)suffix
                                  client:(id)client {
-  if (index >= _candidates.count || client == nil) return;
-  NSArray<NSString *> *phrases = GYSettingsStore.sharedStore.customPhrases[_composition.lowercaseString];
-  NSString *phrase = phrases.firstObject;
-  NSArray<NSString *> *rimeCandidates = [_engine currentCandidates];
-  BOOL insertedCustomPhrase = phrase.length != 0 &&
-      [_candidates.firstObject isEqualToString:phrase] &&
-      ![rimeCandidates containsObject:phrase];
+  if (index >= _candidateSelections.count || client == nil) return;
+  GYCandidateSelection *selection = _candidateSelections[index];
   NSString *tail = suffix ?: @"";
-  if (insertedCustomPhrase && index == 0) {
+  if (selection.localPhrase) {
     [_engine clearComposition];
-    [self commitText:[phrase stringByAppendingString:tail]];
+    _composition = @"";
+    _candidates = @[];
+    _candidateSelections = @[];
+    [_candidateWindow hide];
+    [self commitText:[selection.text stringByAppendingString:tail]];
     return;
   }
-  NSUInteger rimeIndex = insertedCustomPhrase ? index - 1 : index;
-  NSString *commit = [_engine commitCandidateAtAbsoluteIndex:rimeIndex];
-  if (commit == nil) return;
-  [client insertText:[commit stringByAppendingString:tail]
-    replacementRange:NSMakeRange(NSNotFound, 0)];
+  NSString *selected = [_engine commitCandidateAtAbsoluteIndex:selection.rimeDisplayIndex];
+  if (selected.length == 0) return;
+  [self commitText:[selected stringByAppendingString:tail]];
   [self refreshRemainderForClient:client];
 }
 
@@ -488,3 +507,8 @@ static const NSUInteger kCandidateFetchLimit = 75;
 }
 
 @end
+
+
+
+
+

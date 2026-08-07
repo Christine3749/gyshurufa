@@ -22,9 +22,16 @@ targets:
       - path: GYInput/Sources
       - path: GYInput/Resources
         buildPhase: resources
+        excludes:
+          - Info.plist
+          - GYInput.entitlements
+          - rime-data
+      - path: GYInput/Resources/rime-data
+        type: folder
+        buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.GYInput
+        PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.inputmethod.GYInput
         PRODUCT_NAME: GYInput
         INFOPLIST_FILE: GYInput/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: GYInput/Resources/GYInput.entitlements

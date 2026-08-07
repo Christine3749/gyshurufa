@@ -1,12 +1,14 @@
-[CmdletBinding(SupportsShouldProcess)]
+﻿[CmdletBinding(SupportsShouldProcess)]
 param(
   [string]$Version,
-  [string]$ReleaseRoot = (Join-Path $PSScriptRoot 'release'),
+  [string]$ReleaseRoot = '',
   [string]$BucketName = 'gy-shurufa-releases',
-  [switch]$AllowUnsignedCandidate
+  [switch]$AllowUnsignedCandidate,
+  [switch]$Resume
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ReleaseRoot) { $ReleaseRoot = Join-Path $PSScriptRoot 'release' }
 
 # PS 5.1 turns any native stderr line (for example wrangler proxy warnings)
 # into a terminating NativeCommandError while Stop is in effect. Run native
@@ -38,15 +40,50 @@ $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "GYReleasePublish-$Version-$PID
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
   $prefix = "releases/$Version/windows"
+  function Get-R2ObjectWithRetry([string]$ObjectKey, [string]$Destination, [int]$Attempts = 6) {
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+      Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+      $null = Invoke-ReleaseNative { & npx wrangler r2 object get "$BucketName/$ObjectKey" --file "$Destination" --remote 2>$null }
+      if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        return $true
+      }
+      if ($attempt -lt $Attempts) {
+        $delay = [int][Math]::Min(8, [Math]::Pow(2, $attempt - 1))
+        Start-Sleep -Seconds $delay
+      }
+    }
+    return $false
+  }
   function Assert-R2ObjectAbsent([string]$ObjectKey) {
     $probe = Join-Path $tempRoot ([IO.Path]::GetRandomFileName())
-    Invoke-ReleaseNative { & npx wrangler r2 object get "$BucketName/$ObjectKey" --file "$probe" --remote 2>$null }
-    if ($LASTEXITCODE -eq 0) { throw "Refusing to overwrite immutable published object: $ObjectKey" }
-    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    try {
+      if (Get-R2ObjectWithRetry $ObjectKey $probe 1) {
+        throw "Refusing to overwrite immutable published object: $ObjectKey"
+      }
+    } finally {
+      Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    }
   }
   function Put-Immutable([string]$LocalPath, [string]$ObjectKey, [string]$ContentType = '') {
     if (-not (Test-Path -LiteralPath $LocalPath -PathType Leaf)) { throw "Release file is missing: $LocalPath" }
     if ($PSCmdlet.ShouldProcess("$BucketName/$ObjectKey", 'Upload immutable verified release object')) {
+      $probe = Join-Path $tempRoot ([IO.Path]::GetRandomFileName())
+      try {
+        if (Get-R2ObjectWithRetry $ObjectKey $probe 1) {
+          if (-not $Resume) { throw "Refusing to overwrite immutable published object: $ObjectKey" }
+          $localHash = (Get-FileHash -LiteralPath $LocalPath -Algorithm SHA256).Hash
+          $remoteHash = (Get-FileHash -LiteralPath $probe -Algorithm SHA256).Hash
+          $localBytes = (Get-Item -LiteralPath $LocalPath).Length
+          $remoteBytes = (Get-Item -LiteralPath $probe).Length
+          if ($localHash -ne $remoteHash -or $localBytes -ne $remoteBytes) {
+            throw "Existing immutable R2 object differs from the local verified artifact: $ObjectKey"
+          }
+          Write-Host "Resume: immutable object already exists and matches: $ObjectKey" -ForegroundColor DarkGray
+          return
+        }
+      } finally {
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+      }
       Assert-R2ObjectAbsent $ObjectKey
       $wranglerArgs = @('wrangler','r2','object','put',"$BucketName/$ObjectKey",'--file',$LocalPath)
       if ($ContentType) { $wranglerArgs += @('--content-type',$ContentType) }
@@ -63,9 +100,8 @@ try {
   Put-Immutable $packageManifest "releases/$Version/release.json" 'application/json; charset=utf-8'
   if ($PSCmdlet.ShouldProcess("$BucketName/$prefix/$($manifest.windows.setupFile)", 'Download and hash-verify uploaded Windows release')) {
     $remoteWindows = Join-Path $tempRoot $manifest.windows.setupFile
-    Invoke-ReleaseNative { & npx wrangler r2 object get "$BucketName/$prefix/$($manifest.windows.setupFile)" --file "$remoteWindows" --remote }
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $remoteWindows -PathType Leaf)) {
-      throw 'Verified Windows package is not present in R2; latest remains unchanged.'
+    if (-not (Get-R2ObjectWithRetry "$prefix/$($manifest.windows.setupFile)" $remoteWindows 8)) {
+      throw 'Verified Windows package is not present in R2 after retrying eventual consistency; latest remains unchanged.'
     }
     $remoteWindowsHash = (Get-FileHash -LiteralPath $remoteWindows -Algorithm SHA256).Hash
     if ($remoteWindowsHash -ne [string]$manifest.windows.sha256 -or (Get-Item -LiteralPath $remoteWindows).Length -ne [Int64]$manifest.windows.bytes) {

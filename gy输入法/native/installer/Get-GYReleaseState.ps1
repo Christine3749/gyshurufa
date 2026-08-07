@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$ReleaseApiUrl = 'https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest',
   [switch]$SkipRemote

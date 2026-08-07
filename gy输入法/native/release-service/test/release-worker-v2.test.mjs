@@ -40,6 +40,7 @@ function env(overrides = {}) {
       async get(key) {
         if (key === "releases/latest.json") return { async json() { return selected; } };
         if (key === "releases/0.9.29/windows/GYInputSetup-0.9.29.exe") return object(windows, overrides.windowsSize);
+        if (key === "releases/0.9.29/windows/GYInput-0.9.29.zip") return object(new Uint8Array([8, 9, 10]));
         if (key === "releases/0.9.29/macos/GYInput-0.9.29-arm64.pkg") return object(macos, overrides.macosSize);
         return null;
       }
@@ -72,6 +73,14 @@ test("Windows and macOS latest downloads resolve only immutable platform objects
   const macos = await worker.fetch(new Request("https://example.test/download/macos/latest"), env());
   assert.equal(macos.status, 200);
   assert.equal(macos.headers.get("content-disposition"), 'attachment; filename="GYInput-0.9.29-arm64.pkg"');
+});
+
+test("Windows ZIP download resolves the same immutable release version", async () => {
+  const response = await worker.fetch(new Request("https://example.test/download/latest.zip"), env());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/zip");
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="GYInput-0.9.29.zip"');
+  assert.equal(response.headers.get("x-gy-release-version"), "0.9.29");
 });
 
 test("Mac bytes mismatch blocks latest instead of exposing a mixed release", async () => {

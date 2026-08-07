@@ -11,6 +11,10 @@
       "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest"
     },
     {
+      "source": "/windows/:path*",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/windows/:path*"
+    },
+    {
       "source": "/download/latest.exe",
       "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/latest.exe"
     },

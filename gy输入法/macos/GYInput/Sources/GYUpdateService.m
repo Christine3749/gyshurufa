@@ -28,12 +28,19 @@ static NSURL *GYUpdateManifestURL(void) {
   dispatch_async(dispatch_get_main_queue(), ^{ completion(status, packageURL); });
 }
 
+// A failed request must not make the persisted update state look fresh. The
+// timestamp is intentionally recorded only after a trusted manifest arrives.
+- (void)recordTrustedManifestCheck {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    GYSettingsStore.sharedStore.lastUpdateCheckTimestamp = NSDate.date.timeIntervalSince1970;
+  });
+}
+
 - (void)checkForUpdatesIfNeeded {
   GYSettingsStore *settings = GYSettingsStore.sharedStore;
   if (!settings.automaticUpdateChecks) return;
   NSTimeInterval now = NSDate.date.timeIntervalSince1970;
   if (now - settings.lastUpdateCheckTimestamp < GYUpdateCheckInterval) return;
-  settings.lastUpdateCheckTimestamp = now;
   [self checkForUpdatesWithCompletion:nil];
 }
 
@@ -43,7 +50,6 @@ static NSURL *GYUpdateManifestURL(void) {
     [self finish:completion status:@"更新地址无效。" packageURL:nil];
     return;
   }
-  GYSettingsStore.sharedStore.lastUpdateCheckTimestamp = NSDate.date.timeIntervalSince1970;
   NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
   configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
   configuration.timeoutIntervalForRequest = 12.0;
@@ -75,6 +81,7 @@ static NSURL *GYUpdateManifestURL(void) {
         [self finish:completion status:@"更新信息未通过安全校验，未执行任何下载。" packageURL:nil];
         return;
       }
+      [self recordTrustedManifestCheck];
       id currentBuildValue = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
       NSInteger currentBuild = [currentBuildValue respondsToSelector:@selector(integerValue)] ? [currentBuildValue integerValue] : 0;
       if (build.integerValue <= currentBuild) {
@@ -89,3 +96,4 @@ static NSURL *GYUpdateManifestURL(void) {
 }
 
 @end
+

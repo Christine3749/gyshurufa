@@ -1,0 +1,5 @@
+# GY 输入法 0.9.57
+
+- 将 PowerShell 安装器的完整 staged/pending 事务纳入统一恢复 catch。
+- 暂存、pending 文件、任务注册或最终状态写入任一步失败时，恢复旧 install-state.json 并清理待激活标记。
+- 保持 Global\\GYInputFinalizePending、ONSTART / ONLOGON、自愈、回滚和版本独立目录架构不变。

@@ -1,0 +1,6 @@
+# GY 输入法 0.9.58
+
+- 新增问题类别：第三方输入法（如腾讯 WeType/微信输入法）抢占系统默认输入法位置，导致微信等应用弹出对方的浮动工具条、GY Logo 暂时不显示。此前所有版本的安装器只把 GY 追加到语言列表末尾，从未参与"谁是默认输入法"的竞争，一旦其他输入法把自己写成 Windows 的 CTF 默认输入法缓存值，GY 会被无限期挡在后面。
+- `Set-GYKeyboard.ps1`（EXE 与 ZIP 安装路径共用）与 `Install-GYInput.ps1` 的 `Update-CurrentUserKeyboardList` 改为把 GY 插入语言列表最前面，而不是追加到末尾。
+- 安装/修复时调用 Windows 官方 `Set-WinDefaultInputMethodOverride` API，把 GY 显式设为 zh-Hans-CN 的默认输入法（等价于"设置 > 时间和语言 > 语言 > 中文 > 选项 > 默认输入法"里手动选择 GY）；卸载时仅在当前默认确实是 GY 时才清除，不影响用户或其他应用设置的默认值。
+- `InstallerSmoke.ps1` 新增回归断言，锁定"插入到最前"和"调用默认输入法覆盖 API"这两处，防止以后再退回成"只追加、不竞争默认"的旧行为。

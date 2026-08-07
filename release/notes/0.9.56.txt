@@ -1,0 +1,5 @@
+# GY 输入法 0.9.56
+
+- 修复安装验证器对版本化 TSF 路径的正则匹配，避免把已注册的 TSF DLL 误报为版本不一致。
+- 保持安装器、Finalizer、回滚和卸载共用 Global\\GYInputFinalizePending 事务锁。
+- 保留失败恢复、版本独立目录、ONSTART / ONLOGON 任务回读、Logo 检查和发布哈希校验。

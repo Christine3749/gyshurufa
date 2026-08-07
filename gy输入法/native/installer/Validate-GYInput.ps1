@@ -10,6 +10,11 @@ function Check([bool]$condition, [string]$success, [string]$failure) {
   else { Write-Host "[失败] $failure" -ForegroundColor Red; $failures.Add($failure) }
 }
 
+function Get-GyCoreVersionFromPath([string]$Path) {
+  if ($Path -match '\\tsf-(\d+\.\d+\.\d+)\\GyIme\.dll$') { return $matches[1] }
+  return ''
+}
+
 try {
   $gy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\GYInput' -ErrorAction Stop
   $hostPath = [string]$gy.HostPath
@@ -18,6 +23,12 @@ try {
   $statePath = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $hostPath))) 'install-state.json'
   $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
   $coreVersion = if ($state) { [string]$state.coreVersion } else { '' }
+  $installRoot = Split-Path -Parent $statePath
+  $pendingPath = Join-Path $installRoot 'pending-activation.json'
+  $pendingErrorPath = Join-Path $installRoot 'pending-activation.error.log'
+  Check ($state -and $state.activationState -eq 'active') '安装状态已确认 active。' '安装状态仍处于 pending/rollback 或缺少 active 标记。'
+  Check ($state -and $state.registryVerified -eq $true) '安装状态包含注册表校验标记。' '安装状态缺少注册表校验标记。'
+  Check ((-not (Test-Path -LiteralPath $pendingPath)) -and (-not (Test-Path -LiteralPath $pendingErrorPath))) '没有待激活或激活错误文件。' '仍存在待激活/激活错误文件，请先完成重启或回滚。'
   if ($state -and $state.requiresClientReload -eq $true) {
     Write-Host '[提示] 新版 TSF 核心已注册，但已打开的应用可能仍加载旧 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。' -ForegroundColor Yellow
   }
@@ -25,6 +36,7 @@ try {
   Check ($hostVersion -eq $coreVersion) "Host / 核心版本一致：$hostVersion" "Host / 核心版本不一致：Host=$hostVersion，Core=$coreVersion。请重新安装同一版本。"
   Check (-not [string]::IsNullOrWhiteSpace($hostVersion)) "当前 Host 版本：$hostVersion" '没有找到当前 Host 版本注册。'
   Check (Test-Path -LiteralPath $hostPath -PathType Leaf) "当前 Host 文件存在：$hostPath" '当前 Host 文件不存在。'
+  Check ($state -and [string]::Equals($hostPath, [string]$state.host, [StringComparison]::OrdinalIgnoreCase)) '注册表 Host 与安装状态一致。' '注册表 Host 与安装状态不一致。'
 
   if (Test-Path -LiteralPath $hostPath -PathType Leaf) {
     $supportsHealthCheck = $false
@@ -45,8 +57,15 @@ try {
 }
 
 try {
-  $server = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Classes\CLSID\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\InprocServer32' -ErrorAction Stop).'(default)'
+  $server = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Classes\CLSID\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\InprocServer32' -Name '(default)' -ErrorAction Stop
   Check (Test-Path -LiteralPath $server -PathType Leaf) "TSF DLL 已注册：$server" 'TSF DLL 注册缺失或文件不存在。'
+  Check ($state -and [string]::Equals([string]$server, [string]$state.dll, [StringComparison]::OrdinalIgnoreCase)) 'TSF DLL 与安装状态一致。' 'TSF DLL 与安装状态不一致。'
+  $registeredCoreVersion = Get-GyCoreVersionFromPath $server
+  Check ($registeredCoreVersion -eq $coreVersion) "注册表 TSF 版本与状态一致：$registeredCoreVersion" "注册表 TSF 版本不一致：TSF=$registeredCoreVersion，State=$coreVersion。"
+  $hostLogo = Join-Path (Split-Path -Parent $hostPath) 'gy.ico'
+  $tsfLogo = Join-Path (Split-Path -Parent $server) 'gy.ico'
+  Check (Test-Path -LiteralPath $hostLogo -PathType Leaf) "Host Logo 存在：$hostLogo" 'Host Logo 缺失。'
+  Check (Test-Path -LiteralPath $tsfLogo -PathType Leaf) "TSF Logo 存在：$tsfLogo" 'TSF Logo 缺失。'
 } catch {
   Check $false '' 'TSF DLL 注册缺失。'
 }

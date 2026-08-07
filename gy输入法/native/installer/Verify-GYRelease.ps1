@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$Version,
   [string]$ReleaseRoot,
@@ -10,6 +10,7 @@ if (-not $ReleaseRoot) {
   $ReleaseRoot = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\release'
 }
 Import-Module (Join-Path $PSScriptRoot '..\ReleaseManifest.psm1') -Force
+$manifestPath = Get-GYReleaseManifestPath
 $releaseDefinition = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $releaseDefinition -RequestedVersion $Version
 $packageRoot = Join-Path $ReleaseRoot "GYInput-$Version"
@@ -48,6 +49,40 @@ else {
       Pass "Package release.json matches Windows package/core/host version $Version and installer metadata."
     }
   } catch { Fail "Package release.json cannot be parsed: $($_.Exception.Message)" }
+}
+
+$sourceNotes = Join-Path (Split-Path -Parent $manifestPath) "notes\\$Version.txt"
+$packagedNotes = Join-Path $payloadRoot 'release-notes.txt'
+if (-not (Test-Path -LiteralPath $sourceNotes -PathType Leaf) -or -not (Test-Path -LiteralPath $packagedNotes -PathType Leaf)) {
+  Fail 'Release notes are missing from the canonical source or package.'
+} elseif ((Get-FileHash -LiteralPath $sourceNotes -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $packagedNotes -Algorithm SHA256).Hash) {
+  Fail 'Packaged release notes differ from the canonical release notes.'
+} else {
+  Pass "Packaged release notes match canonical release/notes/$Version.txt."
+}
+
+$sourceInstallerRoot = $PSScriptRoot
+$sourceScripts = @(
+  'Install-GYInput.ps1',
+  'Validate-GYInput.ps1',
+  'Rollback-GYInput.ps1',
+  'Finalize-GYClientReload.ps1',
+  'Prune-GYOldVersions.ps1',
+  'Register-GYInputActivationTasks.ps1',
+  'GYInputTransaction.ps1'
+)
+foreach ($name in $sourceScripts) {
+  $sourcePath = Join-Path $sourceInstallerRoot $name
+  $packagePath = Join-Path $packageRoot $name
+  if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf) -or -not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+    Fail "Packaged installer script is missing from source or package: $name"
+    continue
+  }
+  if ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash) {
+    Fail "Packaged installer script differs from the audited source: $name"
+  } else {
+    Pass "Packaged installer script matches source: $name"
+  }
 }
 
 $targets = @(
