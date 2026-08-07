@@ -46,6 +46,7 @@ static const NSUInteger kCandidateFetchLimit = 75;
 // 只要 tag 没被保留就恒等于 0（简体），配合 applyInputMode: 的早退，
 // 表现就是"怎么点都不动"。
 - (void)applyMenuMode:(GYInputMode)mode {
+  NSLog(@"GY menu: mode %ld (singleton target)", (long)mode);
   GYSettingsStore.sharedStore.inputMode = mode;
   if (GYInputModeIsChinese(mode)) GYSettingsStore.sharedStore.lastChineseMode = mode;
   [NSNotificationCenter.defaultCenter postNotificationName:GYInputModeDidChangeNotification object:nil];
@@ -174,8 +175,32 @@ static const NSUInteger kCandidateFetchLimit = 75;
   }
 }
 
-- (void)selectMode:(NSMenuItem *)sender {
-  [self applyInputMode:(GYInputMode)sender.tag];
+// 菜单动作在控制器上**也**实现一份。
+//
+// IMK 的菜单派发不走 NSMenu 常规的 target/action：系统输入菜单由
+// TextInputMenuAgent 跨进程呈现，选中后 IMK 把 action 发给**当前活着的
+// IMKInputController**，菜单项上设的 target 未必被理会。证据是 `设置…`
+// 一直能用（showPreferences: 控制器上有），而三个切换项一直没反应
+// （旧版 selectMode: 控制器上有但 tag 丢失恒为 0；新版 selector 控制器上
+// 根本没有）。两条路各实现一份，无论 IMK 走哪边都成立。
+- (void)switchToSimplified:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: 简 (controller)");
+  [self applyInputMode:GYInputModeSimplified];
+}
+- (void)switchToTraditional:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: 繁 (controller)");
+  [self applyInputMode:GYInputModeTraditional];
+}
+- (void)switchToEnglish:(id)sender {
+  (void)sender;
+  NSLog(@"GY menu: EN (controller)");
+  [self applyInputMode:GYInputModeEnglish];
+}
+- (void)showClipboard:(id)sender {
+  (void)sender;
+  [GYPreferencesController.sharedController showClipboardPage];
 }
 - (void)showPreferences:(id)sender {
   (void)sender;
