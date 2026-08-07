@@ -15,6 +15,7 @@
 static const NSUInteger kCollapsedPageSize = kGYCollapsedPageSize;
 static const NSUInteger kCandidateFetchLimit = 75;
 
+
 // Menu actions must target a long-lived object: IMK input controllers are
 // per-client-session and may be deallocated while the system input menu is
 // still showing items that point at them, which makes clicks silently die.
@@ -448,8 +449,9 @@ static NSNotificationName const GYInputModeMenuDidSelectNotification = @"GYInput
     return YES;
   }
 
-  if (keyCode >= kVK_ANSI_1 && keyCode <= kVK_ANSI_5 && _candidates.count != 0) {
-    const NSUInteger digit = (NSUInteger)(keyCode - kVK_ANSI_1);
+  const NSInteger digitOrNegative = GYDigitForKeyCode(keyCode);
+  if (digitOrNegative >= 0 && _candidates.count != 0) {
+    const NSUInteger digit = (NSUInteger)digitOrNegative;
     if (_expanded) {
       // Row of the highlight, column N; ported so a short last row can never
       // misselect a cell that doesn't exist, matching Windows exactly.
