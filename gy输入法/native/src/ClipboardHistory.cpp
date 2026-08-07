@@ -409,13 +409,10 @@ bool MigratePendingHistoryToOutbox() {
 
 bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequence) {
   if (id.empty() || sync_sequence == 0) return false;
-  std::vector<Entry> outbox = ReadPendingOutbox();
-  const size_t before = outbox.size();
-  outbox.erase(std::remove_if(outbox.begin(), outbox.end(), [&](const Entry& entry) {
-    return entry.id == id;
-  }), outbox.end());
-  if (outbox.size() != before && !WriteOutbox(outbox)) return false;
-
+  // Persist confirmation before discarding the retry record.  If the process
+  // stops between these writes, the outbox can resend the same ID and Keep's
+  // idempotent upsert returns the same authoritative sequence.  Reversing the
+  // order would make a local write failure erase the only durable retry path.
   std::vector<Entry> history = ReadAll();
   bool changed = false;
   for (auto& entry : history) {
@@ -425,7 +422,14 @@ bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequenc
       changed = true;
     }
   }
-  return !changed || WriteAll(history);
+  if (changed && !WriteAll(history)) return false;
+
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  const size_t before = outbox.size();
+  outbox.erase(std::remove_if(outbox.begin(), outbox.end(), [&](const Entry& entry) {
+    return entry.id == id;
+  }), outbox.end());
+  return outbox.size() == before || WriteOutbox(outbox);
 }
 
 bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes) {

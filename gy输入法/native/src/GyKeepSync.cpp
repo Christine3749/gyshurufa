@@ -36,7 +36,11 @@ std::mutex g_token_mutex;
 std::wstring g_access_token;
 std::int64_t g_access_expiry = 0;
 std::mutex g_remote_head_mutex;
-std::wstring g_last_applied_remote_id;
+// The most recent Keep HEAD that this device has already handled.  Handling a
+// local ACK means "leave the user's current clipboard alone"; handling a
+// remote HEAD means "write it to the system clipboard".  Tracking both with
+// one ID avoids turning a successful local ACK into a lossy clipboard rewrite.
+std::wstring g_last_handled_head_id;
 
 struct HttpResponse {
   DWORD status = 0;
@@ -62,19 +66,19 @@ void Wipe(std::string* value) {
   value->clear();
 }
 
-bool IsNewRemoteHead(const clipboard_history::Entry& entry) {
+bool IsUnhandledHead(const clipboard_history::Entry& entry) {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  return g_last_applied_remote_id != entry.id;
+  return g_last_handled_head_id != entry.id;
 }
 
-void RememberAppliedRemoteHead(const clipboard_history::Entry& entry) {
+void RememberHandledHead(const clipboard_history::Entry& entry) {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  g_last_applied_remote_id = entry.id;
+  g_last_handled_head_id = entry.id;
 }
 
-void ForgetAppliedRemoteHead() {
+void ForgetHandledHead() {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  Wipe(&g_last_applied_remote_id);
+  Wipe(&g_last_handled_head_id);
 }
 
 std::string ToUtf8(const std::wstring& text) {
@@ -598,6 +602,12 @@ void Synchronize() {
       Wipe(&access_token);
       return;
     }
+    // Keep has now accepted a local capture.  Do not round-trip it through
+    // SetClipboardData: doing so can discard rich formats that accompanied the
+    // original copy (for example HTML, file data, or an application's custom
+    // clipboard format).  A different device becoming HEAD still compares as
+    // new below and is applied normally.
+    RememberHandledHead(entry);
   }
 
   unsigned long long cursor = 0;
@@ -643,12 +653,12 @@ void Synchronize() {
 
   const std::vector<clipboard_history::Entry> projection = clipboard_history::ReadAll();
   if (g_instant_paste.load() && !projection.empty() && !projection.front().pending_upload &&
-      IsNewRemoteHead(projection.front())) {
+      IsUnhandledHead(projection.front())) {
     const bool applied = projection.front().kind == clipboard_history::EntryKind::PngImage
         ? clipboard_history::SetSystemClipboardImageFromKeep(projection.front())
         : clipboard_history::SetSystemClipboardTextFromKeep(projection.front().text);
     if (applied) {
-      RememberAppliedRemoteHead(projection.front());
+      RememberHandledHead(projection.front());
     }
   }
   Wipe(&access_token);
@@ -685,7 +695,7 @@ void Stop() {
   std::lock_guard<std::mutex> lock(g_token_mutex);
   Wipe(&g_access_token);
   g_access_expiry = 0;
-  ForgetAppliedRemoteHead();
+  ForgetHandledHead();
 }
 
 void NotifyLocalClipboardChanged() {
@@ -708,7 +718,7 @@ void SetEnabled(bool enabled) {
 
 void SetInstantPasteEnabled(bool enabled) {
   g_instant_paste.store(enabled);
-  if (enabled) ForgetAppliedRemoteHead();
+  if (enabled) ForgetHandledHead();
   Wake();
 }
 

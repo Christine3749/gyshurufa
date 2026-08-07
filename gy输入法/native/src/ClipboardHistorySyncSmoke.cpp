@@ -44,6 +44,33 @@ int main() {
   if (!SetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data.c_str())) return Fail("could not isolate LOCALAPPDATA");
   if (!gy::clipboard_history::Clear()) return Fail("could not clear isolated history");
 
+  // The durable outbox is not capped by HEAD(20).  This fixture represents a
+  // locally captured record whose visual slot may later be displaced, but
+  // whose upload must survive until the server acknowledgement is durable.
+  const std::wstring pending_id = L"sync-smoke-pending";
+  const std::string pending_row = "sync-smoke-pending\t1700000040\t1\tT\tpending\t\t0\n";
+  {
+    HANDLE file = CreateFileW(gy::clipboard_history::HistoryPath().c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return Fail("could not seed pending history");
+    DWORD written = 0;
+    const bool wrote = WriteFile(file, pending_row.data(), static_cast<DWORD>(pending_row.size()), &written, nullptr) &&
+        written == pending_row.size();
+    CloseHandle(file);
+    if (!wrote) return Fail("could not write pending history fixture");
+  }
+  if (!gy::clipboard_history::MigratePendingHistoryToOutbox() ||
+      gy::clipboard_history::ReadPendingOutbox().size() != 1 ||
+      !gy::clipboard_history::AcknowledgeUploaded(pending_id, 9)) {
+    return Fail("pending upload was not durably acknowledged");
+  }
+  const std::vector<Entry> after_ack = gy::clipboard_history::ReadAll();
+  if (after_ack.size() != 1 || after_ack.front().id != pending_id || after_ack.front().pending_upload ||
+      after_ack.front().sync_sequence != 9 || !gy::clipboard_history::ReadPendingOutbox().empty()) {
+    return Fail("ACK did not atomically project confirmation and clear retry state");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after ACK test");
+
   const Entry first = Text(L"sync-smoke-first", L"first", 10);
   const Entry deleted = Text(L"sync-smoke-deleted", L"deleted", 20);
   if (!gy::clipboard_history::ReplaceConfirmedSnapshot({first, deleted}) ||
