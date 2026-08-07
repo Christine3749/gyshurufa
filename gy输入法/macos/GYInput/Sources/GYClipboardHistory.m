@@ -4,6 +4,13 @@
 
 static NSUInteger const kGYClipboardMaxEntries = 20;
 static NSUInteger const kGYClipboardMaxBytes = 1024 * 1024;  // 1 MiB per entry
+// macOS 没有剪贴板变化通知，只能轮询 changeCount。0.15s 让"复制→出现在列表"
+// 接近瞬时，同时把"两次复制挨得太近、只发现一次"的窗口压到最窄。
+// changeCount 是一次很轻的读取，这个频率的开销可以忽略。
+static NSTimeInterval const kGYPasteboardPollInterval = 0.15;
+// 延迟供给的剪贴板最多等这么多轮（约 1.2 秒）。有上限才不会为纯图片、
+// 纯文件的复制无限重试下去。
+static NSInteger const kGYPasteboardMaxDeferredPolls = 8;
 
 @implementation GYClipboardEntry
 @end
@@ -38,6 +45,9 @@ static BOOL GYIsAcceptableText(NSString *text) {
 @implementation GYClipboardHistory {
   // GYKeepSync 从自己的串行队列读写历史，捕获则在主线程；两边共用这把锁。
   NSLock *_lock;
+  // 正在等待数据到位的那次 changeCount，以及已经等了几轮。
+  NSInteger _deferredChangeCount;
+  NSInteger _deferredPolls;
 }
 
 + (NSString *)didChangeNotification { return @"GYClipboardHistoryDidChangeNotification"; }
@@ -66,6 +76,7 @@ static BOOL GYIsAcceptableText(NSString *text) {
   BOOL migrated = NO;
   _items = [[self readAllDidMigrate:&migrated] mutableCopy] ?: [NSMutableArray array];
   _lastChangeCount = NSPasteboard.generalPasteboard.changeCount;
+  _deferredChangeCount = NSNotFound;
   if (migrated) [self save];  // 旧的两字段行立即改写为四字段
   return self;
 }
@@ -89,22 +100,52 @@ static BOOL GYIsAcceptableText(NSString *text) {
 
 - (void)startCapture {
   if (_timer != nil) return;
-  _timer = [NSTimer scheduledTimerWithTimeInterval:0.5
+  _timer = [NSTimer scheduledTimerWithTimeInterval:kGYPasteboardPollInterval
                                             target:self
                                           selector:@selector(pollPasteboard)
                                           userInfo:nil
                                            repeats:YES];
 }
 
+/// 记账：这次 changeCount 已经处理完，不再回头看它。
+- (void)commitChangeCount:(NSInteger)changeCount {
+  _lastChangeCount = changeCount;
+  _deferredChangeCount = NSNotFound;
+  _deferredPolls = 0;
+}
+
 - (void)pollPasteboard {
   NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
-  if (pasteboard.changeCount == _lastChangeCount) return;
-  _lastChangeCount = pasteboard.changeCount;
+  const NSInteger changeCount = pasteboard.changeCount;
+  if (changeCount == _lastChangeCount) return;
+  if (changeCount != _deferredChangeCount) {  // 新的一次变化，重新计等待轮数
+    _deferredChangeCount = changeCount;
+    _deferredPolls = 0;
+  }
+
   // 只收纯文本。复制截图/图片时这里得到 nil，历史不增、Keep 不传，
   // 而且我们没有碰剪贴板，图片仍然可以正常粘贴。
   NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
-  if (![text isKindOfClass:NSString.class]) return;
-  if (text.length == 0) return;
+  if (![text isKindOfClass:NSString.class] || text.length == 0) {
+    // 关键：拿不到文本时**不能**直接记账。很多程序（浏览器、Office、
+    // Electron 系）是先 clearContents 把 changeCount 顶上去，之后才把数据
+    // 填进来；轮询撞在这个空窗里就会读到 nil。以前这里已经推进了
+    // _lastChangeCount，于是那一次复制永久丢失——用户表现为"复制没反应，
+    // 得再复制一次"。
+    //
+    // 区分两种 nil：
+    //   声明了文本类型（或还没声明任何类型）→ 数据没到位，下一轮再看；
+    //   声明了别的类型但没有文本         → 图片/文件，本来就没东西可抓。
+    const BOOL declaresText = [pasteboard availableTypeFromArray:@[NSPasteboardTypeString]] != nil;
+    const BOOL declaresNothingYet = pasteboard.types.count == 0;
+    if ((declaresText || declaresNothingYet) && ++_deferredPolls < kGYPasteboardMaxDeferredPolls) {
+      return;  // 不记账：下一轮还会回到这次 changeCount
+    }
+    [self commitChangeCount:changeCount];
+    return;
+  }
+  // 读到内容之后才记账。
+  [self commitChangeCount:changeCount];
   // 1 MiB UTF-8 ceiling: oversized copies never enter the stream.
   if ([text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kGYClipboardMaxBytes) return;
 
@@ -181,7 +222,8 @@ static BOOL GYIsAcceptableText(NSString *text) {
     [pasteboard clearContents];
     [pasteboard setString:text forType:NSPasteboardTypeString];
     // 吞掉自己造成的变化：否则下一次轮询会把它当成用户复制再传回 Keep，形成回环。
-    self.lastChangeCount = pasteboard.changeCount;
+    // 同时清掉延迟等待状态，避免把这次写入误当成"还在等数据"的那一次。
+    [self commitChangeCount:pasteboard.changeCount];
   };
   if (NSThread.isMainThread) write();
   else dispatch_sync(dispatch_get_main_queue(), write);
