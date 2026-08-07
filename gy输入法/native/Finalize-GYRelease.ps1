@@ -29,7 +29,12 @@ $manifest.windows.bytes = (Get-Item -LiteralPath $setup).Length
 if ([string]$manifest.windows.state -eq 'draft') {
   $manifest.windows.state = if ([string]$manifest.channel -eq 'stable') { 'awaiting-signature' } else { 'candidate' }
 }
-$manifest.publishedAtUtc = [DateTime]::UtcNow.ToString("o")
+$publishedAtUtc = [DateTime]::UtcNow.ToString("o")
+if ($null -eq $manifest.PSObject.Properties['publishedAtUtc']) {
+  $manifest | Add-Member -NotePropertyName publishedAtUtc -NotePropertyValue $publishedAtUtc
+} else {
+  $manifest.publishedAtUtc = $publishedAtUtc
+}
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 Copy-Item -LiteralPath $manifestPath -Destination $packageManifest -Force
 

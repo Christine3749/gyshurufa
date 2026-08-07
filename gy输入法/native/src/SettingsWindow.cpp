@@ -1,4 +1,6 @@
 #include "SettingsWindow.h"
+#include "GyAccountAuth.h"
+#include "GyKeepSync.h"
 #include "InputMode.h"
 #include "ClipboardHistory.h"
 #include "SettingsFile.h"
@@ -6,10 +8,13 @@
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <cstdint>
 #include <ctime>
 #include <windowsx.h>
 #include <iterator>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 #ifndef GY_RELEASE_VERSION
 #define GY_RELEASE_VERSION "dev"
@@ -17,6 +22,45 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
+constexpr UINT kAccountRequestComplete = WM_APP + 0x2A1;
+
+struct AccountRequestCompletion {
+  std::uint64_t window_instance_id = 0;
+  std::uint64_t request_id = 0;
+  gy::account_auth::Result result;
+};
+
+void SecureErase(std::wstring* value) {
+  if (!value || value->empty()) return;
+  SecureZeroMemory(value->data(), value->size() * sizeof(wchar_t));
+  value->clear();
+}
+
+void SecureEraseAccountResult(gy::account_auth::Result* result) {
+  if (!result) return;
+  SecureErase(&result->session.access_token);
+  SecureErase(&result->session.refresh_token);
+  result->session.email.clear();
+  result->session.expires_at = 0;
+}
+
+std::wstring EditText(HWND edit) {
+  const int length = edit ? GetWindowTextLengthW(edit) : 0;
+  if (length <= 0) return {};
+  std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+  GetWindowTextW(edit, value.data(), length + 1);
+  value.resize(static_cast<size_t>(length));
+  return value;
+}
+
+void PostAccountCompletion(HWND hwnd, std::uint64_t window_instance_id, std::uint64_t request_id,
+                           gy::account_auth::Result result) {
+  auto* completion = new AccountRequestCompletion{window_instance_id, request_id, std::move(result)};
+  if (!PostMessageW(hwnd, kAccountRequestComplete, 0, reinterpret_cast<LPARAM>(completion))) {
+    SecureEraseAccountResult(&completion->result);
+    delete completion;
+  }
+}
 // The settings window follows the candidate-window theme (Appearance\Theme):
 // one choice, one palette. GY Blue stays constant across themes because it is
 // the VI-locked selection color, and text on accent pills stays near-white.
@@ -389,6 +433,7 @@ void SettingsWindow::Show(const RECT& anchor) {
   const int x = std::clamp(static_cast<int>(anchor.left), static_cast<int>(work.left) + Scale(dpi_, 8), static_cast<int>(work.right) - width - Scale(dpi_, 8));
   int y = anchor.top - height - Scale(dpi_, 12);
   if (y < work.top + Scale(dpi_, 8)) y = std::min(anchor.bottom + Scale(dpi_, 12), work.bottom - height - Scale(dpi_, 8));
+  ++window_instance_id_;
   hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kClassName, L"GY 设置", WS_POPUP,
                           x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), this);
   if (!hwnd_) return;
@@ -398,6 +443,7 @@ void SettingsWindow::Show(const RECT& anchor) {
   Load();
   ApplyThemeBrush();
   Layout();
+  BeginAccountRestore();
   RECT actual{}; GetWindowRect(hwnd_, &actual);
   const int final_width = actual.right - actual.left, final_height = actual.bottom - actual.top;
   const int final_x = std::clamp(x, static_cast<int>(work.left) + Scale(dpi_, 8), std::max(static_cast<int>(work.left) + Scale(dpi_, 8), static_cast<int>(work.right) - final_width - Scale(dpi_, 8)));
@@ -409,20 +455,30 @@ void SettingsWindow::Show(const RECT& anchor) {
 
 void SettingsWindow::ApplyThemeBrush() {
   if (edit_brush_) DeleteObject(edit_brush_);
+  if (account_input_brush_) DeleteObject(account_input_brush_);
   edit_brush_ = CreateSolidBrush(PaletteForTheme(theme_).surface);
+  account_input_brush_ = CreateSolidBrush(PaletteForTheme(theme_).ink);
 }
 
 void SettingsWindow::CreateControls() {
-  edit_brush_ = CreateSolidBrush(PaletteForTheme(theme_).surface);
+  ApplyThemeBrush();
   account_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP,
+      0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+  account_email_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | WS_TABSTOP,
+      0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+  account_password_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP,
       0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   phrases_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
       0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   const HFONT font = Font(dpi_, 12, FW_NORMAL);
   SendMessageW(account_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+  SendMessageW(account_email_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+  SendMessageW(account_password_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   SendMessageW(phrases_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   // Placeholder so the borderless account field explains itself before typing.
   SendMessageW(account_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"输入邮箱，例如 name@example.com"));
+  SendMessageW(account_email_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"电子邮箱"));
+  SendMessageW(account_password_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"密码"));
   // The edit controls retain their UI font for the lifetime of this Host.
 }
 
@@ -436,7 +492,8 @@ void SettingsWindow::Layout() {
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
   for (int i = 0; i < 6; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
-  account_rect_ = {}; phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
+  account_rect_ = {}; account_email_rect_ = {}; account_password_rect_ = {}; account_action_rect_ = {}; account_logout_rect_ = {};
+  phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
   version_card_ = {}; update_card_ = {};
@@ -483,7 +540,25 @@ void SettingsWindow::Layout() {
   } else if (page_ == Page::Account) {
     account_rect_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 52)};
     MoveWindow(account_edit_, account_rect_.left + Scale(dpi_, 126), account_rect_.top + Scale(dpi_, 13), std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 152)), Scale(dpi_, 26), TRUE);
-    phrases_rect_ = {content_left, account_rect_.bottom + Scale(dpi_, 18), content_left + card_width, account_rect_.bottom + Scale(dpi_, 90)};
+    const bool show_account_form = account_state_ == AccountState::LoggedOut ||
+        account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Failed;
+    phrases_rect_ = {content_left, account_rect_.bottom + Scale(dpi_, 18), content_left + card_width,
+                     account_rect_.bottom + (show_account_form ? Scale(dpi_, 208) : Scale(dpi_, 82))};
+    if (show_account_form) {
+      account_email_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50),
+                             phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 80)};
+      account_password_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 88),
+                                phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 118)};
+      account_action_rect_ = {phrases_rect_.right - Scale(dpi_, 126), phrases_rect_.top + Scale(dpi_, 130),
+                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 166)};
+      MoveWindow(account_email_edit_, account_email_rect_.left + Scale(dpi_, 11), account_email_rect_.top + Scale(dpi_, 3),
+                 account_email_rect_.right - account_email_rect_.left - Scale(dpi_, 22), Scale(dpi_, 24), TRUE);
+      MoveWindow(account_password_edit_, account_password_rect_.left + Scale(dpi_, 11), account_password_rect_.top + Scale(dpi_, 3),
+                 account_password_rect_.right - account_password_rect_.left - Scale(dpi_, 22), Scale(dpi_, 24), TRUE);
+    } else if (account_state_ == AccountState::LoggedIn) {
+      account_logout_rect_ = {phrases_rect_.right - Scale(dpi_, 102), phrases_rect_.top + Scale(dpi_, 25),
+                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 55)};
+    }
     // 从“通用”页展开短语后切过来，编辑器不能残留在本页。
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
@@ -503,7 +578,14 @@ void SettingsWindow::Layout() {
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = update_card_.bottom + Scale(dpi_, 22);
   }
-  ShowWindow(account_edit_, page_ == Page::Account ? SW_SHOW : SW_HIDE);
+  const bool account_page = page_ == Page::Account;
+  const bool account_form = account_state_ == AccountState::LoggedOut ||
+      account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Failed;
+  ShowWindow(account_edit_, account_page ? SW_SHOW : SW_HIDE);
+  ShowWindow(account_email_edit_, account_page && account_form ? SW_SHOW : SW_HIDE);
+  ShowWindow(account_password_edit_, account_page && account_form ? SW_SHOW : SW_HIDE);
+  EnableWindow(account_email_edit_, account_state_ != AccountState::LoggingIn);
+  EnableWindow(account_password_edit_, account_state_ != AccountState::LoggingIn);
   done_rect_ = {width - right_pad - Scale(dpi_, 110), done_y, width - right_pad, done_y + Scale(dpi_, 42)};
   close_rect_ = {width - Scale(dpi_, 48), Scale(dpi_, 18), width - Scale(dpi_, 18), Scale(dpi_, 48)};
   // The outer frame is fixed. Changing tabs or expanding phrases must never
@@ -566,7 +648,7 @@ void SettingsWindow::Paint(HDC dc) {
 
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
   const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板", L"版本与更新"};
-  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户", L"跨设备复制粘贴与本机历史", L"已激活版本与本次更新内容"};
+  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与 GY 账户", L"跨设备复制粘贴与本机历史", L"已激活版本与本次更新内容"};
   // 剪贴板页无页头：卡片列表直接占满内容区。
   if (page_ != Page::Clipboard) {
     Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
@@ -582,8 +664,8 @@ void SettingsWindow::Paint(HDC dc) {
     DrawSegmentedActions(dc, clear_rect_, export_rect_, import_rect_, tools, pal, dpi_, medium);
     // 剪贴板的两个开关挂在通用页（剪贴板页只留历史卡片列表）。
     Rounded(dc, clip_sync_card_, pal.surface, pal.border, Scale(dpi_, 9));
-    Text(dc, L"跨设备剪贴板", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 9), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
-    Text(dc, L"在已配对的设备间同步复制内容", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 33), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 53)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"Keep 同步", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 9), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    Text(dc, L"登录后，复制内容自动写入 Keep", RECT{clip_sync_card_.left + Scale(dpi_, 16), clip_sync_card_.top + Scale(dpi_, 33), clip_sync_card_.right - Scale(dpi_, 76), clip_sync_card_.top + Scale(dpi_, 53)}, pal.muted, DT_LEFT, tiny);
     DrawSwitch(dc, clip_sync_switch_, clip_enabled_, pal, dpi_);
     Rounded(dc, clip_instant_card_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"即时粘贴", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 9), clip_instant_card_.right - Scale(dpi_, 76), clip_instant_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
@@ -639,7 +721,29 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, account_input, pal.ink, pal.border, Scale(dpi_, 7));
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
-    Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
+    if (account_state_ == AccountState::LoggedIn) {
+      Text(dc, account_email_, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 118), phrases_rect_.top + Scale(dpi_, 51)}, pal.text, DT_LEFT, normal);
+      Text(dc, account_status_.empty() ? L"已登录 · 同步功能将自动使用此账户" : account_status_,
+           RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 53), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 9)},
+           account_status_.empty() ? kBlue : pal.muted, DT_LEFT, tiny);
+      Rounded(dc, account_logout_rect_, pal.surface_hover, pal.border, Scale(dpi_, 7));
+      Text(dc, L"退出登录", account_logout_rect_, pal.text, DT_CENTER, tiny);
+    } else if (account_state_ == AccountState::Restoring) {
+      Text(dc, L"正在恢复已保存的登录状态…", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 52)}, pal.muted, DT_LEFT, normal);
+      if (!account_email_.empty()) {
+        Text(dc, account_email_, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 53), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 9)}, pal.muted, DT_LEFT, tiny);
+      }
+    } else {
+      Text(dc, L"登录后开启同步、跨设备词库和 AI 权益。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 48)}, pal.muted, DT_LEFT, tiny);
+      Rounded(dc, account_email_rect_, pal.ink, pal.border, Scale(dpi_, 7));
+      Rounded(dc, account_password_rect_, pal.ink, pal.border, Scale(dpi_, 7));
+      const bool logging_in = account_state_ == AccountState::LoggingIn;
+      Rounded(dc, account_action_rect_, logging_in ? pal.surface_hover : kBlue, logging_in ? pal.border : kBlue, Scale(dpi_, 7));
+      Text(dc, logging_in ? L"登录中…" : L"登录", account_action_rect_, logging_in ? pal.muted : kOnAccent, DT_CENTER, medium);
+      const COLORREF status_color = account_state_ == AccountState::Failed ? RGB(210, 80, 80) : pal.muted;
+      const std::wstring status = account_status_.empty() ? L"密码仅用于本次登录，不写入本机设置。" : account_status_;
+      Text(dc, status, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 174), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, status_color, DT_LEFT, tiny);
+    }
   } else if (page_ == Page::Clipboard) {
     // Page::Clipboard：纯历史卡片流（无页头/无标题行），右上角仅保留“清空”。
     Text(dc, L"清空", clip_history_clear_, kBlue, DT_CENTER, medium);
@@ -705,7 +809,7 @@ void SettingsWindow::Paint(HDC dc) {
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
   Text(dc, L"完成", done_rect_, kOnAccent, DT_CENTER, medium);
-  Text(dc, L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
+  Text(dc, page_ == Page::Account ? L"登录会话仅保存在当前 Windows 用户的加密存储内" : L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
   DeleteObject(title); DeleteObject(medium); DeleteObject(tiny); DeleteObject(normal); DeleteObject(large);
 }
 
@@ -729,6 +833,8 @@ void SettingsWindow::Load() {
   // CLIPBOARD-PAGE-DESIGN §4：跨设备剪贴板与即时粘贴均默认开。
   clip_enabled_ = GetPrivateProfileIntW(L"Clipboard", L"Enabled", 1, path.c_str()) != 0;
   clip_instant_ = GetPrivateProfileIntW(L"Clipboard", L"InstantPaste", 1, path.c_str()) != 0;
+  gy::keep_sync::SetEnabled(clip_enabled_);
+  gy::keep_sync::SetInstantPasteEnabled(clip_instant_);
 
   std::vector<wchar_t> phrases(4096, L'\0'); GetPrivateProfileSectionW(L"Phrases", phrases.data(), static_cast<DWORD>(phrases.size()), path.c_str());
   std::wstring text;
@@ -784,6 +890,139 @@ void SettingsWindow::ImportBackup() {
   Load(); InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
+void SettingsWindow::BeginAccountLogin() {
+  if (!hwnd_ || account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Restoring) return;
+  std::wstring email = Trim(EditText(account_email_edit_));
+  std::wstring password = EditText(account_password_edit_);
+  if (email.empty() || password.empty()) {
+    SecureErase(&password);
+    account_state_ = AccountState::Failed;
+    account_status_ = L"请输入电子邮箱和密码。";
+    Layout();
+    return;
+  }
+
+  account_email_ = email;
+  account_state_ = AccountState::LoggingIn;
+  account_status_.clear();
+  SetWindowTextW(account_password_edit_, L"");
+  Layout();
+  const HWND target = hwnd_;
+  const std::uint64_t instance = window_instance_id_;
+  const std::uint64_t request = ++account_request_id_;
+  try {
+    std::thread([target, instance, request, email = std::move(email), password = std::move(password)]() mutable {
+      gy::account_auth::Result result = gy::account_auth::Login(email, password);
+      SecureErase(&password);
+      PostAccountCompletion(target, instance, request, std::move(result));
+    }).detach();
+  } catch (...) {
+    SecureErase(&password);
+    account_state_ = AccountState::Failed;
+    account_status_ = L"无法启动登录请求，请重试。";
+    Layout();
+  }
+}
+
+void SettingsWindow::BeginAccountRestore() {
+  if (!hwnd_ || account_state_ == AccountState::Restoring || account_state_ == AccountState::LoggingIn) return;
+  gy::account_auth::StoredSession stored;
+  if (!gy::account_auth::LoadStoredSession(&stored)) return;
+  account_email_ = stored.email;
+  SetWindowTextW(account_email_edit_, account_email_.c_str());
+  account_state_ = AccountState::Restoring;
+  account_status_.clear();
+  Layout();
+  const HWND target = hwnd_;
+  const std::uint64_t instance = window_instance_id_;
+  const std::uint64_t request = ++account_request_id_;
+  std::wstring refresh_token = std::move(stored.refresh_token);
+  try {
+    std::thread([target, instance, request, refresh_token = std::move(refresh_token)]() mutable {
+      gy::account_auth::Result result = gy::account_auth::Restore(refresh_token);
+      SecureErase(&refresh_token);
+      PostAccountCompletion(target, instance, request, std::move(result));
+    }).detach();
+  } catch (...) {
+    SecureErase(&refresh_token);
+    account_state_ = AccountState::Failed;
+    account_status_ = L"无法恢复登录，请重试。";
+    Layout();
+  }
+}
+
+void SettingsWindow::BeginAccountLogout() {
+  ++account_request_id_;  // ignore a late restore/login completion after sign-out
+  gy::account_auth::StoredSession stored;
+  const bool had_stored_session = gy::account_auth::LoadStoredSession(&stored);
+  const bool cleared = gy::account_auth::ClearStoredSession();
+  SecureErase(&account_access_token_);
+  account_token_expiry_ = 0;
+  account_email_.clear();
+  account_state_ = cleared ? AccountState::LoggedOut : AccountState::Failed;
+  account_status_ = cleared ? L"已退出 GY 账户。" : L"无法移除本机登录信息。";
+  SetWindowTextW(account_email_edit_, L"");
+  SetWindowTextW(account_password_edit_, L"");
+  Layout();
+  gy::keep_sync::NotifyAccountChanged();
+  if (!had_stored_session) return;
+
+  std::wstring refresh_token = std::move(stored.refresh_token);
+  try {
+    std::thread([refresh_token = std::move(refresh_token)]() mutable {
+      gy::account_auth::Logout(refresh_token);  // best effort; local sign-out already completed
+      SecureErase(&refresh_token);
+    }).detach();
+  } catch (...) {
+    SecureErase(&refresh_token);
+  }
+}
+
+void SettingsWindow::FinishAccountRequest(std::uint64_t request_id, gy::account_auth::Result* result) {
+  if (!result) return;
+  if (request_id != account_request_id_) {
+    SecureEraseAccountResult(result);
+    return;
+  }
+
+  const bool restoring = account_state_ == AccountState::Restoring;
+  if (result->status == gy::account_auth::Status::Success) {
+    gy::account_auth::StoredSession stored{result->session.email, result->session.refresh_token};
+    const bool persisted = gy::account_auth::SaveStoredSession(stored);
+    SecureErase(&stored.refresh_token);
+    SecureErase(&account_access_token_);
+    account_email_ = result->session.email;
+    account_access_token_ = std::move(result->session.access_token);
+    account_token_expiry_ = result->session.expires_at;
+    account_state_ = AccountState::LoggedIn;
+    account_status_ = persisted ? L"已登录 · 同步功能将自动使用此账户" : L"已登录，但无法保存本机登录状态。";
+    SetWindowTextW(account_email_edit_, account_email_.c_str());
+    SetWindowTextW(account_password_edit_, L"");
+    gy::keep_sync::NotifyAccountChanged();
+  } else {
+    SecureErase(&result->session.access_token);
+    SecureErase(&result->session.refresh_token);
+    if (restoring && result->status == gy::account_auth::Status::Unauthorized) {
+      gy::account_auth::ClearStoredSession();
+      SecureErase(&account_access_token_);
+      account_token_expiry_ = 0;
+      account_status_ = L"登录已失效，请重新登录。";
+    } else if (result->status == gy::account_auth::Status::Unauthorized) {
+      account_status_ = L"电子邮箱或密码不正确。";
+    } else if (result->status == gy::account_auth::Status::NetworkError) {
+      account_status_ = restoring ? L"网络不可用，已保留登录信息。" : L"网络不可用，请检查连接后重试。";
+    } else if (result->status == gy::account_auth::Status::ServerError) {
+      account_status_ = L"账户服务暂不可用，请稍后重试。";
+    } else {
+      account_status_ = L"账户服务返回了无效响应，请稍后重试。";
+    }
+    account_state_ = AccountState::Failed;
+    SetWindowTextW(account_email_edit_, account_email_.c_str());
+  }
+  SecureEraseAccountResult(result);
+  Layout();
+}
+
 LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
   auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (message == WM_NCCREATE) { self = reinterpret_cast<SettingsWindow*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
@@ -801,9 +1040,11 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_CTLCOLOREDIT: {
       const Palette pal = PaletteForTheme(self->theme_);
+      const HWND control = reinterpret_cast<HWND>(lparam);
+      const bool account_auth_edit = control == self->account_email_edit_ || control == self->account_password_edit_;
       SetTextColor(reinterpret_cast<HDC>(wparam), pal.text);
-      SetBkColor(reinterpret_cast<HDC>(wparam), pal.surface);
-      return reinterpret_cast<LRESULT>(self->edit_brush_);
+      SetBkColor(reinterpret_cast<HDC>(wparam), account_auth_edit ? pal.ink : pal.surface);
+      return reinterpret_cast<LRESULT>(account_auth_edit ? self->account_input_brush_ : self->edit_brush_);
     }
     case WM_MOUSEMOVE: {
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -812,6 +1053,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
       if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
@@ -822,6 +1064,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
       if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
@@ -832,9 +1075,11 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Account && self->Hit(self->account_action_rect_, point)) { self->BeginAccountLogin(); return 0; }
+      if (self->page_ == Page::Account && self->Hit(self->account_logout_rect_, point)) { self->BeginAccountLogout(); return 0; }
       // 剪贴板开关在通用页：拨动即写入（不等“完成”）；剪贴板页只剩清空。
-      if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; gy::keep_sync::SetEnabled(self->clip_enabled_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }
@@ -843,7 +1088,19 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->Hit(self->done_rect_, point)) { self->Save(); DestroyWindow(hwnd); return 0; }
       if (self->Hit(self->close_rect_, point)) { DestroyWindow(hwnd); return 0; }
       return 0;
-    }    case WM_NCHITTEST: {
+    }
+    case kAccountRequestComplete: {
+      auto* completion = reinterpret_cast<AccountRequestCompletion*>(lparam);
+      if (!completion) return 0;
+      if (completion->window_instance_id == self->window_instance_id_) {
+        self->FinishAccountRequest(completion->request_id, &completion->result);
+      } else {
+        SecureEraseAccountResult(&completion->result);
+      }
+      delete completion;
+      return 0;
+    }
+    case WM_NCHITTEST: {
       const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       POINT client = point;
       ScreenToClient(hwnd, &client);
@@ -874,7 +1131,9 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_CLIPBOARDUPDATE: {
       // 与隐藏监听窗口收到的顺序不定；AppendFromClipboard 连续去重，双写安全。
-      gy::clipboard_history::AppendFromClipboard();
+      if (gy::clipboard_history::AppendFromClipboard()) {
+        gy::keep_sync::NotifyLocalClipboardChanged();
+      }
       if (self->page_ == Page::Clipboard) {
         self->history_entries_ = gy::clipboard_history::ReadAll();
         self->MeasureClipboardCards();
@@ -882,7 +1141,14 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       }
       return 0;
     }
-    case WM_DESTROY: RemoveClipboardFormatListener(hwnd); if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; } self->hwnd_ = nullptr; return 0;
+    case WM_DESTROY:
+      ++self->account_request_id_;
+      SetWindowTextW(self->account_password_edit_, L"");
+      RemoveClipboardFormatListener(hwnd);
+      if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; }
+      if (self->account_input_brush_) { DeleteObject(self->account_input_brush_); self->account_input_brush_ = nullptr; }
+      self->hwnd_ = nullptr;
+      return 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }

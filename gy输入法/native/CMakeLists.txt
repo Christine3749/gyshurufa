@@ -93,13 +93,15 @@ add_executable(GyImeHost WIN32
   src/CandidateWindow.cpp
   src/TrayController.cpp
   src/SettingsWindow.cpp
+  src/GyAccountAuth.cpp
+  src/GyKeepSync.cpp
   src/ClipboardHistory.cpp
   src/PinyinEngine.cpp
 )
 target_compile_features(GyImeHost PRIVATE cxx_std_20)
 target_compile_definitions(GyImeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_HOST_VERSION=\"${GY_VERSION}\" GY_RELEASE_VERSION=\"${GY_VERSION}\")
 target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include")
-target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 "${GY_RIME_ROOT}/lib/rime.lib")
+target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 ole32 winhttp crypt32 gdiplus "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
   target_compile_options(GyImeHost PRIVATE /utf-8)
 endif()
