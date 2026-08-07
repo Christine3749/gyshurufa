@@ -10,14 +10,15 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace gy::clipboard_history {
 namespace {
 
-// v3: <id>\t<unix_ts>\t<pending>\t<T|I>\t<escaped text>\t<escaped sha256>\n.
-// PNG bytes are never embedded in the history manifest. v1 and v2 text rows
-// are retained and migrated when the next sync atomically rewrites the file.
+// v4 adds a server-assigned immutable sequence after the SHA-256 field.
+// PNG bytes are never embedded in either manifest; old rows remain readable.
+constexpr ULONGLONG kMaxOutboxManifestBytes = 128ULL * 1024ULL * 1024ULL;
 
 std::mutex g_suppression_mutex;
 std::wstring g_remote_clipboard_text;
@@ -230,7 +231,32 @@ bool WriteAll(const std::vector<Entry>& entries) {
     if (it->id.empty()) return false;
     wide += it->id + L"\t" + std::to_wstring(it->unix_time) + L"\t" + (it->pending_upload ? L"1" : L"0") + L"\t";
     wide += it->kind == EntryKind::PngImage ? L"I\t" : L"T\t";
-    wide += Escape(it->text) + L"\t" + Escape(it->image_sha256) + L"\n";
+    wide += Escape(it->text) + L"\t" + Escape(it->image_sha256) + L"\t" + std::to_wstring(it->sync_sequence) + L"\n";
+  }
+  const std::string utf8 = ToUtf8(wide);
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr) && written == utf8.size();
+  CloseHandle(file);
+  if (!ok) { DeleteFileW(temporary.c_str()); return false; }
+  return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
+bool WriteOutbox(const std::vector<Entry>& entries) {
+  const std::wstring path = OutboxPath();
+  if (path.empty()) return false;
+  if (entries.empty()) {
+    DeleteFileW((path + L".tmp").c_str());
+    return DeleteFileW(path.c_str()) != 0 || GetLastError() == ERROR_FILE_NOT_FOUND;
+  }
+  std::wstring wide;
+  for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+    if (it->id.empty()) return false;
+    wide += it->id + L"\t" + std::to_wstring(it->unix_time) + L"\t1\t";
+    wide += it->kind == EntryKind::PngImage ? L"I\t" : L"T\t";
+    wide += Escape(it->text) + L"\t" + Escape(it->image_sha256) + L"\t" + std::to_wstring(it->sync_sequence) + L"\n";
   }
   const std::string utf8 = ToUtf8(wide);
   const std::wstring temporary = path + L".tmp";
@@ -248,6 +274,11 @@ bool WriteAll(const std::vector<Entry>& entries) {
 std::wstring HistoryPath() {
   const std::wstring directory = RootDirectory();
   return directory.empty() ? std::wstring{} : directory + L"\\clipboard-history.tsv";
+}
+
+std::wstring OutboxPath() {
+  const std::wstring directory = RootDirectory();
+  return directory.empty() ? std::wstring{} : directory + L"\\clipboard-outbox.tsv";
 }
 
 std::vector<Entry> ReadAll() {
@@ -296,7 +327,13 @@ std::vector<Entry> ReadAll() {
         else if (kind == L"I") entry.kind = EntryKind::PngImage;
         else continue;
         entry.text = Unescape(line.substr(fourth + 1, fifth - fourth - 1));
-        entry.image_sha256 = Unescape(line.substr(fifth + 1));
+        const size_t sixth = line.find(L'\t', fifth + 1);
+        entry.image_sha256 = Unescape(line.substr(fifth + 1,
+            sixth == std::wstring::npos ? std::wstring::npos : sixth - fifth - 1));
+        if (sixth != std::wstring::npos) {
+          try { entry.sync_sequence = std::stoull(line.substr(sixth + 1)); }
+          catch (...) { continue; }
+        }
       }
     }
     if ((entry.kind == EntryKind::Text && entry.text.empty()) || (entry.kind == EntryKind::PngImage && entry.id.empty())) continue;
@@ -304,6 +341,147 @@ std::vector<Entry> ReadAll() {
   }
   std::reverse(entries.begin(), entries.end());
   return entries;
+}
+
+std::vector<Entry> ReadPendingOutbox() {
+  std::vector<Entry> entries;
+  const std::wstring path = OutboxPath();
+  if (path.empty()) return entries;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return entries;
+  LARGE_INTEGER size{};
+  std::string bytes;
+  if (GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= static_cast<LONGLONG>(kMaxOutboxManifestBytes)) {
+    bytes.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    if (!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size()) bytes.clear();
+  }
+  CloseHandle(file);
+  const std::wstring wide = FromUtf8(bytes);
+  size_t begin = 0;
+  while (begin < wide.size()) {
+    const size_t end = wide.find(L'\n', begin);
+    const std::wstring line = wide.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
+    begin = end == std::wstring::npos ? wide.size() : end + 1;
+    const size_t first = line.find(L'\t');
+    const size_t second = first == std::wstring::npos ? std::wstring::npos : line.find(L'\t', first + 1);
+    const size_t third = second == std::wstring::npos ? std::wstring::npos : line.find(L'\t', second + 1);
+    const size_t fourth = third == std::wstring::npos ? std::wstring::npos : line.find(L'\t', third + 1);
+    const size_t fifth = fourth == std::wstring::npos ? std::wstring::npos : line.find(L'\t', fourth + 1);
+    if (fifth == std::wstring::npos) continue;
+    Entry entry{};
+    entry.id = line.substr(0, first);
+    const std::wstring pending = line.substr(second + 1, third - second - 1);
+    const std::wstring kind = line.substr(third + 1, fourth - third - 1);
+    if (entry.id.empty() || pending != L"1" || (kind != L"T" && kind != L"I")) continue;
+    try { entry.unix_time = std::stoull(line.substr(first + 1, second - first - 1)); } catch (...) { continue; }
+    entry.pending_upload = true;
+    entry.kind = kind == L"I" ? EntryKind::PngImage : EntryKind::Text;
+    const size_t sixth = line.find(L'\t', fifth + 1);
+    entry.text = Unescape(line.substr(fourth + 1, fifth - fourth - 1));
+    entry.image_sha256 = Unescape(line.substr(fifth + 1,
+        sixth == std::wstring::npos ? std::wstring::npos : sixth - fifth - 1));
+    if (sixth != std::wstring::npos) {
+      try { entry.sync_sequence = std::stoull(line.substr(sixth + 1)); } catch (...) { continue; }
+    }
+    if ((entry.kind == EntryKind::Text && entry.text.empty()) ||
+        (entry.kind == EntryKind::PngImage && entry.id.empty())) continue;
+    entries.push_back(std::move(entry));
+  }
+  std::reverse(entries.begin(), entries.end());  // oldest first for upload.
+  return entries;
+}
+
+bool MigratePendingHistoryToOutbox() {
+  std::vector<Entry> history = ReadAll();
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  std::unordered_set<std::wstring> ids;
+  for (const auto& entry : outbox) ids.insert(entry.id);
+  bool changed = false;
+  for (auto it = history.rbegin(); it != history.rend(); ++it) {
+    if (it->pending_upload && ids.insert(it->id).second) {
+      outbox.push_back(*it);
+      changed = true;
+    }
+  }
+  return !changed || WriteOutbox(outbox);
+}
+
+bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequence) {
+  if (id.empty() || sync_sequence == 0) return false;
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  const size_t before = outbox.size();
+  outbox.erase(std::remove_if(outbox.begin(), outbox.end(), [&](const Entry& entry) {
+    return entry.id == id;
+  }), outbox.end());
+  if (outbox.size() != before && !WriteOutbox(outbox)) return false;
+
+  std::vector<Entry> history = ReadAll();
+  bool changed = false;
+  for (auto& entry : history) {
+    if (entry.id == id) {
+      entry.pending_upload = false;
+      entry.sync_sequence = sync_sequence;
+      changed = true;
+    }
+  }
+  return !changed || WriteAll(history);
+}
+
+bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes) {
+  std::vector<Entry> merged = ReadAll();
+  for (const auto& change : changes) {
+    const Entry& incoming = change.entry;
+    if (incoming.id.empty() || incoming.sync_sequence == 0) return false;
+    if (change.kind == RemoteChangeKind::Delete) {
+      merged.erase(std::remove_if(merged.begin(), merged.end(), [&](const Entry& current) {
+        return current.id == incoming.id;
+      }), merged.end());
+      continue;
+    }
+    if (incoming.id.empty() || incoming.sync_sequence == 0 ||
+        (incoming.kind == EntryKind::Text && incoming.text.empty())) return false;
+    bool found = false;
+    for (auto& current : merged) {
+      if (current.id == incoming.id) {
+        current = incoming;
+        found = true;
+        break;
+      }
+    }
+    if (!found) merged.push_back(incoming);
+  }
+  std::stable_sort(merged.begin(), merged.end(), [](const Entry& left, const Entry& right) {
+    if (left.pending_upload != right.pending_upload) return left.pending_upload;
+    if (left.sync_sequence != right.sync_sequence) return left.sync_sequence > right.sync_sequence;
+    return left.unix_time > right.unix_time;
+  });
+  if (merged.size() > kMaxEntries) merged.resize(kMaxEntries);
+  return WriteAll(merged);
+}
+
+bool ReplaceConfirmedSnapshot(const std::vector<Entry>& confirmed) {
+  std::vector<Entry> merged;
+  merged.reserve(confirmed.size() + kMaxEntries);
+  std::unordered_set<std::wstring> confirmed_ids;
+  for (const auto& incoming : confirmed) {
+    if (incoming.id.empty() || incoming.sync_sequence == 0 ||
+        (incoming.kind == EntryKind::Text && incoming.text.empty())) return false;
+    if (confirmed_ids.insert(incoming.id).second) merged.push_back(incoming);
+  }
+
+  // A lost ACK is harmless: if Keep's snapshot already contains the ID, the
+  // authoritative confirmed copy wins while the durable outbox retries later.
+  for (const auto& local : ReadAll()) {
+    if (local.pending_upload && confirmed_ids.insert(local.id).second) merged.push_back(local);
+  }
+  std::stable_sort(merged.begin(), merged.end(), [](const Entry& left, const Entry& right) {
+    if (left.pending_upload != right.pending_upload) return left.pending_upload;
+    if (left.sync_sequence != right.sync_sequence) return left.sync_sequence > right.sync_sequence;
+    return left.unix_time > right.unix_time;
+  });
+  if (merged.size() > kMaxEntries) merged.resize(kMaxEntries);
+  return WriteAll(merged);
 }
 
 bool AppendFromClipboard() {
@@ -342,7 +520,11 @@ bool AppendFromClipboard() {
     if (!entries.empty() && entries.front().kind == EntryKind::Text && entries.front().text == text) return false;
     const std::wstring id = CreateEntryId();
     if (id.empty()) return false;
-    entries.insert(entries.begin(), Entry{id, static_cast<unsigned long long>(std::time(nullptr)), text, true});
+    const Entry captured{id, static_cast<unsigned long long>(std::time(nullptr)), text, true};
+    std::vector<Entry> outbox = ReadPendingOutbox();
+    outbox.push_back(captured);  // outbox is oldest first
+    if (!WriteOutbox(outbox)) return false;
+    entries.insert(entries.begin(), captured);
     if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
     return WriteAll(entries);
   }
@@ -351,7 +533,11 @@ bool AppendFromClipboard() {
   const std::wstring id = CreateEntryId();
   if (id.empty() || !WriteBytesAtomically(ImagePath(id), png)) return false;
   std::vector<Entry> entries = ReadAll();
-  entries.insert(entries.begin(), Entry{id, static_cast<unsigned long long>(std::time(nullptr)), L"[图片]", true, EntryKind::PngImage});
+  const Entry captured{id, static_cast<unsigned long long>(std::time(nullptr)), L"[图片]", true, EntryKind::PngImage};
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  outbox.push_back(captured);  // outbox is oldest first
+  if (!WriteOutbox(outbox)) return false;
+  entries.insert(entries.begin(), captured);
   if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
   return WriteAll(entries);
 }
@@ -432,6 +618,9 @@ bool Clear() {
   const std::wstring path = HistoryPath();
   if (path.empty()) return false;
   DeleteFileW((path + L".tmp").c_str());
+  const std::wstring outbox = OutboxPath();
+  DeleteFileW((outbox + L".tmp").c_str());
+  if (!outbox.empty()) DeleteFileW(outbox.c_str());
   const std::wstring images = ImagesDirectory();
   WIN32_FIND_DATAW found{};
   HANDLE search = FindFirstFileW((images + L"\\*.png").c_str(), &found);

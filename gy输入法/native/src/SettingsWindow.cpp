@@ -23,6 +23,7 @@
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
 constexpr UINT kAccountRequestComplete = WM_APP + 0x2A1;
+constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 
 struct AccountRequestCompletion {
   std::uint64_t window_instance_id = 0;
@@ -61,6 +62,20 @@ void PostAccountCompletion(HWND hwnd, std::uint64_t window_instance_id, std::uin
     delete completion;
   }
 }
+
+bool SameClipboardEntries(const std::vector<gy::clipboard_history::Entry>& left,
+                          const std::vector<gy::clipboard_history::Entry>& right) {
+  if (left.size() != right.size()) return false;
+  for (size_t index = 0; index < left.size(); ++index) {
+    const auto& a = left[index];
+    const auto& b = right[index];
+    if (a.id != b.id || a.pending_upload != b.pending_upload ||
+        a.sync_sequence != b.sync_sequence || a.kind != b.kind ||
+        a.unix_time != b.unix_time) return false;
+  }
+  return true;
+}
+
 // The settings window follows the candidate-window theme (Appearance\Theme):
 // one choice, one palette. GY Blue stays constant across themes because it is
 // the VI-locked selection color, and text on accent pills stays near-white.
@@ -592,6 +607,8 @@ void SettingsWindow::Layout() {
   // make the settings dialog jump or change its proportions.
   const HRGN region = CreateRoundRectRgn(0, 0, width + 1, height_ + 1, Scale(dpi_, 14), Scale(dpi_, 14));
   SetWindowRgn(hwnd_, region, FALSE);
+  if (page_ == Page::Clipboard) SetTimer(hwnd_, kClipboardStatusTimer, 250, nullptr);
+  else KillTimer(hwnd_, kClipboardStatusTimer);
   InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -766,8 +783,10 @@ void SettingsWindow::Paint(HDC dc) {
         const WrappedCard wrapped = WrapCardText(dc, entry.text, large, card.right - card.left - Scale(dpi_, 28));
         DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
                                        card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
-        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
-                                                        card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+        const std::wstring status = entry.pending_upload ? L"同步中 · " : L"已确认 · ";
+        Text(dc, status + FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
+                                                                  card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)},
+             entry.pending_upload ? kBlue : pal.muted, DT_LEFT, tiny);
         top += card_h + card_gap;
         ++visible_rows;
       }
@@ -1110,6 +1129,17 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (client.y < Scale(self->dpi_, 76)) return HTCAPTION;
       break;
     }
+    case WM_TIMER: {
+      if (wparam != kClipboardStatusTimer || self->page_ != Page::Clipboard) break;
+      std::vector<gy::clipboard_history::Entry> latest = gy::clipboard_history::ReadAll();
+      if (!SameClipboardEntries(self->history_entries_, latest)) {
+        self->history_entries_ = std::move(latest);
+        self->MeasureClipboardCards();
+        self->history_scroll_ = std::min(self->history_scroll_, self->history_max_scroll_);
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
+    }
     case WM_MOUSEWHEEL: {
       if (self->page_ != Page::Clipboard) break;
       const int max_scroll = self->history_max_scroll_;
@@ -1144,6 +1174,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     case WM_DESTROY:
       ++self->account_request_id_;
       SetWindowTextW(self->account_password_edit_, L"");
+      KillTimer(hwnd, kClipboardStatusTimer);
       RemoveClipboardFormatListener(hwnd);
       if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; }
       if (self->account_input_brush_) { DeleteObject(self->account_input_brush_); self->account_input_brush_ = nullptr; }

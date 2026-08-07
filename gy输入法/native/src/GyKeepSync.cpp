@@ -25,7 +25,7 @@ namespace {
 constexpr wchar_t kKeepHost[] = L"keep.gyenbox.com";
 constexpr DWORD kKeepPort = INTERNET_DEFAULT_HTTPS_PORT;
 constexpr DWORD kMaxResponseBytes = 48 * 1024 * 1024;
-constexpr DWORD kPollMilliseconds = 3000;
+constexpr DWORD kPollMilliseconds = 750;
 
 std::atomic_bool g_running{false};
 std::atomic_bool g_enabled{true};
@@ -41,6 +41,13 @@ std::wstring g_last_applied_remote_id;
 struct HttpResponse {
   DWORD status = 0;
   std::string body;
+};
+
+struct SyncPage {
+  std::vector<clipboard_history::RemoteChange> changes;
+  unsigned long long cursor = 0;
+  bool has_more = false;
+  bool snapshot = false;
 };
 
 void Wipe(std::wstring* value) {
@@ -221,6 +228,82 @@ bool JsonPayloadField(const std::string& body, std::string* payload) {
   return true;
 }
 
+bool JsonStringField(const std::string& body, const char* field, std::string* output) {
+  if (!field || !output) return false;
+  output->clear();
+  const std::string key = "\"" + std::string(field) + "\"";
+  const size_t key_at = body.find(key);
+  if (key_at == std::string::npos) return false;
+  const size_t colon = body.find(':', key_at + key.size());
+  if (colon == std::string::npos) return false;
+  const size_t first = body.find('"', colon + 1);
+  if (first == std::string::npos) return false;
+  const size_t last = body.find('"', first + 1);
+  if (last == std::string::npos) return false;
+  *output = body.substr(first + 1, last - first - 1);
+  return true;
+}
+
+bool JsonBoolField(const std::string& body, const char* field, bool* output) {
+  if (!field || !output) return false;
+  const std::string key = "\"" + std::string(field) + "\"";
+  const size_t key_at = body.find(key);
+  if (key_at == std::string::npos) return false;
+  const size_t colon = body.find(':', key_at + key.size());
+  if (colon == std::string::npos) return false;
+  size_t value = colon + 1;
+  while (value < body.size() && std::isspace(static_cast<unsigned char>(body[value]))) ++value;
+  if (body.compare(value, 4, "true") == 0) { *output = true; return true; }
+  if (body.compare(value, 5, "false") == 0) { *output = false; return true; }
+  return false;
+}
+
+bool ParseSequence(const std::string& value, unsigned long long* output) {
+  if (!output || value.empty() || value.size() > 20 ||
+      !std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) return false;
+  try { *output = std::stoull(value); } catch (...) { return false; }
+  return true;
+}
+
+std::wstring CursorPath() {
+  const std::wstring history = clipboard_history::HistoryPath();
+  const size_t slash = history.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : history.substr(0, slash + 1) + L"keep-sync-cursor.txt";
+}
+
+bool LoadCursor(unsigned long long* cursor) {
+  if (!cursor) return false;
+  const std::wstring path = CursorPath();
+  if (path.empty()) return false;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  char buffer[32]{};
+  DWORD read = 0;
+  const bool ok = ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr) != FALSE;
+  CloseHandle(file);
+  if (!ok || read == 0) return false;
+  std::string value(buffer, read);
+  return ParseSequence(value, cursor);
+}
+
+bool SaveCursor(unsigned long long cursor) {
+  const std::wstring path = CursorPath();
+  if (path.empty()) return false;
+  const std::string value = std::to_string(cursor);
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool wrote = WriteFile(file, value.data(), static_cast<DWORD>(value.size()), &written, nullptr) != FALSE &&
+                     written == value.size();
+  CloseHandle(file);
+  if (!wrote) { DeleteFileW(temporary.c_str()); return false; }
+  return MoveFileExW(temporary.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
 bool IsSha256(const std::string& value) {
   if (value.size() != 64) return false;
   return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
@@ -248,9 +331,10 @@ bool Sha256(const std::string& bytes, std::string* output) {
   return true;
 }
 
-bool ParseWireEntries(const std::string& payload, std::vector<clipboard_history::Entry>* entries) {
-  if (!entries) return false;
-  entries->clear();
+bool ParseWireEntries(const std::string& payload,
+                      std::vector<clipboard_history::RemoteChange>* changes) {
+  if (!changes) return false;
+  changes->clear();
   if (payload.empty()) return true;
   std::string wire;
   if (!Base64Decode(payload, &wire)) return false;
@@ -268,48 +352,88 @@ bool ParseWireEntries(const std::string& payload, std::vector<clipboard_history:
       if (field_end == std::string::npos) break;
       field_begin = field_end + 1;
     }
-    if (fields.empty() || (fields[0] != "T" && fields[0] != "I")) { Wipe(&wire); return false; }
+    if (fields.empty() || (fields[0] != "T" && fields[0] != "I" && fields[0] != "D")) {
+      Wipe(&wire);
+      return false;
+    }
+    const bool deleted = fields[0] == "D";
+    if (deleted && fields.size() != 3) { Wipe(&wire); return false; }
     const bool image = fields[0] == "I";
-    if ((!image && fields.size() != 4) || (image && fields.size() != 6)) { Wipe(&wire); return false; }
+    if (!deleted && ((!image && fields.size() != 5) || (image && fields.size() != 7))) {
+      Wipe(&wire);
+      return false;
+    }
+    unsigned long long sequence = 0;
+    if (!ParseSequence(fields[1], &sequence) || sequence == 0) { Wipe(&wire); return false; }
     std::wstring id;
-    if (!FromUtf8(fields[1], &id) || !IsSafeSourceId(id)) { Wipe(&wire); return false; }
+    if (!FromUtf8(fields[2], &id) || !IsSafeSourceId(id)) { Wipe(&wire); return false; }
+    if (deleted) {
+      clipboard_history::Entry entry;
+      entry.id = std::move(id);
+      entry.sync_sequence = sequence;
+      changes->push_back({clipboard_history::RemoteChangeKind::Delete, std::move(entry)});
+      if (changes->size() > 64) { Wipe(&wire); return false; }
+      continue;
+    }
     unsigned long long timestamp_ms = 0;
-    try { timestamp_ms = std::stoull(fields[2]); } catch (...) { Wipe(&wire); return false; }
+    try { timestamp_ms = std::stoull(fields[3]); } catch (...) { Wipe(&wire); return false; }
     if (timestamp_ms < 946684800000ULL) { Wipe(&wire); return false; }
     if (image) {
       unsigned long long size = 0;
-      try { size = std::stoull(fields[4]); } catch (...) { Wipe(&wire); return false; }
-      if (fields[3] != "image/png" || size == 0 || size > clipboard_history::kMaxImageBytes || !IsSha256(fields[5])) {
+      try { size = std::stoull(fields[5]); } catch (...) { Wipe(&wire); return false; }
+      if (fields[4] != "image/png" || size == 0 || size > clipboard_history::kMaxImageBytes || !IsSha256(fields[6])) {
         Wipe(&wire);
         return false;
       }
       std::wstring sha;
-      if (!FromUtf8(fields[5], &sha)) { Wipe(&wire); return false; }
-      entries->push_back({id, timestamp_ms / 1000ULL, L"[图片]", false, clipboard_history::EntryKind::PngImage, sha});
+      if (!FromUtf8(fields[6], &sha)) { Wipe(&wire); return false; }
+      clipboard_history::Entry entry{id, timestamp_ms / 1000ULL, L"[图片]", false,
+                                     clipboard_history::EntryKind::PngImage, sha, sequence};
+      changes->push_back({clipboard_history::RemoteChangeKind::Add, std::move(entry)});
     } else {
       std::string text_utf8;
       std::wstring text;
-      if (!Base64Decode(fields[3], &text_utf8) || !FromUtf8(text_utf8, &text) || text.empty()) {
+      if (!Base64Decode(fields[4], &text_utf8) || !FromUtf8(text_utf8, &text) || text.empty()) {
         Wipe(&text_utf8);
         Wipe(&wire);
         return false;
       }
       Wipe(&text_utf8);
-      entries->push_back({id, timestamp_ms / 1000ULL, text, false});
+      clipboard_history::Entry entry{id, timestamp_ms / 1000ULL, text, false,
+                                     clipboard_history::EntryKind::Text, L"", sequence};
+      changes->push_back({clipboard_history::RemoteChangeKind::Add, std::move(entry)});
     }
-    if (entries->size() > clipboard_history::kMaxEntries) { Wipe(&wire); return false; }
+    if (changes->size() > 64) { Wipe(&wire); return false; }
   }
   Wipe(&wire);
   return true;
 }
 
-bool FetchEntries(const std::wstring& access_token, std::vector<clipboard_history::Entry>* entries) {
+bool FetchPage(const std::wstring& access_token, unsigned long long cursor, bool snapshot, SyncPage* page) {
+  if (!page) return false;
+  page->changes.clear();
+  page->cursor = cursor;
+  page->has_more = false;
+  page->snapshot = snapshot;
   HttpResponse response;
-  if (!Request(L"GET", L"/api/clipboard?format=wire-v2", access_token, "", L"", &response)) return false;
+  const std::wstring path = snapshot ? L"/api/clipboard/sync?snapshot=1" :
+      L"/api/clipboard/sync?cursor=" + std::to_wstring(cursor);
+  if (!Request(L"GET", path.c_str(), access_token, "", L"", &response)) return false;
   if (response.status != 200) { Wipe(&response.body); return false; }
   std::string payload;
-  const bool parsed = JsonPayloadField(response.body, &payload) && ParseWireEntries(payload, entries);
+  std::string cursor_text;
+  unsigned long long next_cursor = 0;
+  bool has_more = false;
+  const bool parsed = JsonPayloadField(response.body, &payload) &&
+      JsonStringField(response.body, "cursor", &cursor_text) && ParseSequence(cursor_text, &next_cursor) &&
+      JsonBoolField(response.body, "hasMore", &has_more) &&
+      ParseWireEntries(payload, &page->changes);
+  if (parsed) {
+    page->cursor = next_cursor;
+    page->has_more = has_more;
+  }
   Wipe(&payload);
+  Wipe(&cursor_text);
   Wipe(&response.body);
   return parsed;
 }
@@ -331,8 +455,11 @@ bool DownloadImage(const std::wstring& access_token, const clipboard_history::En
   return valid;
 }
 
-bool EnsureRemoteImages(const std::wstring& access_token, const std::vector<clipboard_history::Entry>& entries) {
-  for (const auto& entry : entries) {
+bool EnsureRemoteImages(const std::wstring& access_token,
+                        const std::vector<clipboard_history::RemoteChange>& changes) {
+  for (const auto& change : changes) {
+    if (change.kind != clipboard_history::RemoteChangeKind::Add) continue;
+    const auto& entry = change.entry;
     if (entry.kind != clipboard_history::EntryKind::PngImage) continue;
     std::string local;
     if (clipboard_history::ReadImagePng(entry, &local)) {
@@ -347,7 +474,27 @@ bool EnsureRemoteImages(const std::wstring& access_token, const std::vector<clip
   return true;
 }
 
-bool PostTextEntry(const std::wstring& access_token, const clipboard_history::Entry& entry) {
+std::vector<clipboard_history::Entry> SnapshotEntries(
+    const std::vector<clipboard_history::RemoteChange>& changes) {
+  std::vector<clipboard_history::Entry> entries;
+  entries.reserve(changes.size());
+  for (const auto& change : changes) {
+    if (change.kind == clipboard_history::RemoteChangeKind::Add) entries.push_back(change.entry);
+  }
+  return entries;
+}
+
+bool ParseAcknowledgement(const std::string& body, unsigned long long* sequence) {
+  std::string value;
+  const bool ok = JsonStringField(body, "sequence", &value) && ParseSequence(value, sequence) && *sequence != 0;
+  Wipe(&value);
+  return ok;
+}
+
+bool PostTextEntry(const std::wstring& access_token, const clipboard_history::Entry& entry,
+                   unsigned long long* sequence) {
+  if (!sequence) return false;
+  *sequence = 0;
   if (!IsSafeSourceId(entry.id)) return false;
   std::string text = ToUtf8(entry.text);
   std::string text_base64;
@@ -356,18 +503,23 @@ bool PostTextEntry(const std::wstring& access_token, const clipboard_history::En
   const unsigned long long captured_ms = entry.unix_time * 1000ULL;
   std::string id = ToUtf8(entry.id);
   if (id.empty()) { Wipe(&text_base64); return false; }
-  const std::string body = "{\"id\":\"" + id + "\",\"textBase64\":\"" + text_base64 +
-                           "\",\"capturedAt\":" + std::to_string(captured_ms) + "}";
+  std::string body = "{\"id\":\"" + id + "\",\"textBase64\":\"" + text_base64 +
+                     "\",\"capturedAt\":" + std::to_string(captured_ms) + "}";
   Wipe(&id);
   Wipe(&text_base64);
   HttpResponse response;
-  if (!Request(L"POST", L"/api/clipboard", access_token, body, L"", &response)) return false;
-  if (response.status != 200 && response.status != 201) { Wipe(&response.body); return false; }
+  const bool requested = Request(L"POST", L"/api/clipboard/sync", access_token, body, L"", &response);
+  Wipe(&body);
+  if (!requested || (response.status != 200 && response.status != 201)) { Wipe(&response.body); return false; }
+  const bool acknowledged = ParseAcknowledgement(response.body, sequence);
   Wipe(&response.body);
-  return true;
+  return acknowledged;
 }
 
-bool PostImageEntry(const std::wstring& access_token, const clipboard_history::Entry& entry) {
+bool PostImageEntry(const std::wstring& access_token, const clipboard_history::Entry& entry,
+                    unsigned long long* sequence) {
+  if (!sequence) return false;
+  *sequence = 0;
   if (!IsSafeSourceId(entry.id) || entry.kind != clipboard_history::EntryKind::PngImage) return false;
   std::string png;
   std::string sha256;
@@ -378,12 +530,14 @@ bool PostImageEntry(const std::wstring& access_token, const clipboard_history::E
   const std::wstring headers = L"Content-Type: image/png\r\nX-GY-Captured-At: " +
       std::to_wstring(entry.unix_time * 1000ULL) + L"\r\nX-GY-SHA256: " + wide_sha256 + L"\r\n";
   HttpResponse response;
-  const bool requested = Request(L"PUT", path.c_str(), access_token, png, headers, &response);
+  const std::wstring ack_path = path + L"?format=ack-v3";
+  const bool requested = Request(L"PUT", ack_path.c_str(), access_token, png, headers, &response);
   Wipe(&png);
   Wipe(&sha256);
   if (!requested || (response.status != 200 && response.status != 201)) { Wipe(&response.body); return false; }
+  const bool acknowledged = ParseAcknowledgement(response.body, sequence);
   Wipe(&response.body);
-  return true;
+  return acknowledged;
 }
 
 bool GetAccessToken(std::wstring* access_token) {
@@ -427,57 +581,68 @@ bool GetAccessToken(std::wstring* access_token) {
   return true;
 }
 
-std::vector<clipboard_history::Entry> MergeProjection(
-    const std::vector<clipboard_history::Entry>& remote,
-    const std::vector<clipboard_history::Entry>& current) {
-  std::vector<clipboard_history::Entry> merged = remote;
-  std::unordered_set<std::wstring> ids;
-  for (const auto& entry : merged) ids.insert(entry.id);
-  // A copy which arrived while the network request was in flight must survive
-  // until a later retry confirms its Keep note.
-  for (const auto& entry : current) {
-    if (entry.pending_upload && ids.insert(entry.id).second) merged.push_back(entry);
-  }
-  std::stable_sort(merged.begin(), merged.end(), [](const auto& left, const auto& right) {
-    return left.unix_time > right.unix_time;
-  });
-  if (merged.size() > clipboard_history::kMaxEntries) merged.resize(clipboard_history::kMaxEntries);
-  return merged;
-}
-
 void Synchronize() {
   if (!g_enabled.load()) return;
+  if (!clipboard_history::MigratePendingHistoryToOutbox()) return;
   std::wstring access_token;
   if (!GetAccessToken(&access_token)) return;
-  std::vector<clipboard_history::Entry> remote;
-  if (!FetchEntries(access_token, &remote) || !EnsureRemoteImages(access_token, remote)) { Wipe(&access_token); return; }
 
-  std::vector<clipboard_history::Entry> local = clipboard_history::ReadAll();
-  // Persist IDs generated while reading a legacy 0.9.x history before any
-  // network request. A retry must reuse exactly the same source ID.
-  if (!clipboard_history::ReplaceAll(local)) { Wipe(&access_token); return; }
-  std::vector<size_t> pending;
-  for (size_t index = local.size(); index > 0; --index) {
-    if (local[index - 1].pending_upload) pending.push_back(index - 1);  // oldest first
-  }
-  for (const size_t index : pending) {
-    const bool uploaded = local[index].kind == clipboard_history::EntryKind::PngImage
-        ? PostImageEntry(access_token, local[index])
-        : PostTextEntry(access_token, local[index]);
-    // Do not clear pending until a subsequent read sees the server's
-    // idempotent record. A successful upload followed by a dropped response
-    // is safely retried using the same source ID.
-    if (!uploaded || !FetchEntries(access_token, &remote) || !EnsureRemoteImages(access_token, remote)) {
-      // Persist generated legacy IDs/pending flags even if this retry failed.
-      clipboard_history::ReplaceAll(MergeProjection(remote, clipboard_history::ReadAll()));
+  // The outbox is durable and ordered oldest first. Each successful request
+  // returns Keep's global sequence, so no follow-up 20-item reload is needed.
+  for (const auto& entry : clipboard_history::ReadPendingOutbox()) {
+    unsigned long long sequence = 0;
+    const bool uploaded = entry.kind == clipboard_history::EntryKind::PngImage
+        ? PostImageEntry(access_token, entry, &sequence)
+        : PostTextEntry(access_token, entry, &sequence);
+    if (!uploaded || !clipboard_history::AcknowledgeUploaded(entry.id, sequence)) {
       Wipe(&access_token);
       return;
     }
   }
 
-  const std::vector<clipboard_history::Entry> projection =
-      MergeProjection(remote, clipboard_history::ReadAll());
-  if (clipboard_history::ReplaceAll(projection) && g_instant_paste.load() && !projection.empty() &&
+  unsigned long long cursor = 0;
+  bool snapshot = !LoadCursor(&cursor);
+  bool refresh_snapshot = false;
+  for (int page_count = 0; page_count < 8; ++page_count) {
+    SyncPage page;
+    if (!FetchPage(access_token, cursor, snapshot, &page) ||
+        !EnsureRemoteImages(access_token, page.changes) ||
+        (page.snapshot ? !clipboard_history::ReplaceConfirmedSnapshot(SnapshotEntries(page.changes))
+                       : (!page.changes.empty() && !clipboard_history::ApplyConfirmedChanges(page.changes))) ||
+        !SaveCursor(page.cursor)) {
+      Wipe(&access_token);
+      return;
+    }
+    if (!page.snapshot) {
+      for (const auto& change : page.changes) {
+        if (change.kind == clipboard_history::RemoteChangeKind::Delete) {
+          refresh_snapshot = true;
+          break;
+        }
+      }
+    }
+    if (!page.has_more || page.cursor == cursor) break;
+    cursor = page.cursor;
+    snapshot = false;
+  }
+
+  // A DELETE can expose the 21st confirmed item. Fetch one authoritative
+  // HEAD(20) snapshot to fill that slot; copies and normal ADD events never
+  // take this path.
+  if (refresh_snapshot) {
+    SyncPage page;
+    if (!FetchPage(access_token, 0, true, &page) || !EnsureRemoteImages(access_token, page.changes)) {
+      Wipe(&access_token);
+      return;
+    }
+    if (!clipboard_history::ReplaceConfirmedSnapshot(SnapshotEntries(page.changes)) || !SaveCursor(page.cursor)) {
+      Wipe(&access_token);
+      return;
+    }
+  }
+
+  const std::vector<clipboard_history::Entry> projection = clipboard_history::ReadAll();
+  if (g_instant_paste.load() && !projection.empty() && !projection.front().pending_upload &&
       IsNewRemoteHead(projection.front())) {
     const bool applied = projection.front().kind == clipboard_history::EntryKind::PngImage
         ? clipboard_history::SetSystemClipboardImageFromKeep(projection.front())
