@@ -150,6 +150,23 @@ static BOOL GYIsAcceptableText(NSString *text) {
     if (accepted.count == kGYClipboardMaxEntries) break;
   }
   [_lock lock];
+  // 稳态必须是"什么都不做"。否则：每轮同步都无条件发变更通知，
+  // GYKeepSync 收到就 wake，立刻又跑一轮 —— _syncing 只挡并发、
+  // 挡不住首尾相接，于是变成连续不断的网络请求加每轮一次写盘，
+  // 设置面板开着还会跟着每轮重建列表。这就是"很卡"的来源。
+  BOOL identical = accepted.count == _items.count;
+  for (NSUInteger i = 0; identical && i < accepted.count; ++i) {
+    GYClipboardEntry *incoming = accepted[i];
+    GYClipboardEntry *current = _items[i];
+    if (![incoming.entryId isEqualToString:current.entryId] ||
+        incoming.pendingUpload != current.pendingUpload) {
+      identical = NO;
+    }
+  }
+  if (identical) {
+    [_lock unlock];
+    return YES;
+  }
   _items = accepted;
   [_lock unlock];
   [self save];
