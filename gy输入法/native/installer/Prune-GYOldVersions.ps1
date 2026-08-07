@@ -8,32 +8,72 @@
 #   * 卸载时由卸载器调用（-All）：剪除全部版本目录与状态文件。
 #   * 被进程映射锁住的文件：改名后重试；仍失败则登记到 pending-prune.txt，
 #     下次安装/卸载时先扫尾。不需要重启系统。
-param(
-  [string]$InstallRoot = "C:\Program Files\GYInput",
-  # Comma-separated single string: powershell.exe -File binds only one value
-  # per parameter, so a real [string[]] can never receive two versions.
-  [string]$KeepVersions = "",
-  [switch]$All
-)
+param([string]$InstallRoot = 'C:\Program Files\GYInput', [string]$KeepVersions = '', [switch]$All)
 $ErrorActionPreference = 'Continue'
 $keepList = @($KeepVersions -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 
+function Get-GYOldSiblingPath([string]$Path) {
+  $directory = Split-Path -Parent $Path
+  $leaf = Split-Path -Leaf $Path
+  for ($i = 0; $i -lt 1000; $i++) {
+    $candidate = Join-Path $directory ($leaf + '.old.' + $i)
+    if (-not (Test-Path -LiteralPath $candidate)) { return $candidate }
+  }
+  return $null
+}
+
+function Preserve-GYLockedFiles([string]$Path) {
+  Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $file = $_
+    try {
+      $probe = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+      $probe.Dispose()
+    } catch {
+      $fileSibling = Get-GYOldSiblingPath $file.FullName
+      if ($fileSibling) {
+        try { Copy-Item -LiteralPath $file.FullName -Destination $fileSibling -Force -ErrorAction Stop } catch {}
+      }
+    }
+  }
+}
+
 function Remove-GYPathRobust([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return $true }
+  # Probe and preserve unreadably shared DLLs before a failed recursive delete
+  # can place them in delete-pending state.
+  Preserve-GYLockedFiles $Path
   try {
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
     return $true
   } catch {
-    # 有文件被进程映射：可改名不可删，先逐个挪名再整体删
+    # A loaded DLL may deny deletion but still permit a directory/file rename.
+    # Preserve the complete old payload under .old.N instead of deleting it.
+    if ($Path -notmatch '\.old\.\d+$') {
+      $sibling = Get-GYOldSiblingPath $Path
+      if ($sibling) {
+        try {
+          Rename-Item -LiteralPath $Path -NewName (Split-Path -Leaf $sibling) -Force -ErrorAction Stop
+          return $true
+        } catch {}
+      }
+    }
+
+    # If the directory itself cannot be renamed, preserve any files that can
+    # move and leave the still-locked original path in pending-prune.txt.
     Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-      try { Rename-Item -LiteralPath $_.FullName -NewName ($_.Name + ".trash") -Force -ErrorAction Stop } catch {}
+      $file = $_
+      if ($file.Name -match '\.old\.\d+$') { return }
+      $fileSibling = Get-GYOldSiblingPath $file.FullName
+      if (-not $fileSibling) { return }
+      try {
+        Rename-Item -LiteralPath $file.FullName -NewName (Split-Path -Leaf $fileSibling) -Force -ErrorAction Stop
+      } catch {
+        try { Copy-Item -LiteralPath $file.FullName -Destination $fileSibling -Force -ErrorAction Stop } catch {}
+      }
     }
-    try {
-      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-      return $true
-    } catch {
-      return $false
-    }
+    # Keep the original path queued when any locked part remains. The .old.N
+    # artifacts are intentionally retained as safe recovery evidence.
+    return $false
   }
 }
 

@@ -1,0 +1,7 @@
+GY 输入法 0.9.49
+
+- 安装器、Finalizer、回滚和卸载统一使用 Global\\GYInputFinalizePending 事务锁。
+- 核心 DLL 升级继续使用版本独立目录，并通过 ONSTART/ONLOGON 延迟激活。
+- pending 激活任务创建后会回读校验，失败时保留旧版本并支持自愈和回滚。
+- 安装包增加共享事务锁 helper，并将安装器脚本与源码逐一校验。
+- 设置页、安装后验证、Logo、候选框方向键和版本一致性检查继续随版本发布。

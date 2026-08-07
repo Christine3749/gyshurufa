@@ -4,6 +4,9 @@
 
 #include "ClipboardHistory.h"
 
+#include <string>
+#include <vector>
+
 class SettingsWindow {
 public:
   void Show(const RECT& anchor);
@@ -23,7 +26,7 @@ private:
   void ImportBackup();
   bool Hit(const RECT& rect, POINT point) const;
 
-  enum class Page { General, Input, Appearance, Account, Clipboard };
+  enum class Page { General, Input, Appearance, Account, Clipboard, Updates };
 
   HWND hwnd_ = nullptr;
   int width_ = 520;
@@ -38,7 +41,7 @@ private:
   int size_index_ = 1;
   Page page_ = Page::General;
   RECT input_mode_rects_[3]{};
-  RECT nav_rects_[5]{};
+  RECT nav_rects_[6]{};
   bool phrases_expanded_ = false;
   // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
   // 输入 page card toggles it and annotates the low-spec recommendation.
@@ -70,4 +73,11 @@ private:
   RECT clip_instant_switch_{};
   RECT clip_history_clear_{};
   RECT clip_history_list_{};
+  RECT version_card_{};
+  RECT update_card_{};
+  std::wstring release_version_;
+  std::wstring registered_version_;
+  std::vector<std::wstring> release_notes_;
+  std::wstring registered_core_version_;
+  bool versions_consistent_ = false;
 };

@@ -1,0 +1,5 @@
+# GY 输入法 0.9.55
+
+- 安装事务失败时恢复原 install-state.json，避免任务注册失败留下虚假的 staged 状态。
+- 安装器与 Finalizer 继续共用 Global\\GYInputFinalizePending，使用 ONSTART / ONLOGON 任务并回读任务状态。
+- Inno Setup 明确记录 staged/pending 与客户端重载要求；版本目录、回滚和发布校验保持隔离。

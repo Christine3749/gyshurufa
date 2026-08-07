@@ -1,10 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$Version,
-  [string]$ReleaseRoot = (Join-Path $PSScriptRoot 'release')
+  [string]$ReleaseRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ReleaseRoot) { $ReleaseRoot = Join-Path $PSScriptRoot 'release' }
 Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $manifest = Get-GYReleaseManifest

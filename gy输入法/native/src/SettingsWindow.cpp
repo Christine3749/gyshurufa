@@ -11,6 +11,9 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#ifndef GY_RELEASE_VERSION
+#define GY_RELEASE_VERSION "dev"
+#endif
 
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
@@ -256,6 +259,99 @@ std::wstring Trim(std::wstring text) {
   const auto last = text.find_last_not_of(L" \t\r\n");
   return text.substr(first, last - first + 1);
 }
+
+std::wstring WidenAscii(const char* value) {
+  if (!value || !*value) return {};
+  const int length = MultiByteToWideChar(CP_ACP, 0, value, -1, nullptr, 0);
+  if (length <= 1) return {};
+  std::wstring result(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(CP_ACP, 0, value, -1, result.data(), length);
+  result.resize(static_cast<size_t>(length - 1));
+  return result;
+}
+std::wstring ModuleDirectory() {
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+  if (length == 0 || length >= std::size(path)) return {};
+  std::wstring full(path, length);
+  const size_t slash = full.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : full.substr(0, slash);
+}
+std::wstring ReadRegisteredVersion() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GYInput", 0,
+                    KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) return {};
+  wchar_t value[64]{};
+  DWORD type = 0, bytes = sizeof(value);
+  const LONG status = RegQueryValueExW(key, L"HostVersion", nullptr, &type,
+                                       reinterpret_cast<LPBYTE>(value), &bytes);
+  RegCloseKey(key);
+  return status == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ)
+             ? Trim(value) : std::wstring{};
+}
+
+std::wstring ReadRegisteredPath(const wchar_t* subkey, const wchar_t* value_name) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey, 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) return {};
+  wchar_t value[1024]{};
+  DWORD type = 0, bytes = sizeof(value);
+  const LONG status = RegQueryValueExW(key, value_name, nullptr, &type,
+                                       reinterpret_cast<LPBYTE>(value), &bytes);
+  RegCloseKey(key);
+  return status == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ)
+             ? Trim(value) : std::wstring{};
+}
+
+std::wstring ReadRegisteredDllVersion() {
+  const std::wstring path = ReadRegisteredPath(
+      L"SOFTWARE\\Classes\\CLSID\\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\\InprocServer32", L"");
+  const std::wstring marker = L"\\tsf-";
+  const size_t begin = path.find(marker);
+  const size_t end = begin == std::wstring::npos ? std::wstring::npos : path.find(L"\\GyIme.dll", begin + marker.size());
+  return begin == std::wstring::npos || end == std::wstring::npos
+             ? std::wstring{} : path.substr(begin + marker.size(), end - begin - marker.size());
+}
+std::wstring ReadTextFile(const std::wstring& path) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024) {
+    CloseHandle(file); return {};
+  }
+  std::vector<char> bytes(static_cast<size_t>(size.QuadPart));
+  DWORD read = 0;
+  const bool ok = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) != FALSE;
+  CloseHandle(file);
+  if (!ok || read == 0) return {};
+  if (read >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF && static_cast<unsigned char>(bytes[1]) == 0xFE) {
+    const wchar_t* wide = reinterpret_cast<const wchar_t*>(bytes.data() + 2);
+    const size_t chars = (read - 2) / sizeof(wchar_t);
+    return std::wstring(wide, chars);
+  }
+  const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(read), nullptr, 0);
+  if (length <= 0) return {};
+  std::wstring result(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(read), result.data(), length);
+  if (!result.empty() && result.front() == 0xFEFF) result.erase(result.begin());
+  return result;
+}
+std::vector<std::wstring> ReadReleaseNotes(const std::wstring& module_directory) {
+  std::vector<std::wstring> notes;
+  if (module_directory.empty()) return notes;
+  const std::wstring raw = ReadTextFile(module_directory + L"\\RELEASE-NOTES.txt");
+  size_t begin = 0;
+  while (begin <= raw.size() && notes.size() < 8) {
+    const size_t end = raw.find_first_of(L"\r\n", begin);
+    std::wstring line = Trim(raw.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin));
+    if (line.rfind(L"- ", 0) == 0 || line.rfind(L"* ", 0) == 0) line = Trim(line.substr(2));
+    if (!line.empty() && line[0] != L'#') notes.push_back(line);
+    if (end == std::wstring::npos) break;
+    begin = raw.find_first_not_of(L"\r\n", end);
+    if (begin == std::wstring::npos) break;
+  }
+  return notes;
+}
 ATOM RegisterSettingsClass() {
   static const ATOM atom = [] {
     WNDCLASSEXW wc{sizeof(wc)}; wc.lpfnWndProc = SettingsWindow::WindowProc;
@@ -338,11 +434,12 @@ void SettingsWindow::Layout() {
   const int card_width = width - content_left - right_pad;
   const int group_height = Scale(dpi_, 42), option_width = card_width / 3;
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
-  for (int i = 0; i < 5; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
+  for (int i = 0; i < 6; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
   account_rect_ = {}; phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
+  version_card_ = {}; update_card_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -390,7 +487,7 @@ void SettingsWindow::Layout() {
     // 从“通用”页展开短语后切过来，编辑器不能残留在本页。
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = phrases_rect_.bottom + Scale(dpi_, 22);
-  } else {
+  } else if (page_ == Page::Clipboard) {
     // Page::Clipboard：纯历史卡片流——无页头无标题，右上角仅留“清空”。
     const int top = Scale(dpi_, 100);
     done_y = Scale(dpi_, 616);
@@ -400,6 +497,11 @@ void SettingsWindow::Layout() {
     history_entries_ = gy::clipboard_history::ReadAll();
     MeasureClipboardCards();
     ShowWindow(phrases_edit_, SW_HIDE);
+  } else if (page_ == Page::Updates) {
+    version_card_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 106)};
+    update_card_ = {content_left, version_card_.bottom + Scale(dpi_, 14), content_left + card_width, version_card_.bottom + Scale(dpi_, 314)};
+    ShowWindow(phrases_edit_, SW_HIDE);
+    done_y = update_card_.bottom + Scale(dpi_, 22);
   }
   ShowWindow(account_edit_, page_ == Page::Account ? SW_SHOW : SW_HIDE);
   done_rect_ = {width - right_pad - Scale(dpi_, 110), done_y, width - right_pad, done_y + Scale(dpi_, 42)};
@@ -449,11 +551,11 @@ void SettingsWindow::Paint(HDC dc) {
   const HFONT title = Font(dpi_, 17, FW_SEMIBOLD), medium = Font(dpi_, 11, FW_SEMIBOLD), tiny = Font(dpi_, 10, FW_NORMAL), normal = Font(dpi_, 12, FW_NORMAL), large = Font(dpi_, 16, FW_SEMIBOLD);
   DrawGyWordmark(dc, RECT{Scale(dpi_, 24), Scale(dpi_, 25), Scale(dpi_, 76), Scale(dpi_, 58)}, pal.text);
   Text(dc, L"输入法设置", RECT{Scale(dpi_, 90), Scale(dpi_, 23), Scale(dpi_, 300), Scale(dpi_, 56)}, pal.text, DT_LEFT, title);
-  Text(dc, L"基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 310), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
+  Text(dc, L"v" + release_version_ + L" · 基础输入始终离线可用", RECT{Scale(dpi_, 90), Scale(dpi_, 52), Scale(dpi_, 410), Scale(dpi_, 72)}, pal.muted, DT_LEFT, tiny);
   Text(dc, L"×", close_rect_, pal.muted, DT_CENTER, title);
 
-  const wchar_t* nav_labels[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板"};
-  for (int i = 0; i < 5; ++i) {
+  const wchar_t* nav_labels[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板", L"更新"};
+  for (int i = 0; i < 6; ++i) {
     const bool selected = static_cast<int>(page_) == i;
     if (selected) {
       RECT marker{nav_rects_[i].right - Scale(dpi_, 2), nav_rects_[i].top + Scale(dpi_, 8), nav_rects_[i].right + Scale(dpi_, 7), nav_rects_[i].bottom - Scale(dpi_, 8)};
@@ -463,8 +565,8 @@ void SettingsWindow::Paint(HDC dc) {
   }
 
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
-  const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板"};
-  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户", L"跨设备复制粘贴与本机历史"};
+  const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板", L"版本与更新"};
+  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与未来的同步账户", L"跨设备复制粘贴与本机历史", L"已激活版本与本次更新内容"};
   // 剪贴板页无页头：卡片列表直接占满内容区。
   if (page_ != Page::Clipboard) {
     Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
@@ -538,7 +640,7 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
     Text(dc, L"同步、跨设备词库和 AI 权益将在账户接入后开放。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
-  } else {
+  } else if (page_ == Page::Clipboard) {
     // Page::Clipboard：纯历史卡片流（无页头/无标题行），右上角仅保留“清空”。
     Text(dc, L"清空", clip_history_clear_, kBlue, DT_CENTER, medium);
     const int card_gap = Scale(dpi_, 8);
@@ -575,6 +677,30 @@ void SettingsWindow::Paint(HDC dc) {
         Fill(dc, RECT{track.left, thumb_y, track.right, thumb_y + thumb_h}, pal.muted);
       }
     }
+  } else if (page_ == Page::Updates) {
+    Rounded(dc, version_card_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"当前运行版本", RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 10), version_card_.right - Scale(dpi_, 16), version_card_.top + Scale(dpi_, 32)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"v" + release_version_, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 29), version_card_.right - Scale(dpi_, 16), version_card_.top + Scale(dpi_, 60)}, pal.text, DT_LEFT, large);
+    const std::wstring activation = registered_version_.empty()
+        ? L"注册表激活版本暂不可读"
+        : (registered_version_ == release_version_ ? L"已激活 · Host / DLL / TSF 版本一致"
+                                                     : L"系统激活 v" + registered_version_ + L" · 当前 Host v" + release_version_);
+    Text(dc, activation, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 61), version_card_.right - Scale(dpi_, 16), version_card_.top + Scale(dpi_, 80)}, versions_consistent_ ? pal.muted : RGB(210, 80, 80), DT_LEFT, tiny);
+    const std::wstring tsf_detail = registered_core_version_.empty()
+        ? L"TSF / DLL 注册版本暂不可读"
+        : L"注册表 Host v" + registered_version_ + L" · TSF / DLL v" + registered_core_version_;
+    Text(dc, tsf_detail, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 80), version_card_.right - Scale(dpi_, 16), version_card_.bottom - Scale(dpi_, 8)}, versions_consistent_ ? pal.muted : RGB(210, 80, 80), DT_LEFT, tiny);
+    Rounded(dc, update_card_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"本次更新", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 12), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
+    if (release_notes_.empty()) {
+      Text(dc, L"此版本没有附带更新说明。", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 52), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 78)}, pal.muted, DT_LEFT, tiny);
+    } else {
+      int note_y = update_card_.top + Scale(dpi_, 50);
+      for (const auto& note : release_notes_) {
+        Text(dc, L"• " + note, RECT{update_card_.left + Scale(dpi_, 16), note_y, update_card_.right - Scale(dpi_, 16), note_y + Scale(dpi_, 26)}, pal.muted, DT_LEFT, tiny);
+        note_y += Scale(dpi_, 29);
+      }
+    }
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
@@ -584,6 +710,14 @@ void SettingsWindow::Paint(HDC dc) {
 }
 
 void SettingsWindow::Load() {
+  release_version_ = WidenAscii(GY_RELEASE_VERSION);
+  registered_version_ = ReadRegisteredVersion();
+  registered_core_version_ = ReadRegisteredDllVersion();
+  versions_consistent_ = !registered_version_.empty() && registered_version_ == registered_core_version_;
+  release_notes_ = ReadReleaseNotes(ModuleDirectory());
+  if (release_notes_.empty()) {
+    release_notes_ = {L"版本独立目录：Host、核心 DLL 与词库按版本隔离。", L"安装后自动校验注册、Logo 与离线引擎状态。"};
+  }
   input_mode_ = gy::input_mode::Read();
   const std::wstring path = SettingsPath(); if (path.empty()) return;
   wchar_t account[128]{}; GetPrivateProfileStringW(L"Account", L"Name", L"", account, static_cast<DWORD>(std::size(account)), path.c_str());
@@ -693,7 +827,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_LBUTTONUP: {
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      for (int i = 0; i < 5; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
+      for (int i = 0; i < 6; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
       if (self->page_ == Page::Input) for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }

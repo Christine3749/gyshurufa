@@ -1,0 +1,5 @@
+# GY 输入法 0.9.54
+
+- 安装器与 ZIP 安装路径共用任务注册器，统一创建并回读 ONSTART / ONLOGON 激活任务。
+- 安装事务继续由 `Global\\GYInputFinalizePending` 保护；旧版本目录、共享助手和回滚状态保持隔离。
+- Inno Setup 增加 pending 状态下的退出后注册重试，并保留版本独立更新说明与 SHA-256 清单。
