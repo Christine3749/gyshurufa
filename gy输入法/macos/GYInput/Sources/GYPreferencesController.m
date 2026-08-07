@@ -939,6 +939,18 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
   [self reloadClipboardCardsWithPalette:palette];
 }
 
+// 卡片最多显示 4 行，但测量和赋值以前都用整串：一条 38 KB 的复制会被
+// boundingRect 以 CGFLOAT_MAX 高度排出上千行，只为得出一句 MIN(4, …)，
+// 而且 20 行卡片每次切页全量重建。这就是设置页切换卡顿的来源。
+// 先截到远超 4 行所需的长度——显示效果完全等价（尾部本来就省略号）。
+static NSString *GYClipboardPreviewText(NSString *text) {
+  static const NSUInteger kMaxPreviewChars = 1024;
+  if (text.length <= kMaxPreviewChars) return text;
+  // 不要从代理对中间切开，否则会造出非法字符串。
+  const NSRange boundary = [text rangeOfComposedCharacterSequenceAtIndex:kMaxPreviewChars];
+  return [text substringToIndex:boundary.location];
+}
+
 - (NSInteger)clipboardLineCountForText:(NSString *)text width:(CGFloat)width {
   NSFont *font = GYAuxFont();
   const CGFloat lineHeight = GYDefaultLineHeight(font);
@@ -979,7 +991,8 @@ enum { kGYAccountPageIndex = 3, kGYClipboardPageIndex = 4 };
   CGFloat y = 0;
   NSInteger entryIndex = 0;
   for (GYClipboardEntry *entry in entries) {
-    NSString *displayText = entry.text.length == 0 ? @"（空白内容已过滤）" : entry.text;
+    NSString *displayText =
+        entry.text.length == 0 ? @"（空白内容已过滤）" : GYClipboardPreviewText(entry.text);
     const NSInteger lineCount = [self clipboardLineCountForText:displayText width:textWidth];
     const CGFloat cardHeight = [self clipboardCardHeightForLineCount:lineCount];
     const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;

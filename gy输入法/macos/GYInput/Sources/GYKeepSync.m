@@ -7,6 +7,8 @@ static NSString *const kKeepBase = @"https://keep.gyenbox.com";
 static NSString *const kClipboardPath = @"/api/clipboard?format=wire";
 static const NSTimeInterval kPollInterval = 3;
 static const NSTimeInterval kRequestTimeout = 20;
+/// 本机只展示 20 条，多解析出来的远端条目会被立刻丢弃。
+static const NSUInteger kMaxRemoteEntries = 20;
 
 /// One wire line: `<id>\t<capturedAt ms>\t<base64 text>`, newest first.
 static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base64Payload) {
@@ -17,21 +19,31 @@ static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base6
   NSString *body = decoded == nil ? nil : [[NSString alloc] initWithData:decoded encoding:NSUTF8StringEncoding];
   if (body.length == 0) return @[];
   NSMutableArray<GYClipboardEntry *> *entries = [NSMutableArray array];
-  for (NSString *line in [body componentsSeparatedByString:@"\n"]) {
-    if (line.length == 0) continue;
+  // Keep 不设上限，返回的可能是全部历史而不只是最新 20 条。以前这里把整份
+  // 载荷一次性切成数组、每 3 秒重做一遍，一轮拉取因此能跑到十几秒——线程栈
+  // 里全是 componentsSeparatedByString / CFStringFind。
+  // wire 是最新在前，所以取满 20 条就停，代价与远端总量无关。
+  __block NSUInteger parsed = 0;
+  [body enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+    if (parsed >= kMaxRemoteEntries) {
+      *stop = YES;
+      return;
+    }
+    if (line.length == 0) return;
     NSArray<NSString *> *fields = [line componentsSeparatedByString:@"\t"];
-    if (fields.count < 3) continue;
+    if (fields.count < 3) return;
     NSData *textData = [[NSData alloc] initWithBase64EncodedString:fields[2]
                                                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
     NSString *text = textData == nil ? nil : [[NSString alloc] initWithData:textData encoding:NSUTF8StringEncoding];
-    if (text.length == 0) continue;
+    if (text.length == 0) return;
     GYClipboardEntry *entry = [[GYClipboardEntry alloc] init];
     entry.entryId = fields[0];
     entry.text = text;
     entry.unixTime = fields[1].doubleValue / 1000.0;  // wire 用毫秒，本机存秒
     entry.pendingUpload = NO;
     [entries addObject:entry];
-  }
+    parsed++;
+  }];
   return entries;
 }
 
@@ -231,6 +243,7 @@ static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base6
            localAfter:(NSArray<GYClipboardEntry *> *)localAfter
   preMergeLocalHeadId:(NSString *_Nullable)preMergeLocalHeadId {
   NSMutableURLRequest *request = [self requestWithMethod:@"GET" token:token];
+  const NSTimeInterval startedAt = NSDate.date.timeIntervalSince1970;
   __weak typeof(self) weakSelf = self;
   [[_session dataTaskWithRequest:request
                completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -247,8 +260,11 @@ static NSArray<GYClipboardEntry *> *GYParseWirePayload(NSString *_Nullable base6
                  }
                  // 只记条数与状态码，绝不记正文——但没有这行，
                  // wire 格式对不上时表现为"什么都没发生"，无从查起。
-                 NSLog(@"GY keep: pull HTTP %ld → %lu entries", (long)code,
-                       (unsigned long)remote.count);
+                 // 载荷体积是关键指标：远端不设上限，这个数字会告诉我们
+                 // 服务端到底返回了最新 20 条还是全部历史。
+                 NSLog(@"GY keep: pull HTTP %ld → %lu entries, %lu bytes, %.0f ms", (long)code,
+                       (unsigned long)remote.count, (unsigned long)data.length,
+                       (NSDate.date.timeIntervalSince1970 - startedAt) * 1000);
                  dispatch_async(self_->_queue, ^{
                    if (remote == nil) {
                      // Pull failed: still persist the upload flags cleared above
