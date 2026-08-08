@@ -1,17 +1,17 @@
-# GY 输入法 × Keep：截图同步验收（0.10.63 candidate）
+# GY 输入法 × Keep：截图同步验收（0.10.64 candidate）
 
 这份验收只验证 PNG 图片，不会清空既有文字剪贴板历史。目标是确认一张 Windows 截图能够经过可靠 outbox 写入 Keep，并在另一台已登录同一账户的设备上恢复为可粘贴图片。
 
 ## 前置条件
 
-- 发送端与接收端都安装 `GYInputSetup-0.10.63.exe`，登录同一个 GY 账户。
+- 发送端与接收端都安装 `GYInputSetup-0.10.64.exe`，登录同一个 GY 账户。
 - 两台设备的「通用」页中「跨设备剪贴板」和「即时粘贴」均开启（默认开启）。
 - Keep 已部署包含图片路由的版本；图片单个上限为 10 MiB。
 
 安装与本机健康检查：
 
 ```powershell
-Start-Process -FilePath "C:\Users\Ethan\Desktop\01-Projects\shurufa\gy输入法\native\release\GYInputSetup-0.10.63.exe" -Verb RunAs -Wait
+Start-Process -FilePath "C:\Users\Ethan\Desktop\01-Projects\shurufa\gy输入法\native\release\GYInputSetup-0.10.64.exe" -Verb RunAs -Wait
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\GYInput\Validate-GYInput.ps1"
 ```
 
