@@ -38,14 +38,22 @@ typedef NS_ENUM(NSInteger, GYSyncFormatMode) {
 /// `responseParsesAsV4Shape` / `responseParsesAsV3Shape`: whether
 ///   GYParseSyncWireV4Payload / GYParseSyncWireV3Payload succeeded on the
 ///   actual response body. Passed in separately rather than assumed
-///   mutually exclusive, so a corrupt response (matches neither) is
-///   representable and handled without guessing.
+///   mutually exclusive: for any NON-EMPTY payload they are in fact
+///   mutually exclusive (the v3/v4 line shapes have different, disjoint
+///   field counts), but an EMPTY payload — a completely ordinary "nothing
+///   new to sync" response — is valid input to both parsers, which both
+///   return an empty array for it. So both flags being YES at once is a
+///   real, reachable case (not hypothetical), and must be treated as
+///   ambiguous/uninformative, not as v4 evidence.
 ///
 /// Transitions:
-///   200 + v4-shaped response  -> V4Confirmed  (only way to ever promote)
-///   200 + v3-shaped response  -> V3Only        (explicit downgrade: the
-///                                 server ignored/rejected format=wire-v4
-///                                 and returned its default shape anyway)
+///   200 + v4-shaped, NOT ALSO v3-shaped -> V4Confirmed (only way to promote)
+///   200 + v3-shaped, NOT ALSO v4-shaped -> V3Only       (explicit downgrade:
+///                                 the server ignored/rejected
+///                                 format=wire-v4 and returned its default
+///                                 shape anyway)
+///   200 + both shapes match (empty payload) -> unchanged (no decisive
+///                                 evidence either way — do not guess)
 ///   200 + neither shape parses -> unchanged    (corrupt page; retry, don't
 ///                                 guess either way)
 ///   any non-200 status         -> unchanged    (transient; v3 sync always

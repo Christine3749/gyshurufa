@@ -46,6 +46,23 @@
   }
 }
 
+// Review finding: an empty payload (an entirely ordinary "nothing new to
+// sync" response — GYParseSyncWireV3Payload(nil/"") and
+// GYParseSyncWireV4Payload(nil/"") BOTH return an empty array) made both
+// shape flags YES simultaneously. The original implementation checked
+// v4Shape before v3Shape with no exclusivity check, so this reachable,
+// common case silently promoted to V4Confirmed on zero actual v4 evidence.
+- (void)testBothShapesMatchingAmbiguousResponseDoesNotPromoteToV4 {
+  GYSyncFormatMode next = GYNextSyncFormatMode(GYSyncFormatV3Only, YES, 200, /*v4Shape=*/YES, /*v3Shape=*/YES);
+  XCTAssertEqual(next, GYSyncFormatV3Only, @"an ambiguous (empty-payload) response must not confirm v4");
+}
+
+- (void)testBothShapesMatchingAmbiguousResponseDoesNotDemoteFromV4 {
+  GYSyncFormatMode next = GYNextSyncFormatMode(GYSyncFormatV4Confirmed, YES, 200, YES, YES);
+  XCTAssertEqual(next, GYSyncFormatV4Confirmed, @"an ambiguous (empty-payload) response must not undo an "
+                 @"already-confirmed v4 mode either");
+}
+
 - (void)testCorruptTwoHundredResponseDoesNotConfirmV4 {
   // 200 but the body parses as neither shape (truncated, wrong envelope,
   // etc.) — must not guess; stay in the current mode and let the next round

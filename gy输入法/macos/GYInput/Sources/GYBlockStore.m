@@ -38,6 +38,11 @@ static GYBlockState GYStateFromName(NSString *name) {
   sqlite3 *_db;
   NSLock *_lock;
   NSString *_deviceId;
+  // The directory the sqlite file lives in — NOT necessarily
+  // +appSupportDirectory. migrateLegacyTSVIfNeeded looks for the legacy TSV
+  // here, so a test store opened via +storeAtPath: stays fully self
+  // contained instead of reaching into the real installed app's directory.
+  NSURL *_baseDirectory;
 }
 
 + (instancetype)sharedStore {
@@ -76,7 +81,8 @@ static GYBlockState GYStateFromName(NSString *name) {
   self = [super init];
   if (!self) return nil;
   _lock = [[NSLock alloc] init];
-  [NSFileManager.defaultManager createDirectoryAtURL:dbURL.URLByDeletingLastPathComponent
+  _baseDirectory = dbURL.URLByDeletingLastPathComponent;
+  [NSFileManager.defaultManager createDirectoryAtURL:_baseDirectory
                           withIntermediateDirectories:YES
                                            attributes:nil
                                                 error:nil];
@@ -248,27 +254,40 @@ static NSString *const kGYBlockColumns =
 
 // MARK: - Views
 
+// Three strictly ordered tiers, each only filling whatever room the tier
+// before it left:
+//   1. queued    — genuinely pending local captures, newest first. These are
+//      this device's most recent real action and must show immediately.
+//   2. confirmed — Keep's authoritative order, highest sequence first. This
+//      is what "Keep is the source of truth" means in practice.
+//   3. local_only — migrated-from-TSV rows of unknown server state (see
+//      migrateLegacyTSVIfNeeded). These must NOT outrank confirmed data.
+//      Fixed 2026-08-08: an earlier version of this query used a single
+//      `state != 'confirmed'` tier for both queued and local_only, which let
+//      stale pre-migration rows permanently occupy HEAD-20 slots ahead of
+//      Keep's real order — that tier alone could already fill `limit`
+//      before confirmed data ever got a turn. local_only is therefore its
+//      own last-priority tier — it only shows when there is nothing better,
+//      and disappears entirely once enough real data exists.
 - (NSArray<GYBlock *> *)headProjectionWithLimit:(NSUInteger)limit {
   [_lock lock];
   NSMutableArray<GYBlock *> *result = [NSMutableArray array];
   NSMutableSet<NSString *> *seen = [NSMutableSet set];
 
-  NSString *unconfirmedSQL = [NSString stringWithFormat:
-      @"SELECT %@ FROM blocks WHERE state != 'confirmed' ORDER BY local_seq DESC", kGYBlockColumns];
-  sqlite3_stmt *stmt = NULL;
-  sqlite3_prepare_v2(_db, unconfirmedSQL.UTF8String, -1, &stmt, NULL);
-  while (sqlite3_step(stmt) == SQLITE_ROW && result.count < limit) {
-    GYBlock *block = [self blockFromStatement:stmt];
-    if ([seen containsObject:block.entryId]) continue;
-    [seen addObject:block.entryId];
-    [result addObject:block];
-  }
-  sqlite3_finalize(stmt);
-
-  if (result.count < limit) {
-    NSString *confirmedSQL = [NSString stringWithFormat:
-        @"SELECT %@ FROM blocks WHERE state = 'confirmed' ORDER BY CAST(sequence AS INTEGER) DESC", kGYBlockColumns];
-    sqlite3_prepare_v2(_db, confirmedSQL.UTF8String, -1, &stmt, NULL);
+  NSArray<NSString *> *tierSQLs = @[
+    [NSString stringWithFormat:@"SELECT %@ FROM blocks WHERE state = 'queued' ORDER BY local_seq DESC", kGYBlockColumns],
+    // Sequence is an arbitrary-precision decimal string (spec §3: never a
+    // float/int64 cast, which could silently overflow or misorder once a
+    // sequence exceeds 2^63-1). LENGTH-then-lexicographic correctly orders
+    // non-negative decimal integers of any size, given no leading zeros —
+    // guaranteed by GYIsDecimalSequence's validation in GYSyncWire.
+    [NSString stringWithFormat:@"SELECT %@ FROM blocks WHERE state = 'confirmed' ORDER BY LENGTH(sequence) DESC, sequence DESC", kGYBlockColumns],
+    [NSString stringWithFormat:@"SELECT %@ FROM blocks WHERE state = 'local_only' ORDER BY local_seq DESC", kGYBlockColumns],
+  ];
+  for (NSString *sql in tierSQLs) {
+    if (result.count >= limit) break;
+    sqlite3_stmt *stmt = NULL;
+    sqlite3_prepare_v2(_db, sql.UTF8String, -1, &stmt, NULL);
     while (sqlite3_step(stmt) == SQLITE_ROW && result.count < limit) {
       GYBlock *block = [self blockFromStatement:stmt];
       if ([seen containsObject:block.entryId]) continue;
@@ -472,7 +491,7 @@ static NSString *const kGYBlockColumns =
   [_lock unlock];
   if (alreadyMigrated || hasBlocks) return;
 
-  NSURL *tsvURL = [[GYBlockStore appSupportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv"];
+  NSURL *tsvURL = [_baseDirectory URLByAppendingPathComponent:@"clipboard-history.tsv"];
   NSString *content = [NSString stringWithContentsOfURL:tsvURL encoding:NSUTF8StringEncoding error:nil];
   NSMutableArray<GYBlock *> *queued = [NSMutableArray array];
   NSMutableArray<GYBlock *> *localOnly = [NSMutableArray array];
@@ -541,7 +560,7 @@ static NSString *const kGYBlockColumns =
   [_lock unlock];
 
   if (queued.count + localOnly.count > 0) {
-    NSURL *backupURL = [[GYBlockStore appSupportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv.migrated-backup"];
+    NSURL *backupURL = [_baseDirectory URLByAppendingPathComponent:@"clipboard-history.tsv.migrated-backup"];
     [NSFileManager.defaultManager removeItemAtURL:backupURL error:nil];
     [NSFileManager.defaultManager moveItemAtURL:tsvURL toURL:backupURL error:nil];
     NSLog(@"GY blockstore: migrated %lu queued + %lu local-only rows from legacy TSV",

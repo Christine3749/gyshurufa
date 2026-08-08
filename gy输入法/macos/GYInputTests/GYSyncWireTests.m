@@ -40,6 +40,57 @@ static NSString *GYWirePayload(NSString *wireBody) {
   XCTAssertNil(GYParseSyncWireV3Payload(@"not-base64!!"));
 }
 
+// Review finding: strtoull with a NULL endptr silently truncates "123abc" to
+// 123 instead of rejecting it — these all exercise that path.
+#pragma mark - Malformed numeric fields
+
+- (void)testCapturedAtWithTrailingGarbageRejectsWholePayload {
+  NSString *wire = [NSString stringWithFormat:@"T\t42\tabcdef01\t1700000000000abc\t%@", GYBase64(@"hi")];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)),
+               @"a capturedAtMs field with trailing garbage must reject the whole payload, not parse as 1700000000000");
+}
+
+- (void)testCapturedAtWithLeadingPlusSignRejected {
+  // strtoull accepts a leading '+' by C standard; the wire grammar does not.
+  NSString *wire = [NSString stringWithFormat:@"T\t42\tabcdef01\t+1700000000000\t%@", GYBase64(@"hi")];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)));
+}
+
+- (void)testCapturedAtWithLeadingWhitespaceRejected {
+  // strtoull silently skips leading whitespace by C standard; the wire
+  // grammar does not.
+  NSString *wire = [NSString stringWithFormat:@"T\t42\tabcdef01\t 1700000000000\t%@", GYBase64(@"hi")];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)));
+}
+
+- (void)testCapturedAtEmptyFieldRejected {
+  NSString *wire = [NSString stringWithFormat:@"T\t42\tabcdef01\t\t%@", GYBase64(@"hi")];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)));
+}
+
+- (void)testImageSizeWithTrailingGarbageRejectsWholePayload {
+  NSString *wire = [NSString stringWithFormat:@"I\t99\timg12345\t1700000000000\timage/png\t1024bytes\t%@",
+                    [@"" stringByPaddingToLength:64 withString:@"ab12cd34" startingAtIndex:0]];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)),
+               @"an image size field with trailing garbage must reject the whole payload, not parse as 1024");
+}
+
+// Review finding: GYBlockStore's sequence ordering depends on no leading
+// zeros (see GYBlockStoreTests's 大序号排序 group); must be rejected here.
+#pragma mark - Leading zeros
+
+- (void)testLeadingZeroSequenceRejected {
+  NSString *wire = [NSString stringWithFormat:@"T\t042\tabcdef01\t1700000000000\t%@", GYBase64(@"hi")];
+  XCTAssertNil(GYParseSyncWireV3Payload(GYWirePayload(wire)));
+}
+
+- (void)testLeadingZeroCursorRejectedButBareZeroAccepted {
+  XCTAssertFalse(GYIsDecimalCursor(@"00"));
+  XCTAssertFalse(GYIsDecimalCursor(@"01"));
+  XCTAssertTrue(GYIsDecimalCursor(@"0"));
+  XCTAssertTrue(GYIsDecimalCursor(@"10"));
+}
+
 #pragma mark - T (text) lines
 
 - (void)testValidTextLineParsesAsAdd {

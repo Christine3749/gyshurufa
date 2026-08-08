@@ -1,6 +1,8 @@
 #import "GYSyncWire.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <errno.h>
+#import <string.h>
 
 static NSUInteger const kGYMaxWireChangesPerPayload = 64;
 // 2000-01-01T00:00:00Z in ms — anything before this is treated as a
@@ -33,21 +35,58 @@ static BOOL GYIsValidOriginDeviceIdField(NSString *value) {
   return value.length == 0 || GYIsValidEntryId(value);
 }
 
+/// Strict ASCII '0'-'9' only — deliberately NOT
+/// NSCharacterSet.decimalDigitCharacterSet, which matches any Unicode
+/// decimal digit (Arabic-Indic, full-width, etc). A sequence/cursor/size/
+/// capturedAt field that passed a Unicode-digit check but contained one of
+/// those would then silently truncate under strtoull, which only
+/// understands ASCII — see GYParseAllASCIIDigitsUInt64 below.
+static BOOL GYIsAllASCIIDigits(NSString *value, NSUInteger minLength, NSUInteger maxLength) {
+  if (![value isKindOfClass:NSString.class] || value.length < minLength || value.length > maxLength) return NO;
+  for (NSUInteger i = 0; i < value.length; ++i) {
+    unichar ch = [value characterAtIndex:i];
+    if (ch < '0' || ch > '9') return NO;
+  }
+  return YES;
+}
+
+/// No leading zero unless the value is exactly "0" — required so that
+/// ORDER BY LENGTH(sequence), sequence in GYBlockStore correctly emulates
+/// numeric ordering for arbitrary-precision non-negative integers (a
+/// leading zero would make two strings of unequal true magnitude compare as
+/// equal length, e.g. "007" vs "100").
+static BOOL GYHasNoLeadingZero(NSString *value) {
+  return value.length <= 1 || [value characterAtIndex:0] != '0';
+}
+
 BOOL GYIsDecimalSequence(NSString *value) {
-  if (![value isKindOfClass:NSString.class] || value.length == 0 || value.length > 20) return NO;
-  if ([value isEqualToString:@"0"]) return NO;
-  static NSCharacterSet *nonDigits;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{ nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet; });
-  return [value rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+  // Keep never assigns sequence 0, and GYBlockStore's sort invariant depends
+  // on no leading zeros (see GYHasNoLeadingZero).
+  return GYIsAllASCIIDigits(value, 1, 20) && ![value isEqualToString:@"0"] && GYHasNoLeadingZero(value);
 }
 
 BOOL GYIsDecimalCursor(NSString *value) {
-  if (![value isKindOfClass:NSString.class] || value.length == 0 || value.length > 20) return NO;
-  static NSCharacterSet *nonDigits;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{ nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet; });
-  return [value rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+  // "0" is the one valid cursor value that is also its own leading zero —
+  // GYHasNoLeadingZero already special-cases length <= 1.
+  return GYIsAllASCIIDigits(value, 1, 20) && GYHasNoLeadingZero(value);
+}
+
+/// Parses a field that must be entirely ASCII decimal digits (no sign, no
+/// whitespace, no trailing garbage) into an unsigned 64-bit integer.
+/// Deliberately does not just call strtoull(field, NULL, 10) directly: with
+/// a NULL endptr, strtoull silently stops at the first non-digit character
+/// and returns whatever numeric prefix it found — "123abc" would parse as
+/// 123 instead of being rejected, and a malformed capturedAtMs/size field
+/// would corrupt data instead of failing the whole payload closed.
+static BOOL GYParseAllASCIIDigitsUInt64(NSString *field, unsigned long long *out) {
+  if (!GYIsAllASCIIDigits(field, 1, 20)) return NO;
+  char *endptr = NULL;
+  const char *cstr = field.UTF8String;
+  errno = 0;
+  unsigned long long value = strtoull(cstr, &endptr, 10);
+  if (endptr != cstr + strlen(cstr) || errno == ERANGE) return NO;
+  *out = value;
+  return YES;
 }
 
 BOOL GYIsHexSHA256(NSString *value) {
@@ -112,7 +151,8 @@ static NSArray<GYWireChange *> *_Nullable GYParseSyncWirePayloadShape(NSString *
       continue;
     }
 
-    unsigned long long capturedAtMs = strtoull(fields[3].UTF8String, NULL, 10);
+    unsigned long long capturedAtMs = 0;
+    if (!GYParseAllASCIIDigitsUInt64(fields[3], &capturedAtMs)) return nil;
     if (capturedAtMs < kGYMinValidCapturedAtMs) return nil;
     GYBlock *block = [[GYBlock alloc] init];
     block.entryId = entryId;
@@ -123,7 +163,8 @@ static NSArray<GYWireChange *> *_Nullable GYParseSyncWirePayloadShape(NSString *
 
     if (image) {
       if (![fields[4] isEqualToString:@"image/png"]) return nil;
-      unsigned long long size = strtoull(fields[5].UTF8String, NULL, 10);
+      unsigned long long size = 0;
+      if (!GYParseAllASCIIDigitsUInt64(fields[5], &size)) return nil;
       if (size == 0 || size > 10 * 1024 * 1024) return nil;
       if (!GYIsHexSHA256(fields[6])) return nil;
       block.kind = GYBlockKindImage;
