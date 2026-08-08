@@ -48,7 +48,7 @@ Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $Version -NoN
 
 $hashLines = Get-ChildItem -LiteralPath $payloadRoot -File -Recurse | ForEach-Object {
   $relative = $_.FullName.Substring($payloadRoot.Length + 1)
-  "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $relative
+  "{0}  {1}" -f (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $relative
 }
 Set-Content -LiteralPath (Join-Path $payloadRoot 'SHA256SUMS.txt') -Value $hashLines -Encoding utf8
 

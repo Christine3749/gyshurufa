@@ -436,28 +436,30 @@ if (-not $Elevated) {
       exit 0
     }
   }
-  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
-  if ($Uninstall) { $arguments += ' -Uninstall' }
-  if ($Rollback) { $arguments += ' -Rollback' }
-  $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
-  if ($process.ExitCode -ne 0) { throw "GY 系统安装操作失败；管理员 PowerShell 返回 $($process.ExitCode)。" }
-  Update-CurrentUserKeyboardList
-  if (-not $Uninstall -and -not $Rollback -and -not (Test-Path -LiteralPath $pendingPath -PathType Leaf) -and -not (Invoke-InstalledValidation)) { Write-Warning '安装后自动校验未通过，请运行 Validate-GYInput.ps1 查看具体项。' }
-  if ($Uninstall) { Write-Host 'GY 输入法已从当前账户的键盘列表移除。' }
-  elseif ($Rollback) { Write-Host 'GY 输入法已回滚到上一个已验证版本。关闭并重新打开正在输入的应用即可生效。' }
-  else {
-    $newState = $null
-    $newStatePath = Join-Path $installRoot 'install-state.json'
-    if (Test-Path -LiteralPath $newStatePath) { $newState = Get-Content -LiteralPath $newStatePath -Raw | ConvertFrom-Json }
-    if (Test-Path -LiteralPath $pendingPath -PathType Leaf) {
-      Write-Host 'GY 输入法新版核心已暂存；请重启 Windows，重启时会自动激活新版并清理旧版本。重启前继续使用当前版本。'
-    } elseif ($newState -and $newState.requiresClientReload -eq $true) {
-      Write-Host 'GY 输入法已安装并激活新版本核心，但检测到已打开的应用可能仍在使用旧版 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。'
-    } else {
-      Write-Host 'GY 输入法已安装。按 Win + Space，选择“GY 输入法（拼音）”。'
+  if (-not $isAdmin) {
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
+    if ($Uninstall) { $arguments += ' -Uninstall' }
+    if ($Rollback) { $arguments += ' -Rollback' }
+    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "GY 系统安装操作失败；管理员 PowerShell 返回 $($process.ExitCode)。" }
+    Update-CurrentUserKeyboardList
+    if (-not $Uninstall -and -not $Rollback -and -not (Test-Path -LiteralPath $pendingPath -PathType Leaf) -and -not (Invoke-InstalledValidation)) { Write-Warning '安装后自动校验未通过，请运行 Validate-GYInput.ps1 查看具体项。' }
+    if ($Uninstall) { Write-Host 'GY 输入法已从当前账户的键盘列表移除。' }
+    elseif ($Rollback) { Write-Host 'GY 输入法已回滚到上一个已验证版本。关闭并重新打开正在输入的应用即可生效。' }
+    else {
+      $newState = $null
+      $newStatePath = Join-Path $installRoot 'install-state.json'
+      if (Test-Path -LiteralPath $newStatePath) { $newState = Get-Content -LiteralPath $newStatePath -Raw | ConvertFrom-Json }
+      if (Test-Path -LiteralPath $pendingPath -PathType Leaf) {
+        Write-Host 'GY 输入法新版核心已暂存；请重启 Windows，重启时会自动激活新版并清理旧版本。重启前继续使用当前版本。'
+      } elseif ($newState -and $newState.requiresClientReload -eq $true) {
+        Write-Host 'GY 输入法已安装并激活新版本核心，但检测到已打开的应用可能仍在使用旧版 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。'
+      } else {
+        Write-Host 'GY 输入法已安装。按 Win + Space，选择“GY 输入法（拼音）”。'
+      }
     }
+    exit 0
   }
-  exit 0
 }
 if (-not $isAdmin) { throw '注册系统输入法需要管理员权限。' }
 

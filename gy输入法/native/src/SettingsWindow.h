@@ -30,7 +30,9 @@ private:
   void ExportBackup();
   void ImportBackup();
   void BeginUpdateRepair();
-  void FinishUpdateRepair(std::uint64_t window_instance_id, DWORD exit_code);
+  void BeginUpdateRollback();
+  void BeginUpdateMaintenance(bool rollback);
+  void FinishUpdateMaintenance(std::uint64_t window_instance_id, DWORD exit_code, bool rollback);
   void BeginAccountLogin();
   void BeginAccountRestore();
   void BeginAccountLogout();
@@ -108,9 +110,11 @@ private:
   RECT version_card_{};
   RECT update_card_{};
   RECT update_repair_rect_{};
+  RECT update_rollback_rect_{};
   RECT update_status_rect_{};
   std::wstring release_version_;
   std::wstring registered_version_;
+  std::wstring rollback_version_;
   std::vector<std::wstring> release_notes_;
   std::wstring registered_core_version_;
   bool versions_consistent_ = false;

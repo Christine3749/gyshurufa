@@ -14,6 +14,7 @@ $statePath = Join-Path $installRoot 'install-state.json'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $pendingErrorPath = Join-Path $installRoot 'pending-activation.error.log'
 $repairErrorPath = Join-Path $installRoot 'repair.error.log'
+$recoveryReportPath = Join-Path $installRoot 'recovery-report.json'
 $transactionHelper = Join-Path $installRoot 'GYInputTransaction.ps1'
 $prunePath = Join-Path $installRoot 'Prune-GYOldVersions.ps1'
 $finalizerPath = Join-Path $commonDataRoot 'Finalize-GYClientReload.ps1'
@@ -35,7 +36,8 @@ function Get-X64RegSvr32 {
 function Get-StateString([object]$State, [string]$Name) {
   if (-not $State) { return '' }
   $property = $State.PSObject.Properties[$Name]
-  return if ($property) { [string]$property.Value } else { '' }
+  if ($property) { return [string]$property.Value }
+  return ''
 }
 
 function Test-ManagedGyPath([string]$Path) {
@@ -58,6 +60,27 @@ function Write-GyStateAtomically([object]$State) {
   try {
     [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temporary -Destination $statePath -Force
+  } finally {
+    if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Write-RecoveryReport([string]$Status, [string]$Version, [string]$Message, [bool]$CleanupCompleted) {
+  $report = [ordered]@{
+    schemaVersion = 1
+    action = 'maintenance'
+    status = $Status
+    version = $Version
+    completedAtUtc = [DateTime]::UtcNow.ToString('o')
+    cleanupCompleted = $CleanupCompleted
+    message = $Message
+  }
+  $temporary = Join-Path $installRoot ('.recovery-report.json.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+  try {
+    [IO.File]::WriteAllText($temporary, ($report | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $recoveryReportPath -Force
   } finally {
     if (Test-Path -LiteralPath $temporary -PathType Leaf) {
       Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
@@ -99,6 +122,8 @@ function Remove-StaleTransientHelpers {
     Remove-Item -LiteralPath (Join-Path $commonDataRoot $name) -Force -ErrorAction SilentlyContinue
   }
 }
+
+$script:cleanupCompleted = $false
 
 if (-not (Test-IsAdministrator)) {
   $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
@@ -193,20 +218,29 @@ try {
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $prunePath,
       '-InstallRoot', $installRoot, '-KeepVersions', $keep
     ) -Wait -PassThru -WindowStyle Hidden
-    if ($prune.ExitCode -ne 0) {
-      throw "旧版本整备器异常退出（退出码：$($prune.ExitCode)）。"
-    }
+    $script:cleanupCompleted = $prune.ExitCode -eq 0
     Remove-StaleTransientHelpers
+    $reportMessage = if ($script:cleanupCompleted) {
+      '已核验当前安装；旧版本与失效临时文件已清理。'
+    } else {
+      '当前安装已核验；部分旧版本清理将于下次整备继续。'
+    }
+    Write-RecoveryReport 'succeeded' $version $reportMessage $script:cleanupCompleted
   }
 
   Remove-Item -LiteralPath $repairErrorPath -Force -ErrorAction SilentlyContinue
-  Write-Host 'GY 整备完成：当前版本已校验，旧版本和失效临时安装文件已清理。' -ForegroundColor Green
+  if ($script:cleanupCompleted) {
+    Write-Host 'GY 整备完成：当前版本已校验，旧版本和失效临时安装文件已清理。' -ForegroundColor Green
+  } else {
+    Write-Host 'GY 当前版本已核验；部分占用的旧文件将在下次整备时继续清理。' -ForegroundColor Yellow
+  }
   exit 0
 } catch {
   try {
     "{0} {1}" -f [DateTime]::UtcNow.ToString('o'), $_.Exception.Message |
       Set-Content -LiteralPath $repairErrorPath -Encoding utf8
   } catch {}
+  try { Write-RecoveryReport 'failed' '' $_.Exception.Message $false } catch {}
   Write-Error $_.Exception.Message
   exit 1
 }

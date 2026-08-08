@@ -129,14 +129,15 @@ bool IsDeepCandidateAcceptable(const std::wstring& candidate) {
   return IsCandidateAcceptable(candidate);
 }
 
-// The candidate window remains a 5 × 5 page. The first page uses the IME
-// engine's normal ranking; later pages continue that ranking without a
-// stricter gate, so paging reaches the full candidate pool.
-// There is no minimum: a query with six good results returns six, not 75
-// padded slots. The larger raw scan leaves room for filtering the tail.
+// The candidate window remains a 5 × 5 page. Keep the user's exact pinyin
+// results first. If that exact result set is too short to fill the first page,
+// Lookup() appends de-duplicated candidates from progressively shorter valid
+// pinyin prefixes (for example gei → ge). That is a real candidate fallback,
+// not a UI placeholder: every filled slot is still selectable and commits its
+// own Chinese text. Later pages retain the complete Rime-ranked pool.
 constexpr int kRawCandidateScanLimit = 96;
-constexpr size_t kPrimaryCandidateLimit = 25;
-constexpr size_t kCandidatePoolLimit = 75;
+constexpr size_t kFirstPageCandidateTarget = 25;
+constexpr size_t kCandidatePoolLimit = 96;
 
 struct LocalSettingsCache {
   std::wstring path;
@@ -344,36 +345,35 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
   const int input_mode = settings.input_mode;
   if (input_mode == 2) return {};
   std::scoped_lock lock(runtime.mutex);
-  runtime.api->clear_composition(impl_->session);
-  runtime.api->set_option(impl_->session, "ascii_mode", False);
-  // Set the script option before feeding keys: the very first keystroke must
-  // already see the active 简/繁 mode, not whatever option a previous lookup
-  // left on this shared session.
-  runtime.api->set_option(impl_->session, "zh_hans", input_mode == 0 ? True : False);
-  const std::string keys = Utf8(pinyin);
-  for (const unsigned char key : keys) {
-    if (!runtime.api->process_key(impl_->session, key, 0)) return {};
-  }
-  RIME_STRUCT(RimeContext, context);
-  if (!runtime.api->get_context(impl_->session, &context)) return {};
-  std::vector<std::wstring> candidates;
-  std::vector<std::wstring> deep_candidates;
-  const int raw_candidate_count = std::min(context.menu.num_candidates, kRawCandidateScanLimit);
-  for (int i = 0; i < raw_candidate_count && candidates.size() + deep_candidates.size() < kCandidatePoolLimit; ++i) {
-    const std::wstring candidate = NormalizeOutputScript(Wide(context.menu.candidates[i].text), input_mode);
-    if (!IsCandidateAcceptable(candidate) ||
-        std::find(candidates.begin(), candidates.end(), candidate) != candidates.end() ||
-        std::find(deep_candidates.begin(), deep_candidates.end(), candidate) != deep_candidates.end()) {
-      continue;
+  const auto query_rime = [&](const std::wstring& code) {
+    std::vector<std::wstring> result;
+    runtime.api->clear_composition(impl_->session);
+    runtime.api->set_option(impl_->session, "ascii_mode", False);
+    // Set the script option before feeding keys: the very first keystroke must
+    // already see the active 简/繁 mode, not whatever option a previous lookup
+    // left on this shared session.
+    runtime.api->set_option(impl_->session, "zh_hans", input_mode == 0 ? True : False);
+    const std::string keys = Utf8(code);
+    for (const unsigned char key : keys) {
+      if (!runtime.api->process_key(impl_->session, key, 0)) return result;
     }
-    if (candidates.size() < kPrimaryCandidateLimit) {
-      candidates.push_back(candidate);
-    } else if (IsDeepCandidateAcceptable(candidate)) {
-      deep_candidates.push_back(candidate);
+    RIME_STRUCT(RimeContext, context);
+    if (!runtime.api->get_context(impl_->session, &context)) return result;
+    const int raw_candidate_count = std::min(context.menu.num_candidates, kRawCandidateScanLimit);
+    for (int i = 0; i < raw_candidate_count && result.size() < kCandidatePoolLimit; ++i) {
+      const std::wstring candidate = NormalizeOutputScript(Wide(context.menu.candidates[i].text), input_mode);
+      if (!IsCandidateAcceptable(candidate) ||
+          std::find(result.begin(), result.end(), candidate) != result.end()) {
+        continue;
+      }
+      result.push_back(candidate);
     }
-  }
-  runtime.api->free_context(&context);
-  candidates.insert(candidates.end(), deep_candidates.begin(), deep_candidates.end());
+    runtime.api->free_context(&context);
+    return result;
+  };
+
+  std::vector<std::wstring> candidates = query_rime(pinyin);
+  if (candidates.empty()) return {};
   const auto scores = LearningScores(pinyin);
   // Learning must surface words, not merely reorder the 75-pool: a candidate
   // the user picked before may sit beyond the Rime scan window (rank > 96)
@@ -399,6 +399,25 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
     candidates.insert(candidates.begin(), phrase);
   }
   candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+  // Exact input always owns the front of the list. Only when it cannot fill
+  // the 5 × 5 first page do we add shorter, valid pinyin prefixes behind it:
+  // gei → ge, nihao → niha → nih … . A prefix is queried rather than guessed;
+  // if Rime has no real candidates for it, it contributes nothing. Do not go
+  // below two letters: a bare initial is too noisy and is not a usable pinyin
+  // fallback surface.
+  std::wstring fallback = NormalizeCode(pinyin);
+  while (candidates.size() < kFirstPageCandidateTarget && fallback.size() > 2) {
+    fallback.pop_back();
+    while (!fallback.empty() && fallback.back() == L'\'') fallback.pop_back();
+    if (fallback.size() < 2) break;
+    const auto fallback_candidates = query_rime(fallback);
+    for (const std::wstring& candidate : fallback_candidates) {
+      if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end()) continue;
+      candidates.push_back(candidate);
+      if (candidates.size() >= kFirstPageCandidateTarget) break;
+    }
+  }
   if (candidates.size() > kCandidatePoolLimit) candidates.resize(kCandidatePoolLimit);
   return candidates;
 }
@@ -413,7 +432,6 @@ void PinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candida
   WritePrivateProfileStringW(L"Learning", key.c_str(), std::to_wstring(next).c_str(), path.c_str());
   SettingsCache().Invalidate();
 }
-
 
 
 

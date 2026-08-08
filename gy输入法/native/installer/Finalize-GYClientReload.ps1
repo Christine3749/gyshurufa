@@ -19,6 +19,14 @@ $taskNameLogon = 'GYInput\ActivatePendingLogon'
 $regsvr32 = Join-Path $env:WINDIR 'System32\regsvr32.exe'
 $prunePath = Join-Path $commonDataRoot 'Prune-GYOldVersions.ps1'
 $errorPath = Join-Path $installRoot 'pending-activation.error.log'
+$statePath = Join-Path $installRoot 'install-state.json'
+
+$pending = $null
+$previousDll = ''
+$previousHost = ''
+$previousHealth = ''
+$previousVersion = ''
+$registrationChanged = $false
 
 $mutex = $null
 $lockTaken = $false
@@ -85,9 +93,67 @@ function Write-Failure([string]$Message) {
 
 function Test-ManagedPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-  $root = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
-  $full = [IO.Path]::GetFullPath($Path)
-  return $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+  try {
+    $root = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
+    $full = [IO.Path]::GetFullPath($Path)
+    return $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+function Test-SamePath([string]$Left, [string]$Right) {
+  return [string]::Equals($Left, $Right, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Read-RegisteredString([string]$SubKey, [string]$ValueName) {
+  $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($SubKey)
+  if (-not $key) { return '' }
+  try { return [string]$key.GetValue($ValueName) } finally { $key.Dispose() }
+}
+
+function Assert-RegisteredGyState([string]$Dll, [string]$HostPath, [string]$Version, [string]$Context) {
+  $registeredDll = Read-RegisteredString 'Software\Classes\CLSID\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\InprocServer32' ''
+  $registeredHost = Read-RegisteredString 'Software\GYInput' 'HostPath'
+  $registeredVersion = Read-RegisteredString 'Software\GYInput' 'HostVersion'
+  if (-not (Test-SamePath $registeredDll $Dll) -or
+      -not (Test-SamePath $registeredHost $HostPath) -or
+      $registeredVersion -ne $Version) {
+    throw "$Context registry readback does not match the expected DLL, Host, and version."
+  }
+}
+
+function Assert-OfflineHealthy([string]$HealthPath, [string]$Context) {
+  $result = Start-Process -FilePath $HealthPath -WorkingDirectory (Split-Path -Parent $HealthPath) -Wait -PassThru
+  if ($result.ExitCode -ne 0) { throw "$Context health check failed (exit code: $($result.ExitCode))." }
+}
+
+function Write-VerifiedActiveState([string]$Version, [string]$Dll, [string]$HostPath,
+                                   [string]$HealthPath, [string]$PreviousVersion) {
+  $retainedVersion = $null
+  if ($PreviousVersion -match '^\d+\.\d+\.\d+$') { $retainedVersion = $PreviousVersion }
+  $state = [ordered]@{
+    schemaVersion = 2
+    version = $Version
+    hostVersion = $Version
+    coreVersion = $Version
+    installedAtUtc = [DateTime]::UtcNow.ToString('o')
+    dll = $Dll
+    host = $HostPath
+    health = $HealthPath
+    updateModel = 'versioned-tsf-host'
+    activationState = 'active'
+    registryVerified = $true
+    requiresClientReload = $false
+    previousCoreVersion = $retainedVersion
+  }
+  $temporary = Join-Path $installRoot ('.install-state.json.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+  try {
+    [IO.File]::WriteAllText($temporary, ($state | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $statePath -Force
+  } finally {
+    if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+  }
 }
 
 try {
@@ -123,49 +189,23 @@ try {
     throw 'Pending GY activation rollback state is missing or unmanaged.'
   }
 
-  $healthResult = Start-Process -FilePath $health -WorkingDirectory (Split-Path -Parent $health) -Wait -PassThru
-  if ($healthResult.ExitCode -ne 0) { throw "Pending GY health check failed (exit code: $($healthResult.ExitCode))." }
+  # The old registration must still be exactly the snapshot we staged. If it
+  # changed while this task waited for boot/logon, refuse to overwrite it.
+  Assert-OfflineHealthy $previousHealth 'Previous GY rollback target'
+  Assert-RegisteredGyState $previousDll $previousHost $previousVersion 'Previous GY rollback target'
+  Assert-OfflineHealthy $health 'Pending GY activation target'
 
   $register = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $dll) -Wait -PassThru
   if ($register.ExitCode -ne 0) { throw "Pending GY TSF registration failed (regsvr32 exit code: $($register.ExitCode))." }
-
-  $clsid = 'Software\Classes\CLSID\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\InprocServer32'
-  $activeKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($clsid)
-  try {
-    $activeDll = if ($activeKey) { [string]$activeKey.GetValue('') } else { '' }
-  } finally { if ($activeKey) { $activeKey.Dispose() } }
-  if (-not [string]::Equals($activeDll, $dll, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Pending GY activation did not point the registry at the staged DLL.'
-  }
+  $registrationChanged = $true
 
   $hostKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('Software\GYInput')
   try {
     $hostKey.SetValue('HostPath', $hostPath, [Microsoft.Win32.RegistryValueKind]::String)
     $hostKey.SetValue('HostVersion', $version, [Microsoft.Win32.RegistryValueKind]::String)
   } finally { $hostKey.Dispose() }
-
-  $state = [ordered]@{
-    schemaVersion = 2
-    version = $version
-    hostVersion = $version
-    coreVersion = $version
-    installedAtUtc = [DateTime]::UtcNow.ToString('o')
-    dll = $dll
-    host = $hostPath
-    health = $health
-    updateModel = 'versioned-tsf-host'
-    activationState = 'active'
-    registryVerified = $true
-    requiresClientReload = $false
-    previousCoreVersion = $previousVersion
-  }
-  $temporary = Join-Path $installRoot ('.install-state.json.' + [Guid]::NewGuid().ToString('N') + '.tmp')
-  try {
-    [IO.File]::WriteAllText($temporary, ($state | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporary -Destination (Join-Path $installRoot 'install-state.json') -Force
-  } finally {
-    if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
-  }
+  Assert-RegisteredGyState $dll $hostPath $version 'Pending GY activation target'
+  Write-VerifiedActiveState $version $dll $hostPath $health $previousVersion
 
   if (Test-Path -LiteralPath $prunePath -PathType Leaf) {
     $keep = $version
@@ -183,7 +223,7 @@ try {
   # If registration succeeded but a later verification/write failed, restore
   # the previous verified registration so the machine never remains half-active.
   try {
-    if ($pending -and $previousDll -and (Test-ManagedPath $previousDll) -and
+    if ($registrationChanged -and $pending -and $previousDll -and (Test-ManagedPath $previousDll) -and
         (Test-ManagedPath $previousHost) -and (Test-ManagedPath $previousHealth) -and
         (Test-Path -LiteralPath $previousDll -PathType Leaf) -and
         (Test-Path -LiteralPath $previousHost -PathType Leaf) -and
@@ -195,6 +235,8 @@ try {
           $hostKey.SetValue('HostPath', $previousHost, [Microsoft.Win32.RegistryValueKind]::String)
           $hostKey.SetValue('HostVersion', $previousVersion, [Microsoft.Win32.RegistryValueKind]::String)
         } finally { $hostKey.Dispose() }
+        Assert-RegisteredGyState $previousDll $previousHost $previousVersion 'Recovered previous GY version'
+        Write-VerifiedActiveState $previousVersion $previousDll $previousHost $previousHealth $version
       }
     }
   } catch {}

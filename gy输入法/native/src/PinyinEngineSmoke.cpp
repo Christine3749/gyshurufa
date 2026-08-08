@@ -131,16 +131,29 @@ int main() {
   }
   const auto paging_candidates = engine.Lookup(L"wo");
   // Paging is unlocked: single-syllable queries fill the pool with one-
-  // character candidates too. The pool ceiling (75) and the base quality gate
+  // character candidates too. The pool ceiling (96) and the base quality gate
   // (CJK ideographs only) still apply to every page, and a common single-
   // syllable query must produce more than one page of candidates.
-  if (paging_candidates.size() > 75) {
-    std::wcerr << L"Candidate pool exceeded its 75-entry ceiling.\n";
+  if (paging_candidates.size() > 96) {
+    std::wcerr << L"Candidate pool exceeded its 96-entry ceiling.\n";
     return 8;
   }
   if (paging_candidates.size() <= 25 || !UsesOnlyHanCharacters(paging_candidates)) {
     std::wcerr << L"Single-syllable paging stayed locked at 25 or admitted a non-Han entry.\n";
     return 8;
+  }
+  const auto fallback_candidates = engine.Lookup(L"gei");
+  // Product contract: a sparse exact syllable retains its exact first choice,
+  // then draws enough de-duplicated candidates from its shorter valid prefix
+  // (gei → ge) to fill the 5 × 5 page. "个" is the default Rime ge candidate
+  // and demonstrates that the extra slots are genuine selectable candidates,
+  // not repeated placeholders.
+  if (fallback_candidates.size() < 25 || fallback_candidates.size() > 96 ||
+      fallback_candidates.front() != L"给" ||
+      std::find(fallback_candidates.begin() + 1, fallback_candidates.end(), L"个") == fallback_candidates.end() ||
+      !UsesOnlyHanCharacters(fallback_candidates)) {
+    std::wcerr << L"Sparse exact pinyin did not preserve its first candidate and fill from its prefix.\n";
+    return 13;
   }
   wchar_t local_app_data[MAX_PATH]{};
   if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, MAX_PATH)) return 3;
@@ -184,6 +197,5 @@ int main() {
   }
   return 0;
 }
-
 
 
