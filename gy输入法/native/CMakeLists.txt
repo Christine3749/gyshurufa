@@ -170,7 +170,7 @@ if(GY_BUILD_HOST_SMOKE)
     src/ClipboardHistory.cpp
   )
   target_compile_features(GyClipboardHistorySyncSmoke PRIVATE cxx_std_20)
-  target_compile_definitions(GyClipboardHistorySyncSmoke PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_definitions(GyClipboardHistorySyncSmoke PRIVATE GY_TESTING UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_include_directories(GyClipboardHistorySyncSmoke PRIVATE src)
   target_link_libraries(GyClipboardHistorySyncSmoke PRIVATE ole32 gdiplus)
   if(MSVC)

@@ -1,4 +1,5 @@
 #include "ClipboardHistory.h"
+#include "ClipboardHistoryTest.h"
 
 #include <windows.h>
 
@@ -70,6 +71,33 @@ int main() {
     return Fail("ACK did not atomically project confirmation and clear retry state");
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after ACK test");
+
+  // This exercises the production screenshot conversion path without opening
+  // the real clipboard: an off-screen bitmap becomes PNG, is stored exactly
+  // as a screenshot asset, and remains readable from the confirmed HEAD.
+  const DWORD pixels[] = {0xff113355, 0xff66aa22, 0xffcc4422, 0xffeeeeee};
+  HBITMAP bitmap = CreateBitmap(2, 2, 1, 32, pixels);
+  std::string png;
+  if (!bitmap || !gy::clipboard_history::testing::EncodeBitmapAsPng(bitmap, &png)) {
+    if (bitmap) DeleteObject(bitmap);
+    return Fail("could not convert an in-memory screenshot bitmap to PNG");
+  }
+  DeleteObject(bitmap);
+  if (png.size() < 8 || png.compare(0, 8, "\x89PNG\r\n\x1a\n", 8) != 0) {
+    return Fail("screenshot conversion did not produce a PNG asset");
+  }
+  const Entry image{L"sync-smoke-image", 1700000050ULL, L"[图片]", false, EntryKind::PngImage, L"", 8};
+  if (!gy::clipboard_history::SaveImagePngFromKeep(image, png) ||
+      !gy::clipboard_history::ReplaceConfirmedSnapshot({image})) {
+    return Fail("could not persist screenshot asset in the confirmed HEAD");
+  }
+  std::string restored_png;
+  const std::vector<Entry> image_head = gy::clipboard_history::ReadAll();
+  if (image_head.size() != 1 || image_head.front().kind != EntryKind::PngImage ||
+      !gy::clipboard_history::ReadImagePng(image_head.front(), &restored_png) || restored_png != png) {
+    return Fail("screenshot PNG asset did not survive the local projection round trip");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after image test");
 
   const Entry first = Text(L"sync-smoke-first", L"first", 10);
   const Entry deleted = Text(L"sync-smoke-deleted", L"deleted", 20);

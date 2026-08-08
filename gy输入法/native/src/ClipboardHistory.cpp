@@ -271,6 +271,16 @@ bool WriteOutbox(const std::vector<Entry>& entries) {
 
 }  // namespace
 
+#ifdef GY_TESTING
+namespace testing {
+
+bool EncodeBitmapAsPng(HBITMAP bitmap, std::string* png) {
+  return ::gy::clipboard_history::EncodeBitmapAsPng(bitmap, png);
+}
+
+}  // namespace testing
+#endif
+
 std::wstring HistoryPath() {
   const std::wstring directory = RootDirectory();
   return directory.empty() ? std::wstring{} : directory + L"\\clipboard-history.tsv";
