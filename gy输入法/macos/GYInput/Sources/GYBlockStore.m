@@ -92,6 +92,7 @@ static GYBlockState GYStateFromName(NSString *name) {
   sqlite3_exec(_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
   sqlite3_exec(_db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
   [self createSchema];
+  [self runSchemaMigrations];
   [self loadOrCreateDeviceId];
   return self;
 }
@@ -132,6 +133,60 @@ static GYBlockState GYStateFromName(NSString *name) {
     NSLog(@"GY blockstore: schema create failed (%s)", errmsg);
     sqlite3_free(errmsg);
   }
+}
+
+// MARK: - Schema migrations
+//
+// CREATE TABLE IF NOT EXISTS above only creates a table that doesn't exist
+// yet — it is a silent no-op on a table that already exists, even if that
+// table's column set predates what this build expects. A device upgrading
+// from an earlier build (e.g. one before `needs_snapshot` existed) would
+// open its already-existing sync_state table via that IF NOT EXISTS path,
+// get nothing added, and then every needs_snapshot read/write would fail —
+// exactly the DELETE-repair durability that column exists to provide would
+// quietly stop working on an upgrade, while a fresh install looked fine.
+// PRAGMA user_version tracks which migrations have already run on this
+// device, so this only does real ALTER TABLE work once, ever, per device.
+- (void)runSchemaMigrations {
+  int version = 0;
+  sqlite3_stmt *versionStmt = NULL;
+  sqlite3_prepare_v2(_db, "PRAGMA user_version", -1, &versionStmt, NULL);
+  if (sqlite3_step(versionStmt) == SQLITE_ROW) version = sqlite3_column_int(versionStmt, 0);
+  sqlite3_finalize(versionStmt);
+
+  if (version < 1) {
+    // A brand-new database already has needs_snapshot from createSchema
+    // above, so this is a no-op there; an upgrading device's pre-existing
+    // sync_state table does not, and gets the column added here.
+    if (![self table:@"sync_state" hasColumn:@"needs_snapshot"]) {
+      char *errmsg = NULL;
+      if (sqlite3_exec(_db, "ALTER TABLE sync_state ADD COLUMN needs_snapshot INTEGER NOT NULL DEFAULT 0",
+                        NULL, NULL, &errmsg) != SQLITE_OK) {
+        NSLog(@"GY blockstore: migration 1 (sync_state.needs_snapshot) failed: %s", errmsg);
+        sqlite3_free(errmsg);
+        return;  // user_version stays below 1 so this retries next launch
+      }
+    }
+    sqlite3_exec(_db, "PRAGMA user_version = 1", NULL, NULL, NULL);
+  }
+}
+
+- (BOOL)table:(NSString *)table hasColumn:(NSString *)column {
+  // PRAGMA does not support binding the table name as a parameter; `table`
+  // is always a hardcoded literal from this file, never external input.
+  NSString *sql = [NSString stringWithFormat:@"PRAGMA table_info(%@)", table];
+  sqlite3_stmt *stmt = NULL;
+  sqlite3_prepare_v2(_db, sql.UTF8String, -1, &stmt, NULL);
+  BOOL found = NO;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    const unsigned char *name = sqlite3_column_text(stmt, 1);  // table_info: cid, name, type, ...
+    if (name != NULL && [column isEqualToString:[NSString stringWithUTF8String:(const char *)name]]) {
+      found = YES;
+      break;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
 }
 
 - (void)loadOrCreateDeviceId {

@@ -2,6 +2,8 @@
 #import "GYBlockStore.h"
 #import "GYSyncWire.h"
 
+#import <sqlite3.h>
+
 // Coverage for GYBlockStore against the five scenarios spec §11's
 // acceptance checklist calls out for the reliable Outbox: offline capture
 // past the 20-entry HEAD view, restart recovery, DELETE, and image hash
@@ -368,6 +370,65 @@
   XCTAssertEqual(headAfter.count, (NSUInteger)20);
   XCTAssertTrue([[headAfter valueForKey:@"entryId"] containsObject:ids[0]],
                 @"deleting a visible entry should let the 21st-oldest confirmed entry fill the gap");
+}
+
+#pragma mark - 旧库升级迁移 (schema migration on upgrade)
+
+// Review finding (upgrade-blocking): `CREATE TABLE IF NOT EXISTS` is a
+// no-op on a table that already exists, even if its column set predates
+// what this build expects. A device that already has a sync_state table
+// from before needs_snapshot existed would open it via that IF NOT EXISTS
+// path, get nothing added, and the whole DELETE-repair durability fix would
+// silently stop working on exactly the devices it matters most for —
+// upgraded installs, not fresh ones.
+//
+// This builds a REAL legacy-shape database by hand with the raw sqlite3 C
+// API (bypassing GYBlockStore entirely, which as of this build only ever
+// creates the current shape) — not a shortcut through any GYBlockStore
+// method — then opens it through GYBlockStore and verifies the migration.
+- (void)testUpgradingFromPreNeedsSnapshotDatabaseAddsColumnWithoutLosingCursor {
+  NSString *dbPath = [self freshDBPath];
+
+  // Hand-build the OLD schema: sync_state(account_id, cursor) — no
+  // needs_snapshot column, exactly what shipped before this fix.
+  sqlite3 *legacyDB = NULL;
+  XCTAssertEqual(sqlite3_open(dbPath.UTF8String, &legacyDB), SQLITE_OK);
+  XCTAssertEqual(sqlite3_exec(legacyDB,
+      "CREATE TABLE sync_state (account_id TEXT PRIMARY KEY, cursor TEXT NOT NULL DEFAULT '0');"
+      "INSERT INTO sync_state (account_id, cursor) VALUES ('user@example.com', '42');",
+      NULL, NULL, NULL), SQLITE_OK);
+  sqlite3_close(legacyDB);
+
+  // Open the legacy file through the current GYBlockStore -- this is where
+  // runSchemaMigrations must detect and repair the missing column.
+  GYBlockStore *upgraded = [GYBlockStore storeAtPath:dbPath];
+
+  XCTAssertEqualObjects([upgraded cursorForAccount:@"user@example.com"], @"42",
+                        @"the pre-existing cursor must survive the migration untouched");
+  XCTAssertFalse([upgraded needsSnapshotForAccount:@"user@example.com"],
+                 @"needs_snapshot must now be readable (added by the migration) and default to false");
+
+  [upgraded setNeedsSnapshot:YES forAccount:@"user@example.com"];
+  XCTAssertTrue([upgraded needsSnapshotForAccount:@"user@example.com"]);
+
+  // Simulated restart on the now-migrated file.
+  GYBlockStore *afterRestart = [GYBlockStore storeAtPath:dbPath];
+  XCTAssertTrue([afterRestart needsSnapshotForAccount:@"user@example.com"],
+                @"the flag must survive a restart on the migrated database, same as any fresh-installed one");
+  XCTAssertEqualObjects([afterRestart cursorForAccount:@"user@example.com"], @"42");
+}
+
+- (void)testMigrationIsIdempotentAcrossRepeatedOpens {
+  // Opening an already-migrated (or freshly-created, which is already at
+  // the latest schema) database repeatedly must never re-run ALTER TABLE —
+  // that would error the second time (SQLite has no "ADD COLUMN IF NOT
+  // EXISTS"), which PRAGMA user_version gating exists to prevent.
+  NSString *dbPath = [self freshDBPath];
+  XCTAssertNoThrow([GYBlockStore storeAtPath:dbPath]);
+  XCTAssertNoThrow([GYBlockStore storeAtPath:dbPath]);
+  XCTAssertNoThrow([GYBlockStore storeAtPath:dbPath]);
+  GYBlockStore *store = [GYBlockStore storeAtPath:dbPath];
+  XCTAssertFalse([store needsSnapshotForAccount:@"anyone"]);
 }
 
 #pragma mark - DELETE → snapshot 失败 → 重启 → snapshot 成功 → Head-20 恢复满格
