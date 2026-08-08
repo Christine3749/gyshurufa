@@ -88,6 +88,7 @@ Source: "{#MyPayloadDir}\rime-data\*"; DestDir: "{#MyVersionRoot}\rime-data"; Fl
 Source: "{#SourcePath}\Set-GYKeyboard.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Validate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Rollback-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Repair-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\GYInputTransaction.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Finalize-GYClientReload.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
@@ -100,11 +101,9 @@ Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion rec
 [Icons]
 Name: "{group}\Windows 输入法设置"; Filename: "{sys}\explorer.exe"; Parameters: "ms-settings:regionlanguage"
 Name: "{group}\验证 GY 输入法安装"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Validate-GYInput.ps1"""
+Name: "{group}\整备 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Repair-GYInput.ps1"""
 Name: "{group}\回退到上一版 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Rollback-GYInput.ps1"""
 Name: "{group}\卸载 GY 输入法"; Filename: "{uninstallexe}"
-[Run]
-Filename: "{sysnative}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Register-GYInputActivationTasks.ps1"""; Flags: runhidden nowait
-
 
 [Code]
 function GYCreateMutex(lpMutexAttributes: Integer; bInitialOwner: Boolean; lpName: String): Integer;
@@ -287,12 +286,27 @@ begin
   Result := 0;
 end;
 
+function SharedActivationHelpersExist(): Boolean;
+begin
+  Result := FileExists(CommonFinalizerPath()) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\Prune-GYOldVersions.ps1')) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\GYInputTransaction.ps1')) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\Register-GYInputActivationTasks.ps1'));
+end;
+
 function ShouldInstallSharedHelpers(): Boolean;
 var
   ActiveVersion: String;
   Valid: Boolean;
   Comparison: Integer;
 begin
+  // Finalizer helpers are deliberately self-cleaning after a successful
+  // activation. A later install must recreate a missing transient set before
+  // it can schedule another core reload, even when this package is older.
+  if not SharedActivationHelpersExist() then begin
+    Result := True;
+    Exit;
+  end;
   // An older EXE must never overwrite the shared transaction/finalizer
   // scripts that a newer active release still needs. If the registry value
   // is malformed, fail closed and preserve the existing helpers.
@@ -461,8 +475,38 @@ end;
 procedure SaveCapturedPreviousGyState();
 begin
   if not PreviousStateAvailable then Exit;
+  // This was the verified version active before the transaction. A rollback
+  // is permitted to target only an active, registry-verified snapshot.
   SaveStringToFile(ExpandConstant('{app}\install-state.previous.json'),
-                    GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'registered-pending-client-reload'), False);
+                    GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'active'), False);
+end;
+
+function VerifyCapturedPreviousGyState(): Boolean;
+var
+  ResultCode: Integer;
+  ActiveDll: String;
+  ActiveHost: String;
+  ActiveVersion: String;
+begin
+  Result := False;
+  if not PreviousStateAvailable then Exit;
+  if not RegQueryStringValue(HKLM64, 'SOFTWARE\Classes\CLSID\{#MyClassId}\InprocServer32', '', ActiveDll) then Exit;
+  if not RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost) then Exit;
+  if not RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', ActiveVersion) then Exit;
+  if (CompareText(ActiveDll, PreviousDll) <> 0) or
+     (CompareText(ActiveHost, PreviousHost) <> 0) or
+     (CompareText(ActiveVersion, PreviousHostVersion) <> 0) then Exit;
+  Result := Exec(PreviousHealth, '', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+            (ResultCode = 0);
+end;
+
+function HasExistingGyRegistration(): Boolean;
+var
+  ActiveDll: String;
+  ActiveHost: String;
+begin
+  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Classes\CLSID\{#MyClassId}\InprocServer32', '', ActiveDll) or
+            RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost);
 end;
 
 procedure PruneOldVersions();
@@ -659,6 +703,14 @@ begin
     try
     if not VerifyNewHost() then Abort;
     CapturePreviousGyState();
+    if PreviousStateAvailable and (not VerifyCapturedPreviousGyState()) then begin
+      MsgBox('当前 GY 输入法版本未通过离线自检，已拒绝覆盖它。请先使用“整备 GY 输入法”恢复当前版本。', mbError, MB_OK);
+      Abort;
+    end;
+    if (not PreviousStateAvailable) and HasExistingGyRegistration() then begin
+      MsgBox('检测到已有 GY 注册状态，但无法建立完整回退快照。为避免丢失可恢复版本，本次安装未作任何切换。', mbError, MB_OK);
+      Abort;
+    end;
     if PreviousStateAvailable then begin
       // Core DLLs are loaded inside already-running TSF clients. Keep the old
       // registration active until the next boot, then let the SYSTEM
@@ -754,7 +806,3 @@ begin
     end;
 end;
   end;
-
-
-
-

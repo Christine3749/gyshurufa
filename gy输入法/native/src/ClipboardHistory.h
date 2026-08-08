@@ -19,6 +19,18 @@ struct Entry {
   EntryKind kind = EntryKind::Text;
   // Images live as separate PNG files under %LOCALAPPDATA%, never in TSV.
   std::wstring image_sha256;
+  // Assigned only after Keep accepts this record. This immutable sequence,
+  // not the local device clock, is the order shared by every device.
+  unsigned long long sync_sequence = 0;
+};
+
+// A Keep cursor page is an ordered event stream, not just a list of rows.
+// Preserving ADD/DELETE order matters when an item is restored after deletion.
+enum class RemoteChangeKind { Add, Delete };
+
+struct RemoteChange {
+  RemoteChangeKind kind = RemoteChangeKind::Add;
+  Entry entry;
 };
 
 constexpr size_t kMaxEntries = 20;
@@ -28,8 +40,29 @@ constexpr size_t kMaxImageBytes = 10 * 1024 * 1024;
 // %LOCALAPPDATA%\GYInput\clipboard-history.tsv（UTF-8、原子替换）。
 std::wstring HistoryPath();
 
+// A durable upload outbox separate from the 20-entry local projection. It
+// keeps every locally captured item until Keep acknowledges it, so copying the
+// 21st item while offline cannot discard the first item's pending upload.
+std::wstring OutboxPath();
+
 // 新条目在前（index 0 = 最新）。文件缺失或损坏时返回空。
 std::vector<Entry> ReadAll();
+
+// Pending records are oldest first so an offline burst keeps its original
+// causal order when the device reconnects.
+std::vector<Entry> ReadPendingOutbox();
+bool MigratePendingHistoryToOutbox();
+bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequence);
+
+// Merge ordered confirmed Keep deltas into the local 20-entry projection.
+// Pending local copies stay visible immediately until their ACK arrives.
+bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes);
+
+// A snapshot is authoritative for confirmed entries.  Pending local entries
+// not yet visible remotely remain in the projection, while stale confirmed
+// rows disappear.  This is used only on startup and after a DELETE to fill
+// the 20-entry window without a full reload on every copy.
+bool ReplaceConfirmedSnapshot(const std::vector<Entry>& entries);
 
 // 从系统剪贴板读取文本或截图 PNG 并追加一条待同步记录。
 // 跳过：空文本、超过上限、与最新一条重复、

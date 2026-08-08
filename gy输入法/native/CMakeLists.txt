@@ -162,6 +162,24 @@ if(GY_BUILD_HOST_SMOKE)
   add_test(NAME GyImeHealthCheck COMMAND $<TARGET_FILE:GyImeHealth>)
   set_tests_properties(GyImeHealthCheck PROPERTIES TIMEOUT 20 LABELS "native;health;offline"
     ENVIRONMENT "LOCALAPPDATA=${GY_HEALTH_LOCALAPPDATA}")
+  # Sync v3 must preserve the event order.  In particular a later restore ADD
+  # has to win over an earlier DELETE for the same entry ID, and a snapshot
+  # must refill HEAD(20) after a deletion.
+  add_executable(GyClipboardHistorySyncSmoke
+    src/ClipboardHistorySyncSmoke.cpp
+    src/ClipboardHistory.cpp
+  )
+  target_compile_features(GyClipboardHistorySyncSmoke PRIVATE cxx_std_20)
+  target_compile_definitions(GyClipboardHistorySyncSmoke PRIVATE GY_TESTING UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_include_directories(GyClipboardHistorySyncSmoke PRIVATE src)
+  target_link_libraries(GyClipboardHistorySyncSmoke PRIVATE ole32 gdiplus)
+  if(MSVC)
+    target_compile_options(GyClipboardHistorySyncSmoke PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyClipboardHistorySyncSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  add_test(NAME GyClipboardHistorySyncSmoke COMMAND $<TARGET_FILE:GyClipboardHistorySyncSmoke>)
+  set_tests_properties(GyClipboardHistorySyncSmoke PROPERTIES TIMEOUT 10 LABELS "native;clipboard;sync;regression"
+    ENVIRONMENT "LOCALAPPDATA=${GY_HEALTH_LOCALAPPDATA}")
   add_executable(GyHostedPinyinEngineSmoke
     src/HostedPinyinEngineSmoke.cpp
     src/HostedPinyinEngine.cpp

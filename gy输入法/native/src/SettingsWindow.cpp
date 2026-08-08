@@ -8,11 +8,16 @@
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <objbase.h>
+#include <objidl.h>
+#include <gdiplus.h>
+#include <shellapi.h>
 #include <cstdint>
 #include <ctime>
 #include <windowsx.h>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -23,11 +28,19 @@
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
 constexpr UINT kAccountRequestComplete = WM_APP + 0x2A1;
+constexpr UINT kUpdateMaintenanceComplete = WM_APP + 0x2A2;
+constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 
 struct AccountRequestCompletion {
   std::uint64_t window_instance_id = 0;
   std::uint64_t request_id = 0;
   gy::account_auth::Result result;
+};
+
+struct UpdateMaintenanceCompletion {
+  std::uint64_t window_instance_id = 0;
+  DWORD exit_code = ERROR_GEN_FAILURE;
+  bool rollback = false;
 };
 
 void SecureErase(std::wstring* value) {
@@ -61,6 +74,20 @@ void PostAccountCompletion(HWND hwnd, std::uint64_t window_instance_id, std::uin
     delete completion;
   }
 }
+
+bool SameClipboardEntries(const std::vector<gy::clipboard_history::Entry>& left,
+                          const std::vector<gy::clipboard_history::Entry>& right) {
+  if (left.size() != right.size()) return false;
+  for (size_t index = 0; index < left.size(); ++index) {
+    const auto& a = left[index];
+    const auto& b = right[index];
+    if (a.id != b.id || a.pending_upload != b.pending_upload ||
+        a.sync_sequence != b.sync_sequence || a.kind != b.kind ||
+        a.unix_time != b.unix_time) return false;
+  }
+  return true;
+}
+
 // The settings window follows the candidate-window theme (Appearance\Theme):
 // one choice, one palette. GY Blue stays constant across themes because it is
 // the VI-locked selection color, and text on accent pills stays near-white.
@@ -166,6 +193,92 @@ WrappedCard WrapCardText(HDC dc, const std::wstring& value, HFONT font, int max_
 int ClipboardCardHeight(UINT dpi, int lines) {
   return Scale(dpi, 8) + lines * Scale(dpi, 18) + (lines - 1) * Scale(dpi, 7) +
          Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+
+void PostUpdateMaintenanceCompletion(HWND hwnd, std::uint64_t window_instance_id, DWORD exit_code, bool rollback) {
+  auto* completion = new UpdateMaintenanceCompletion{window_instance_id, exit_code, rollback};
+  if (!PostMessageW(hwnd, kUpdateMaintenanceComplete, 0, reinterpret_cast<LPARAM>(completion))) {
+    delete completion;
+  }
+}
+int ClipboardImageCardHeight(UINT dpi) {
+  return Scale(dpi, 8) + Scale(dpi, 72) + Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+
+ULONG_PTR SettingsGdiPlusToken() {
+  static const ULONG_PTR token = []() {
+    Gdiplus::GdiplusStartupInput startup{};
+    ULONG_PTR value = 0;
+    return Gdiplus::GdiplusStartup(&value, &startup, nullptr) == Gdiplus::Ok
+        ? value : static_cast<ULONG_PTR>(0);
+  }();
+  return token;
+}
+
+HBITMAP DecodeClipboardThumbnail(const gy::clipboard_history::Entry& entry, int max_width,
+                                 int max_height, SIZE* size) {
+  if (!size || entry.kind != gy::clipboard_history::EntryKind::PngImage ||
+      max_width <= 0 || max_height <= 0 || !SettingsGdiPlusToken()) return nullptr;
+  size->cx = 0;
+  size->cy = 0;
+  std::string png;
+  if (!gy::clipboard_history::ReadImagePng(entry, &png) || png.empty()) return nullptr;
+  IStream* stream = nullptr;
+  if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) != S_OK) {
+    std::fill(png.begin(), png.end(), '\0');
+    return nullptr;
+  }
+  ULONG written = 0;
+  const bool written_all = stream->Write(png.data(), static_cast<ULONG>(png.size()), &written) == S_OK &&
+      written == png.size();
+  std::fill(png.begin(), png.end(), '\0');
+  png.clear();
+  LARGE_INTEGER zero{};
+  if (!written_all || stream->Seek(zero, STREAM_SEEK_SET, nullptr) != S_OK) {
+    stream->Release();
+    return nullptr;
+  }
+  Gdiplus::Image source(stream, FALSE);
+  const UINT source_width = source.GetWidth();
+  const UINT source_height = source.GetHeight();
+  if (source.GetLastStatus() != Gdiplus::Ok || source_width == 0 || source_height == 0) {
+    stream->Release();
+    return nullptr;
+  }
+  const double scale = std::min(static_cast<double>(max_width) / source_width,
+                                static_cast<double>(max_height) / source_height);
+  const int width = std::max(1, static_cast<int>(source_width * scale + 0.5));
+  const int height = std::max(1, static_cast<int>(source_height * scale + 0.5));
+  Gdiplus::Bitmap thumbnail(width, height, PixelFormat32bppPARGB);
+  Gdiplus::Graphics graphics(&thumbnail);
+  graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+  graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+  const bool drawn = thumbnail.GetLastStatus() == Gdiplus::Ok &&
+      graphics.DrawImage(&source, Gdiplus::Rect(0, 0, width, height), 0, 0,
+                         source_width, source_height, Gdiplus::UnitPixel) == Gdiplus::Ok;
+  HBITMAP bitmap = nullptr;
+  const bool copied = drawn && thumbnail.GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &bitmap) == Gdiplus::Ok && bitmap;
+  stream->Release();
+  if (!copied) return nullptr;
+  size->cx = width;
+  size->cy = height;
+  return bitmap;
+}
+
+void DrawClipboardThumbnail(HDC dc, HBITMAP bitmap, const SIZE& size, const RECT& bounds) {
+  if (!bitmap || size.cx <= 0 || size.cy <= 0) return;
+  HDC image_dc = CreateCompatibleDC(dc);
+  if (!image_dc) return;
+  const HGDIOBJ previous = SelectObject(image_dc, bitmap);
+  const int bounds_width = static_cast<int>(bounds.right - bounds.left);
+  const int bounds_height = static_cast<int>(bounds.bottom - bounds.top);
+  const int image_width = static_cast<int>(size.cx);
+  const int image_height = static_cast<int>(size.cy);
+  const int x = static_cast<int>(bounds.left) + std::max(0, (bounds_width - image_width) / 2);
+  const int y = static_cast<int>(bounds.top) + std::max(0, (bounds_height - image_height) / 2);
+  BitBlt(dc, x, y, image_width, image_height, image_dc, 0, 0, SRCCOPY);
+  SelectObject(image_dc, previous);
+  DeleteDC(image_dc);
 }
 void DrawCardText(HDC dc, const WrappedCard& card, RECT rect, COLORREF color, HFONT font,
                   int line_height, int line_gap) {
@@ -496,7 +609,7 @@ void SettingsWindow::Layout() {
   phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
-  version_card_ = {}; update_card_ = {};
+  version_card_ = {}; update_card_ = {}; update_repair_rect_ = {}; update_rollback_rect_ = {}; update_status_rect_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -570,11 +683,21 @@ void SettingsWindow::Layout() {
                            content_left + card_width, top + Scale(dpi_, 28)};
     clip_history_list_ = {content_left, top + Scale(dpi_, 34), content_left + card_width, done_y - Scale(dpi_, 10)};
     history_entries_ = gy::clipboard_history::ReadAll();
+    PruneClipboardThumbnails();
     MeasureClipboardCards();
     ShowWindow(phrases_edit_, SW_HIDE);
   } else if (page_ == Page::Updates) {
     version_card_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 106)};
     update_card_ = {content_left, version_card_.bottom + Scale(dpi_, 14), content_left + card_width, version_card_.bottom + Scale(dpi_, 314)};
+    // “整备”与“回退”是轻量恢复动作，不与底部的“完成”争夺主操作。
+    update_repair_rect_ = {update_card_.right - Scale(dpi_, 64), update_card_.top + Scale(dpi_, 8),
+                           update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 36)};
+    if (!rollback_version_.empty() && rollback_version_ != registered_version_) {
+      update_rollback_rect_ = {update_repair_rect_.left - Scale(dpi_, 80), update_card_.top + Scale(dpi_, 8),
+                               update_repair_rect_.left - Scale(dpi_, 8), update_card_.top + Scale(dpi_, 36)};
+    }
+    update_status_rect_ = {update_card_.left + Scale(dpi_, 16), update_card_.bottom - Scale(dpi_, 54),
+                           update_card_.right - Scale(dpi_, 16), update_card_.bottom - Scale(dpi_, 16)};
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = update_card_.bottom + Scale(dpi_, 22);
   }
@@ -586,12 +709,14 @@ void SettingsWindow::Layout() {
   ShowWindow(account_password_edit_, account_page && account_form ? SW_SHOW : SW_HIDE);
   EnableWindow(account_email_edit_, account_state_ != AccountState::LoggingIn);
   EnableWindow(account_password_edit_, account_state_ != AccountState::LoggingIn);
-  done_rect_ = {width - right_pad - Scale(dpi_, 110), done_y, width - right_pad, done_y + Scale(dpi_, 42)};
+  done_rect_ = {width - right_pad - Scale(dpi_, 110), done_y, width - right_pad, done_y + Scale(dpi_, 36)};
   close_rect_ = {width - Scale(dpi_, 48), Scale(dpi_, 18), width - Scale(dpi_, 18), Scale(dpi_, 48)};
   // The outer frame is fixed. Changing tabs or expanding phrases must never
   // make the settings dialog jump or change its proportions.
   const HRGN region = CreateRoundRectRgn(0, 0, width + 1, height_ + 1, Scale(dpi_, 14), Scale(dpi_, 14));
   SetWindowRgn(hwnd_, region, FALSE);
+  if (page_ == Page::Clipboard) SetTimer(hwnd_, kClipboardStatusTimer, 250, nullptr);
+  else KillTimer(hwnd_, kClipboardStatusTimer);
   InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -605,8 +730,12 @@ void SettingsWindow::MeasureClipboardCards() {
   HDC measure_dc = GetDC(nullptr);
   const HFONT body = Font(dpi_, 16, FW_SEMIBOLD);
   for (const auto& entry : history_entries_) {
-    const WrappedCard wrapped = WrapCardText(measure_dc, entry.text, body, content_width);
-    history_card_heights_.push_back(ClipboardCardHeight(dpi_, std::max(1, static_cast<int>(wrapped.lines.size()))));
+    if (entry.kind == gy::clipboard_history::EntryKind::PngImage) {
+      history_card_heights_.push_back(ClipboardImageCardHeight(dpi_));
+    } else {
+      const WrappedCard wrapped = WrapCardText(measure_dc, entry.text, body, content_width);
+      history_card_heights_.push_back(ClipboardCardHeight(dpi_, std::max(1, static_cast<int>(wrapped.lines.size()))));
+    }
   }
   DeleteObject(body);
   ReleaseDC(nullptr, measure_dc);
@@ -620,6 +749,85 @@ void SettingsWindow::MeasureClipboardCards() {
     if (acc >= list_h) { history_max_scroll_ = i; break; }
   }
   history_scroll_ = std::clamp(history_scroll_, 0, history_max_scroll_);
+}
+
+std::wstring ParentDirectory(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+}
+
+std::wstring InstalledGyRoot() {
+  // Host runs from <Program Files>\\GYInput\\versions\\<version>. Walk only
+  // that fixed hierarchy; never derive a maintenance path from settings data
+  // or from a registry value controlled outside this product.
+  const std::wstring version_root = ModuleDirectory();
+  const std::wstring versions_root = ParentDirectory(version_root);
+  return ParentDirectory(versions_root);
+}
+
+std::wstring InstalledMaintenanceScriptPath(const wchar_t* name) {
+  const std::wstring install_root = InstalledGyRoot();
+  if (install_root.empty() || !name || !*name) return {};
+  return install_root + L"\\" + name;
+}
+
+std::wstring ReadJsonVersionField(const std::wstring& path) {
+  const std::wstring raw = ReadTextFile(path);
+  constexpr std::wstring_view marker = L"\"version\"";
+  const size_t marker_pos = raw.find(marker);
+  if (marker_pos == std::wstring::npos) return {};
+  const size_t colon = raw.find(L':', marker_pos + marker.size());
+  const size_t begin = colon == std::wstring::npos ? std::wstring::npos : raw.find(L'\"', colon + 1);
+  const size_t end = begin == std::wstring::npos ? std::wstring::npos : raw.find(L'\"', begin + 1);
+  if (end == std::wstring::npos || end - begin <= 1 || end - begin > 32) return {};
+  const std::wstring version = raw.substr(begin + 1, end - begin - 1);
+  int dots = 0;
+  for (const wchar_t character : version) {
+    if (character == L'.') { ++dots; continue; }
+    if (character < L'0' || character > L'9') return {};
+  }
+  return dots == 2 ? version : std::wstring{};
+}
+
+std::wstring InstalledRollbackVersion() {
+  const std::wstring install_root = InstalledGyRoot();
+  return install_root.empty() ? std::wstring{} : ReadJsonVersionField(install_root + L"\\install-state.previous.json");
+}
+
+SettingsWindow::ClipboardThumbnail* SettingsWindow::FindOrCreateThumbnail(
+    const gy::clipboard_history::Entry& entry, int max_width, int max_height) {
+  if (entry.kind != gy::clipboard_history::EntryKind::PngImage || entry.id.empty()) return nullptr;
+  for (auto& thumbnail : history_thumbnails_) {
+    if (thumbnail.entry_id == entry.id) return thumbnail.bitmap ? &thumbnail : nullptr;
+  }
+  ClipboardThumbnail thumbnail;
+  thumbnail.entry_id = entry.id;
+  thumbnail.bitmap = DecodeClipboardThumbnail(entry, max_width, max_height, &thumbnail.size);
+  if (!thumbnail.bitmap) return nullptr;
+  history_thumbnails_.push_back(std::move(thumbnail));
+  return &history_thumbnails_.back();
+}
+
+void SettingsWindow::PruneClipboardThumbnails() {
+  for (auto it = history_thumbnails_.begin(); it != history_thumbnails_.end();) {
+    const bool still_visible = std::any_of(history_entries_.begin(), history_entries_.end(),
+        [&](const gy::clipboard_history::Entry& entry) {
+          return entry.kind == gy::clipboard_history::EntryKind::PngImage && entry.id == it->entry_id;
+        });
+    if (still_visible) {
+      ++it;
+      continue;
+    }
+    if (it->bitmap) DeleteObject(it->bitmap);
+    it = history_thumbnails_.erase(it);
+  }
+}
+
+void SettingsWindow::ClearClipboardThumbnails() {
+  for (auto& thumbnail : history_thumbnails_) {
+    if (thumbnail.bitmap) DeleteObject(thumbnail.bitmap);
+  }
+  history_thumbnails_.clear();
 }
 
 void SettingsWindow::Paint(HDC dc) {
@@ -763,11 +971,30 @@ void SettingsWindow::Paint(HDC dc) {
         const COLORREF row_fill = (index % 2 == 0) ? pal.surface : pal.surface_alt;
         Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         const auto& entry = history_entries_[static_cast<size_t>(index)];
-        const WrappedCard wrapped = WrapCardText(dc, entry.text, large, card.right - card.left - Scale(dpi_, 28));
-        DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
-                                       card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
-        Text(dc, FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
-                                                        card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+        if (entry.kind == gy::clipboard_history::EntryKind::PngImage) {
+          const RECT preview{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
+                             card.left + Scale(dpi_, 126), card.top + Scale(dpi_, 80)};
+          Rounded(dc, preview, pal.ink, pal.border, Scale(dpi_, 6));
+          if (ClipboardThumbnail* thumbnail = FindOrCreateThumbnail(entry, Scale(dpi_, 104), Scale(dpi_, 64))) {
+            DrawClipboardThumbnail(dc, thumbnail->bitmap, thumbnail->size, preview);
+          } else {
+            Text(dc, L"图片不可读取", preview, pal.muted, DT_CENTER, tiny);
+          }
+          Text(dc, L"图片", RECT{preview.right + Scale(dpi_, 14), card.top + Scale(dpi_, 14),
+                                   card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 40)},
+               pal.text, DT_LEFT, medium);
+          Text(dc, L"PNG · 已保存到 Keep", RECT{preview.right + Scale(dpi_, 14), card.top + Scale(dpi_, 42),
+                                                card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 62)},
+               pal.muted, DT_LEFT, tiny);
+        } else {
+          const WrappedCard wrapped = WrapCardText(dc, entry.text, large, card.right - card.left - Scale(dpi_, 28));
+          DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
+                                         card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
+        }
+        const std::wstring status = entry.pending_upload ? L"同步中 · " : L"已确认 · ";
+        Text(dc, status + FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
+                                                                  card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)},
+             entry.pending_upload ? kBlue : pal.muted, DT_LEFT, tiny);
         top += card_h + card_gap;
         ++visible_rows;
       }
@@ -795,16 +1022,39 @@ void SettingsWindow::Paint(HDC dc) {
         : L"注册表 Host v" + registered_version_ + L" · TSF / DLL v" + registered_core_version_;
     Text(dc, tsf_detail, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 80), version_card_.right - Scale(dpi_, 16), version_card_.bottom - Scale(dpi_, 8)}, versions_consistent_ ? pal.muted : RGB(210, 80, 80), DT_LEFT, tiny);
     Rounded(dc, update_card_, pal.surface, pal.border, Scale(dpi_, 9));
-    Text(dc, L"本次更新", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 12), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
+    const int update_actions_left = update_rollback_rect_.right > update_rollback_rect_.left
+        ? update_rollback_rect_.left : update_repair_rect_.left;
+    Text(dc, L"本次更新", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 12), update_actions_left - Scale(dpi_, 12), update_card_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
     if (release_notes_.empty()) {
       Text(dc, L"此版本没有附带更新说明。", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 52), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 78)}, pal.muted, DT_LEFT, tiny);
     } else {
       int note_y = update_card_.top + Scale(dpi_, 50);
       for (const auto& note : release_notes_) {
+        if (note_y + Scale(dpi_, 26) > update_status_rect_.top - Scale(dpi_, 10)) break;
         Text(dc, L"• " + note, RECT{update_card_.left + Scale(dpi_, 16), note_y, update_card_.right - Scale(dpi_, 16), note_y + Scale(dpi_, 26)}, pal.muted, DT_LEFT, tiny);
         note_y += Scale(dpi_, 29);
       }
     }
+    std::wstring default_repair_status = versions_consistent_
+        ? L"整备会核验当前安装，并清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
+        : L"检测到激活版本不一致；可整备当前安装并安全清理旧版本残留。";
+    if (update_rollback_rect_.right > update_rollback_rect_.left) {
+      default_repair_status += L" 可回退至 v" + rollback_version_ + L"。";
+    }
+    const std::wstring& repair_status = update_repair_status_.empty() ? default_repair_status : update_repair_status_;
+    // A failed housekeeping pass is not the same thing as a broken input
+    // method. Keep red for a real version mismatch; use calm amber when the
+    // active Host / DLL / TSF trio is already healthy and only cleanup waits.
+    const COLORREF repair_status_color = update_repair_failed_
+        ? (versions_consistent_ ? RGB(191, 151, 83) : RGB(210, 80, 80))
+        : pal.muted;
+    Text(dc, repair_status, update_status_rect_, repair_status_color, DT_LEFT | DT_WORDBREAK, tiny);
+    if (update_rollback_rect_.right > update_rollback_rect_.left) {
+      Text(dc, update_repair_in_progress_ ? L"处理中…" : L"回退", update_rollback_rect_,
+           update_repair_in_progress_ ? pal.muted : kBlue, DT_RIGHT, medium);
+    }
+    Text(dc, update_repair_in_progress_ ? L"处理中…" : L"整备", update_repair_rect_,
+         update_repair_in_progress_ ? pal.muted : kBlue, DT_RIGHT, medium);
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
@@ -817,7 +1067,16 @@ void SettingsWindow::Load() {
   release_version_ = WidenAscii(GY_RELEASE_VERSION);
   registered_version_ = ReadRegisteredVersion();
   registered_core_version_ = ReadRegisteredDllVersion();
-  versions_consistent_ = !registered_version_.empty() && registered_version_ == registered_core_version_;
+  rollback_version_ = InstalledRollbackVersion();
+  // The update page's own compiled release is part of the truth.  A Host
+  // executable from 0.10.64 with the registry still on 0.10.61 must be shown
+  // as repairable instead of pretending that the old Host/DLL pair is healthy.
+  versions_consistent_ = !release_version_.empty() && !registered_version_.empty() &&
+      release_version_ == registered_version_ && registered_version_ == registered_core_version_;
+  if (!update_repair_in_progress_) {
+    update_repair_status_.clear();
+    update_repair_failed_ = false;
+  }
   release_notes_ = ReadReleaseNotes(ModuleDirectory());
   if (release_notes_.empty()) {
     release_notes_ = {L"版本独立目录：Host、核心 DLL 与词库按版本隔离。", L"安装后自动校验注册、Logo 与离线引擎状态。"};
@@ -871,6 +1130,7 @@ void SettingsWindow::ClearHistory() {
   if (MessageBoxW(hwnd_, L"清空本机剪贴板历史？不影响其他设备。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
   gy::clipboard_history::Clear();
   history_entries_.clear();
+  ClearClipboardThumbnails();
   history_scroll_ = 0;
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -888,6 +1148,111 @@ void SettingsWindow::ImportBackup() {
   const int imported_mode = static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", gy::input_mode::kSimplified, destination.c_str()));
   gy::input_mode::Write(imported_mode);
   Load(); InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void SettingsWindow::BeginUpdateRepair() {
+  BeginUpdateMaintenance(false);
+}
+
+void SettingsWindow::BeginUpdateRollback() {
+  BeginUpdateMaintenance(true);
+}
+
+void SettingsWindow::BeginUpdateMaintenance(bool rollback) {
+  if (!hwnd_ || update_repair_in_progress_) return;
+
+  const wchar_t* const script_name = rollback ? L"Rollback-GYInput.ps1" : L"Repair-GYInput.ps1";
+  const std::wstring maintenance_script = InstalledMaintenanceScriptPath(script_name);
+  if (maintenance_script.empty() || GetFileAttributesW(maintenance_script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    update_repair_failed_ = true;
+    update_repair_status_ = rollback
+        ? L"当前安装缺少回退组件；请先安装同版本或更高版本的 GY 安装包。"
+        : L"当前安装缺少整备组件；请先安装同版本或更高版本的 GY 安装包。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+
+  // Resolve the System32 PowerShell path directly so an unusual PATH value
+  // cannot redirect this maintenance action to an untrusted executable.
+  wchar_t windows_directory[MAX_PATH]{};
+  const UINT windows_length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
+  if (windows_length == 0 || windows_length >= std::size(windows_directory)) {
+    update_repair_failed_ = true;
+    update_repair_status_ = L"无法定位 Windows PowerShell；未执行任何整备操作。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  const std::wstring powershell_path = std::wstring(windows_directory, windows_length) +
+      L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const std::wstring parameters = L"-NoProfile -ExecutionPolicy Bypass -File \"" + maintenance_script + L"\" -Elevated";
+
+  SHELLEXECUTEINFOW execute{};
+  execute.cbSize = sizeof(execute);
+  execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+  execute.hwnd = hwnd_;
+  execute.lpVerb = L"runas";
+  execute.lpFile = powershell_path.c_str();
+  execute.lpParameters = parameters.c_str();
+  execute.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&execute) || !execute.hProcess) {
+    const DWORD error = GetLastError();
+    update_repair_failed_ = true;
+    update_repair_status_ = error == ERROR_CANCELLED
+        ? L"未授予管理员权限，未修改任何内容。"
+        : (rollback ? L"无法启动回退；未修改任何内容，请稍后重试。"
+                    : L"无法启动整备；未修改任何内容，请稍后重试。");
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+
+  update_repair_in_progress_ = true;
+  update_repair_failed_ = false;
+  update_repair_status_ = rollback
+      ? L"正在回退至上一健康版本，并验证 DLL、Host 与离线引擎…"
+      : L"正在整备当前安装并清理旧版本…";
+  InvalidateRect(hwnd_, nullptr, FALSE);
+  const HWND target = hwnd_;
+  const std::uint64_t instance = window_instance_id_;
+  const HANDLE process = execute.hProcess;
+  try {
+    std::thread([target, instance, process, rollback]() {
+      WaitForSingleObject(process, INFINITE);
+      DWORD exit_code = ERROR_GEN_FAILURE;
+      GetExitCodeProcess(process, &exit_code);
+      CloseHandle(process);
+      PostUpdateMaintenanceCompletion(target, instance, exit_code, rollback);
+    }).detach();
+  } catch (...) {
+    CloseHandle(process);
+    update_repair_in_progress_ = false;
+    update_repair_failed_ = true;
+    update_repair_status_ = rollback
+        ? L"无法监控回退进程；请运行开始菜单中的“回退到上一版 GY 输入法”。"
+        : L"无法监控整备进程；请运行开始菜单中的“整备 GY 输入法”。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void SettingsWindow::FinishUpdateMaintenance(std::uint64_t window_instance_id, DWORD exit_code, bool rollback) {
+  if (window_instance_id != window_instance_id_) return;
+  update_repair_in_progress_ = false;
+  Load();
+  if (exit_code == 0) {
+    update_repair_failed_ = false;
+    update_repair_status_ = rollback
+        ? L"已回退至 v" + registered_version_ + L"；DLL、Host 与离线引擎已重新验证。"
+        : L"已整备当前安装，并清理旧版本与失效临时安装文件。";
+  } else {
+    update_repair_failed_ = true;
+    if (rollback) {
+      update_repair_status_ = L"回退未执行；当前注册与诊断信息已保留，可关闭占用程序后重试。";
+    } else {
+      update_repair_status_ = versions_consistent_
+          ? L"待整备 · 输入法仍可用；关闭占用程序后可再次尝试。"
+          : L"整备未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
+    }
+  }
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void SettingsWindow::BeginAccountLogin() {
@@ -1055,6 +1420,9 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) {
+        hand = hand || self->Hit(self->update_repair_rect_, point) || self->Hit(self->update_rollback_rect_, point);
+      }
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
     case WM_SETCURSOR: {
@@ -1066,6 +1434,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_repair_rect_, point);
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
     case WM_LBUTTONUP: {
@@ -1081,6 +1450,8 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; gy::keep_sync::SetEnabled(self->clip_enabled_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_rollback_rect_, point)) { self->BeginUpdateRollback(); return 0; }
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_repair_rect_, point)) { self->BeginUpdateRepair(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; }
@@ -1100,6 +1471,13 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       delete completion;
       return 0;
     }
+    case kUpdateMaintenanceComplete: {
+      auto* completion = reinterpret_cast<UpdateMaintenanceCompletion*>(lparam);
+      if (!completion) return 0;
+      self->FinishUpdateMaintenance(completion->window_instance_id, completion->exit_code, completion->rollback);
+      delete completion;
+      return 0;
+    }
     case WM_NCHITTEST: {
       const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       POINT client = point;
@@ -1109,6 +1487,18 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->Hit(self->close_rect_, client)) return HTCLIENT;
       if (client.y < Scale(self->dpi_, 76)) return HTCAPTION;
       break;
+    }
+    case WM_TIMER: {
+      if (wparam != kClipboardStatusTimer || self->page_ != Page::Clipboard) break;
+      std::vector<gy::clipboard_history::Entry> latest = gy::clipboard_history::ReadAll();
+      if (!SameClipboardEntries(self->history_entries_, latest)) {
+        self->history_entries_ = std::move(latest);
+        self->PruneClipboardThumbnails();
+        self->MeasureClipboardCards();
+        self->history_scroll_ = std::min(self->history_scroll_, self->history_max_scroll_);
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
     }
     case WM_MOUSEWHEEL: {
       if (self->page_ != Page::Clipboard) break;
@@ -1121,6 +1511,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_DPICHANGED: {
       self->dpi_ = std::min<UINT>(HIWORD(wparam), kMaxSettingsDpi);
+      self->ClearClipboardThumbnails();
       const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
       HMONITOR monitor = MonitorFromRect(suggested, MONITOR_DEFAULTTONEAREST);
       MONITORINFO info{sizeof(info)}; GetMonitorInfoW(monitor, &info);
@@ -1136,6 +1527,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       }
       if (self->page_ == Page::Clipboard) {
         self->history_entries_ = gy::clipboard_history::ReadAll();
+        self->PruneClipboardThumbnails();
         self->MeasureClipboardCards();
         InvalidateRect(hwnd, nullptr, FALSE);
       }
@@ -1144,7 +1536,9 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     case WM_DESTROY:
       ++self->account_request_id_;
       SetWindowTextW(self->account_password_edit_, L"");
+      KillTimer(hwnd, kClipboardStatusTimer);
       RemoveClipboardFormatListener(hwnd);
+      self->ClearClipboardThumbnails();
       if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; }
       if (self->account_input_brush_) { DeleteObject(self->account_input_brush_); self->account_input_brush_ = nullptr; }
       self->hwnd_ = nullptr;

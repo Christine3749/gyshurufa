@@ -14,11 +14,28 @@ if (-not (Test-Path -LiteralPath $transactionHelper -PathType Leaf)) {
 $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $installRoot = Join-Path $programFiles 'GYInput'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
-if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { exit 0 }
 $commonDataRoot = Join-Path $env:ProgramData 'GYInput'
 $finalizerPath = Join-Path $commonDataRoot 'Finalize-GYClientReload.ps1'
 $taskName = 'GYInput\ActivatePending'
 $taskNameLogon = 'GYInput\ActivatePendingLogon'
+
+function Remove-StaleTransientHelpers {
+  # The EXE and ZIP installers may stage these files before knowing whether a
+  # core reload is needed. If this is a normal/first install there is no task
+  # to run, so remove the staged copies immediately. The script itself runs
+  # from the package or Program Files, never from this common-data list.
+  if (Test-Path -LiteralPath $pendingPath -PathType Leaf) { return }
+  Remove-GYInputScheduledTask $taskName | Out-Null
+  Remove-GYInputScheduledTask $taskNameLogon | Out-Null
+  foreach ($helper in @(
+    'Finalize-GYClientReload.ps1',
+    'Prune-GYOldVersions.ps1',
+    'GYInputTransaction.ps1',
+    'Register-GYInputActivationTasks.ps1'
+  )) {
+    Remove-Item -LiteralPath (Join-Path $commonDataRoot $helper) -Force -ErrorAction SilentlyContinue
+  }
+}
 
 function Register-GYInputActivationTasksCore {
   if (-not (Test-Path -LiteralPath $finalizerPath -PathType Leaf)) {
@@ -57,9 +74,17 @@ function Register-GYInputActivationTasksCore {
 }
 
 if ($LockAlreadyHeld) {
-  Register-GYInputActivationTasksCore
+  if (Test-Path -LiteralPath $pendingPath -PathType Leaf) {
+    Register-GYInputActivationTasksCore
+  } else {
+    Remove-StaleTransientHelpers
+  }
 } else {
   Invoke-WithGYInputTransaction {
-    Register-GYInputActivationTasksCore
+    if (Test-Path -LiteralPath $pendingPath -PathType Leaf) {
+      Register-GYInputActivationTasksCore
+    } else {
+      Remove-StaleTransientHelpers
+    }
   }
 }

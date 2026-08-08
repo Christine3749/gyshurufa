@@ -25,23 +25,51 @@ namespace {
 constexpr wchar_t kKeepHost[] = L"keep.gyenbox.com";
 constexpr DWORD kKeepPort = INTERNET_DEFAULT_HTTPS_PORT;
 constexpr DWORD kMaxResponseBytes = 48 * 1024 * 1024;
-constexpr DWORD kPollMilliseconds = 3000;
+constexpr DWORD kPollMilliseconds = 750;
+constexpr DWORD kSseFallbackPollMilliseconds = 5000;
+// The ordinary cursor sync remains the authoritative fallback and is woken
+// immediately by a local copy.  These intervals only govern the optional SSE
+// wake channel, so an unavailable endpoint must never make an idle IME keep
+// opening network connections every 750 ms.
+constexpr DWORD kSseIdleRetryMilliseconds = 30 * 1000;
+constexpr DWORD kSseUnavailableRetryMilliseconds = 15 * 1000;
+constexpr DWORD kSseUnsupportedRetryMilliseconds = 5 * 60 * 1000;
 
 std::atomic_bool g_running{false};
 std::atomic_bool g_enabled{true};
 std::atomic_bool g_instant_paste{true};
+std::atomic_bool g_sse_available{false};
 HANDLE g_wake_event = nullptr;
+HANDLE g_stream_wake_event = nullptr;
 std::thread g_worker;
+std::thread g_stream_worker;
 std::mutex g_token_mutex;
 std::wstring g_access_token;
 std::int64_t g_access_expiry = 0;
 std::mutex g_remote_head_mutex;
-std::wstring g_last_applied_remote_id;
+// The most recent Keep HEAD that this device has already handled.  Handling a
+// local ACK means "leave the user's current clipboard alone"; handling a
+// remote HEAD means "write it to the system clipboard".  Tracking both with
+// one ID avoids turning a successful local ACK into a lossy clipboard rewrite.
+std::wstring g_last_handled_head_id;
+std::mutex g_stream_request_mutex;
+HINTERNET g_active_stream_request = nullptr;
 
 struct HttpResponse {
   DWORD status = 0;
   std::string body;
 };
+
+struct SyncPage {
+  std::vector<clipboard_history::RemoteChange> changes;
+  unsigned long long cursor = 0;
+  bool has_more = false;
+  bool snapshot = false;
+};
+
+enum class StreamResult { Change, KeepAlive, Unsupported, Unavailable };
+
+void Wake();
 
 void Wipe(std::wstring* value) {
   if (!value) return;
@@ -55,19 +83,19 @@ void Wipe(std::string* value) {
   value->clear();
 }
 
-bool IsNewRemoteHead(const clipboard_history::Entry& entry) {
+bool IsUnhandledHead(const clipboard_history::Entry& entry) {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  return g_last_applied_remote_id != entry.id;
+  return g_last_handled_head_id != entry.id;
 }
 
-void RememberAppliedRemoteHead(const clipboard_history::Entry& entry) {
+void RememberHandledHead(const clipboard_history::Entry& entry) {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  g_last_applied_remote_id = entry.id;
+  g_last_handled_head_id = entry.id;
 }
 
-void ForgetAppliedRemoteHead() {
+void ForgetHandledHead() {
   std::lock_guard<std::mutex> lock(g_remote_head_mutex);
-  Wipe(&g_last_applied_remote_id);
+  Wipe(&g_last_handled_head_id);
 }
 
 std::string ToUtf8(const std::wstring& text) {
@@ -202,6 +230,107 @@ bool Request(const wchar_t* method, const wchar_t* path, const std::wstring& acc
   return ok;
 }
 
+void CancelActiveStreamRequest() {
+  HINTERNET request = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    request = g_active_stream_request;
+    g_active_stream_request = nullptr;
+  }
+  if (request) WinHttpCloseHandle(request);
+}
+
+StreamResult WaitForSseSignal(const std::wstring& access_token, unsigned long long cursor) {
+  if (!IsSafeBearerToken(access_token)) return StreamResult::Unavailable;
+  HINTERNET session = WinHttpOpen(L"GYInput/0.10", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) return StreamResult::Unavailable;
+  // Keep closes an idle SSE response after 12 seconds.  The receive timeout is
+  // intentionally slightly higher and Stop()/account changes cancel the
+  // request handle directly, so this helper never delays local-copy uploads.
+  WinHttpSetTimeouts(session, 5000, 5000, 10000, 15000);
+  HINTERNET connect = WinHttpConnect(session, kKeepHost, kKeepPort, 0);
+  if (!connect) { WinHttpCloseHandle(session); return StreamResult::Unavailable; }
+  const std::wstring path = L"/api/clipboard/stream?cursor=" + std::to_wstring(cursor);
+  HINTERNET request = WinHttpOpenRequest(connect, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                         WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!request) {
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    return StreamResult::Unavailable;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    if (!g_running.load() || !g_enabled.load()) {
+      WinHttpCloseHandle(request);
+      WinHttpCloseHandle(connect);
+      WinHttpCloseHandle(session);
+      return StreamResult::Unavailable;
+    }
+    g_active_stream_request = request;
+  }
+
+  StreamResult result = StreamResult::Unavailable;
+  const ULONGLONG opened_at = GetTickCount64();
+  bool saw_live_preamble = false;
+  const std::wstring headers = L"Accept: text/event-stream\r\nCache-Control: no-cache\r\nAuthorization: Bearer " + access_token + L"\r\n";
+  const BOOL sent = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+                                       WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+  bool ok = sent != FALSE && WinHttpReceiveResponse(request, nullptr) != FALSE;
+  DWORD status = 0;
+  if (ok) {
+    DWORD size = sizeof(status);
+    ok = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
+                             WINHTTP_NO_HEADER_INDEX) != FALSE;
+  }
+  std::string body;
+  while (ok && status == 200) {
+    DWORD available = 0;
+    if (!WinHttpQueryDataAvailable(request, &available)) { ok = false; break; }
+    if (available == 0) break;
+    if (available > kMaxResponseBytes || body.size() > kMaxResponseBytes - available) { ok = false; break; }
+    const size_t offset = body.size();
+    body.resize(offset + available);
+    DWORD read = 0;
+    if (!WinHttpReadData(request, body.data() + offset, available, &read)) { ok = false; break; }
+    body.resize(offset + read);
+    // A buffering proxy can return an apparently valid 200 response only once
+    // the server closes it.  Treat SSE as available only when its preamble
+    // arrives promptly; otherwise the ordinary 750ms cursor poll stays active.
+    if (!saw_live_preamble && GetTickCount64() - opened_at <= 2000 &&
+        body.find("retry: 1000\n") != std::string::npos) {
+      saw_live_preamble = true;
+    }
+    if (read == 0) break;
+  }
+  if (ok && status == 404) {
+    // Older Keep deployments do not have the optional SSE endpoint.  This is
+    // not a transient connectivity failure: cursor polling already preserves
+    // correctness, so retrying the missing route every 750 ms wastes CPU and
+    // keeps the input host visibly busy while it is otherwise idle.
+    result = StreamResult::Unsupported;
+  } else if (ok && status == 200 && saw_live_preamble) {
+    result = body.find("event: clipboard\n") != std::string::npos
+        ? StreamResult::Change
+        : StreamResult::KeepAlive;
+  }
+  Wipe(&body);
+
+  bool close_request = false;
+  {
+    std::lock_guard<std::mutex> lock(g_stream_request_mutex);
+    if (g_active_stream_request == request) {
+      g_active_stream_request = nullptr;
+      close_request = true;
+    }
+  }
+  if (close_request) WinHttpCloseHandle(request);
+  WinHttpCloseHandle(connect);
+  WinHttpCloseHandle(session);
+  return result;
+}
+
 bool JsonPayloadField(const std::string& body, std::string* payload) {
   if (!payload) return false;
   payload->clear();
@@ -219,6 +348,82 @@ bool JsonPayloadField(const std::string& body, std::string* payload) {
   }
   *payload = value;
   return true;
+}
+
+bool JsonStringField(const std::string& body, const char* field, std::string* output) {
+  if (!field || !output) return false;
+  output->clear();
+  const std::string key = "\"" + std::string(field) + "\"";
+  const size_t key_at = body.find(key);
+  if (key_at == std::string::npos) return false;
+  const size_t colon = body.find(':', key_at + key.size());
+  if (colon == std::string::npos) return false;
+  const size_t first = body.find('"', colon + 1);
+  if (first == std::string::npos) return false;
+  const size_t last = body.find('"', first + 1);
+  if (last == std::string::npos) return false;
+  *output = body.substr(first + 1, last - first - 1);
+  return true;
+}
+
+bool JsonBoolField(const std::string& body, const char* field, bool* output) {
+  if (!field || !output) return false;
+  const std::string key = "\"" + std::string(field) + "\"";
+  const size_t key_at = body.find(key);
+  if (key_at == std::string::npos) return false;
+  const size_t colon = body.find(':', key_at + key.size());
+  if (colon == std::string::npos) return false;
+  size_t value = colon + 1;
+  while (value < body.size() && std::isspace(static_cast<unsigned char>(body[value]))) ++value;
+  if (body.compare(value, 4, "true") == 0) { *output = true; return true; }
+  if (body.compare(value, 5, "false") == 0) { *output = false; return true; }
+  return false;
+}
+
+bool ParseSequence(const std::string& value, unsigned long long* output) {
+  if (!output || value.empty() || value.size() > 20 ||
+      !std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) return false;
+  try { *output = std::stoull(value); } catch (...) { return false; }
+  return true;
+}
+
+std::wstring CursorPath() {
+  const std::wstring history = clipboard_history::HistoryPath();
+  const size_t slash = history.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : history.substr(0, slash + 1) + L"keep-sync-cursor.txt";
+}
+
+bool LoadCursor(unsigned long long* cursor) {
+  if (!cursor) return false;
+  const std::wstring path = CursorPath();
+  if (path.empty()) return false;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  char buffer[32]{};
+  DWORD read = 0;
+  const bool ok = ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr) != FALSE;
+  CloseHandle(file);
+  if (!ok || read == 0) return false;
+  std::string value(buffer, read);
+  return ParseSequence(value, cursor);
+}
+
+bool SaveCursor(unsigned long long cursor) {
+  const std::wstring path = CursorPath();
+  if (path.empty()) return false;
+  const std::string value = std::to_string(cursor);
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool wrote = WriteFile(file, value.data(), static_cast<DWORD>(value.size()), &written, nullptr) != FALSE &&
+                     written == value.size();
+  CloseHandle(file);
+  if (!wrote) { DeleteFileW(temporary.c_str()); return false; }
+  return MoveFileExW(temporary.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
 bool IsSha256(const std::string& value) {
@@ -248,9 +453,10 @@ bool Sha256(const std::string& bytes, std::string* output) {
   return true;
 }
 
-bool ParseWireEntries(const std::string& payload, std::vector<clipboard_history::Entry>* entries) {
-  if (!entries) return false;
-  entries->clear();
+bool ParseWireEntries(const std::string& payload,
+                      std::vector<clipboard_history::RemoteChange>* changes) {
+  if (!changes) return false;
+  changes->clear();
   if (payload.empty()) return true;
   std::string wire;
   if (!Base64Decode(payload, &wire)) return false;
@@ -268,48 +474,88 @@ bool ParseWireEntries(const std::string& payload, std::vector<clipboard_history:
       if (field_end == std::string::npos) break;
       field_begin = field_end + 1;
     }
-    if (fields.empty() || (fields[0] != "T" && fields[0] != "I")) { Wipe(&wire); return false; }
+    if (fields.empty() || (fields[0] != "T" && fields[0] != "I" && fields[0] != "D")) {
+      Wipe(&wire);
+      return false;
+    }
+    const bool deleted = fields[0] == "D";
+    if (deleted && fields.size() != 3) { Wipe(&wire); return false; }
     const bool image = fields[0] == "I";
-    if ((!image && fields.size() != 4) || (image && fields.size() != 6)) { Wipe(&wire); return false; }
+    if (!deleted && ((!image && fields.size() != 5) || (image && fields.size() != 7))) {
+      Wipe(&wire);
+      return false;
+    }
+    unsigned long long sequence = 0;
+    if (!ParseSequence(fields[1], &sequence) || sequence == 0) { Wipe(&wire); return false; }
     std::wstring id;
-    if (!FromUtf8(fields[1], &id) || !IsSafeSourceId(id)) { Wipe(&wire); return false; }
+    if (!FromUtf8(fields[2], &id) || !IsSafeSourceId(id)) { Wipe(&wire); return false; }
+    if (deleted) {
+      clipboard_history::Entry entry;
+      entry.id = std::move(id);
+      entry.sync_sequence = sequence;
+      changes->push_back({clipboard_history::RemoteChangeKind::Delete, std::move(entry)});
+      if (changes->size() > 64) { Wipe(&wire); return false; }
+      continue;
+    }
     unsigned long long timestamp_ms = 0;
-    try { timestamp_ms = std::stoull(fields[2]); } catch (...) { Wipe(&wire); return false; }
+    try { timestamp_ms = std::stoull(fields[3]); } catch (...) { Wipe(&wire); return false; }
     if (timestamp_ms < 946684800000ULL) { Wipe(&wire); return false; }
     if (image) {
       unsigned long long size = 0;
-      try { size = std::stoull(fields[4]); } catch (...) { Wipe(&wire); return false; }
-      if (fields[3] != "image/png" || size == 0 || size > clipboard_history::kMaxImageBytes || !IsSha256(fields[5])) {
+      try { size = std::stoull(fields[5]); } catch (...) { Wipe(&wire); return false; }
+      if (fields[4] != "image/png" || size == 0 || size > clipboard_history::kMaxImageBytes || !IsSha256(fields[6])) {
         Wipe(&wire);
         return false;
       }
       std::wstring sha;
-      if (!FromUtf8(fields[5], &sha)) { Wipe(&wire); return false; }
-      entries->push_back({id, timestamp_ms / 1000ULL, L"[图片]", false, clipboard_history::EntryKind::PngImage, sha});
+      if (!FromUtf8(fields[6], &sha)) { Wipe(&wire); return false; }
+      clipboard_history::Entry entry{id, timestamp_ms / 1000ULL, L"[图片]", false,
+                                     clipboard_history::EntryKind::PngImage, sha, sequence};
+      changes->push_back({clipboard_history::RemoteChangeKind::Add, std::move(entry)});
     } else {
       std::string text_utf8;
       std::wstring text;
-      if (!Base64Decode(fields[3], &text_utf8) || !FromUtf8(text_utf8, &text) || text.empty()) {
+      if (!Base64Decode(fields[4], &text_utf8) || !FromUtf8(text_utf8, &text) || text.empty()) {
         Wipe(&text_utf8);
         Wipe(&wire);
         return false;
       }
       Wipe(&text_utf8);
-      entries->push_back({id, timestamp_ms / 1000ULL, text, false});
+      clipboard_history::Entry entry{id, timestamp_ms / 1000ULL, text, false,
+                                     clipboard_history::EntryKind::Text, L"", sequence};
+      changes->push_back({clipboard_history::RemoteChangeKind::Add, std::move(entry)});
     }
-    if (entries->size() > clipboard_history::kMaxEntries) { Wipe(&wire); return false; }
+    if (changes->size() > 64) { Wipe(&wire); return false; }
   }
   Wipe(&wire);
   return true;
 }
 
-bool FetchEntries(const std::wstring& access_token, std::vector<clipboard_history::Entry>* entries) {
+bool FetchPage(const std::wstring& access_token, unsigned long long cursor, bool snapshot, SyncPage* page) {
+  if (!page) return false;
+  page->changes.clear();
+  page->cursor = cursor;
+  page->has_more = false;
+  page->snapshot = snapshot;
   HttpResponse response;
-  if (!Request(L"GET", L"/api/clipboard?format=wire-v2", access_token, "", L"", &response)) return false;
+  const std::wstring path = snapshot ? L"/api/clipboard/sync?snapshot=1" :
+      L"/api/clipboard/sync?cursor=" + std::to_wstring(cursor);
+  if (!Request(L"GET", path.c_str(), access_token, "", L"", &response)) return false;
   if (response.status != 200) { Wipe(&response.body); return false; }
   std::string payload;
-  const bool parsed = JsonPayloadField(response.body, &payload) && ParseWireEntries(payload, entries);
+  std::string cursor_text;
+  unsigned long long next_cursor = 0;
+  bool has_more = false;
+  const bool parsed = JsonPayloadField(response.body, &payload) &&
+      JsonStringField(response.body, "cursor", &cursor_text) && ParseSequence(cursor_text, &next_cursor) &&
+      JsonBoolField(response.body, "hasMore", &has_more) &&
+      ParseWireEntries(payload, &page->changes);
+  if (parsed) {
+    page->cursor = next_cursor;
+    page->has_more = has_more;
+  }
   Wipe(&payload);
+  Wipe(&cursor_text);
   Wipe(&response.body);
   return parsed;
 }
@@ -331,8 +577,11 @@ bool DownloadImage(const std::wstring& access_token, const clipboard_history::En
   return valid;
 }
 
-bool EnsureRemoteImages(const std::wstring& access_token, const std::vector<clipboard_history::Entry>& entries) {
-  for (const auto& entry : entries) {
+bool EnsureRemoteImages(const std::wstring& access_token,
+                        const std::vector<clipboard_history::RemoteChange>& changes) {
+  for (const auto& change : changes) {
+    if (change.kind != clipboard_history::RemoteChangeKind::Add) continue;
+    const auto& entry = change.entry;
     if (entry.kind != clipboard_history::EntryKind::PngImage) continue;
     std::string local;
     if (clipboard_history::ReadImagePng(entry, &local)) {
@@ -347,7 +596,27 @@ bool EnsureRemoteImages(const std::wstring& access_token, const std::vector<clip
   return true;
 }
 
-bool PostTextEntry(const std::wstring& access_token, const clipboard_history::Entry& entry) {
+std::vector<clipboard_history::Entry> SnapshotEntries(
+    const std::vector<clipboard_history::RemoteChange>& changes) {
+  std::vector<clipboard_history::Entry> entries;
+  entries.reserve(changes.size());
+  for (const auto& change : changes) {
+    if (change.kind == clipboard_history::RemoteChangeKind::Add) entries.push_back(change.entry);
+  }
+  return entries;
+}
+
+bool ParseAcknowledgement(const std::string& body, unsigned long long* sequence) {
+  std::string value;
+  const bool ok = JsonStringField(body, "sequence", &value) && ParseSequence(value, sequence) && *sequence != 0;
+  Wipe(&value);
+  return ok;
+}
+
+bool PostTextEntry(const std::wstring& access_token, const clipboard_history::Entry& entry,
+                   unsigned long long* sequence) {
+  if (!sequence) return false;
+  *sequence = 0;
   if (!IsSafeSourceId(entry.id)) return false;
   std::string text = ToUtf8(entry.text);
   std::string text_base64;
@@ -356,18 +625,23 @@ bool PostTextEntry(const std::wstring& access_token, const clipboard_history::En
   const unsigned long long captured_ms = entry.unix_time * 1000ULL;
   std::string id = ToUtf8(entry.id);
   if (id.empty()) { Wipe(&text_base64); return false; }
-  const std::string body = "{\"id\":\"" + id + "\",\"textBase64\":\"" + text_base64 +
-                           "\",\"capturedAt\":" + std::to_string(captured_ms) + "}";
+  std::string body = "{\"id\":\"" + id + "\",\"textBase64\":\"" + text_base64 +
+                     "\",\"capturedAt\":" + std::to_string(captured_ms) + "}";
   Wipe(&id);
   Wipe(&text_base64);
   HttpResponse response;
-  if (!Request(L"POST", L"/api/clipboard", access_token, body, L"", &response)) return false;
-  if (response.status != 200 && response.status != 201) { Wipe(&response.body); return false; }
+  const bool requested = Request(L"POST", L"/api/clipboard/sync", access_token, body, L"", &response);
+  Wipe(&body);
+  if (!requested || (response.status != 200 && response.status != 201)) { Wipe(&response.body); return false; }
+  const bool acknowledged = ParseAcknowledgement(response.body, sequence);
   Wipe(&response.body);
-  return true;
+  return acknowledged;
 }
 
-bool PostImageEntry(const std::wstring& access_token, const clipboard_history::Entry& entry) {
+bool PostImageEntry(const std::wstring& access_token, const clipboard_history::Entry& entry,
+                    unsigned long long* sequence) {
+  if (!sequence) return false;
+  *sequence = 0;
   if (!IsSafeSourceId(entry.id) || entry.kind != clipboard_history::EntryKind::PngImage) return false;
   std::string png;
   std::string sha256;
@@ -378,12 +652,14 @@ bool PostImageEntry(const std::wstring& access_token, const clipboard_history::E
   const std::wstring headers = L"Content-Type: image/png\r\nX-GY-Captured-At: " +
       std::to_wstring(entry.unix_time * 1000ULL) + L"\r\nX-GY-SHA256: " + wide_sha256 + L"\r\n";
   HttpResponse response;
-  const bool requested = Request(L"PUT", path.c_str(), access_token, png, headers, &response);
+  const std::wstring ack_path = path + L"?format=ack-v3";
+  const bool requested = Request(L"PUT", ack_path.c_str(), access_token, png, headers, &response);
   Wipe(&png);
   Wipe(&sha256);
   if (!requested || (response.status != 200 && response.status != 201)) { Wipe(&response.body); return false; }
+  const bool acknowledged = ParseAcknowledgement(response.body, sequence);
   Wipe(&response.body);
-  return true;
+  return acknowledged;
 }
 
 bool GetAccessToken(std::wstring* access_token) {
@@ -427,63 +703,80 @@ bool GetAccessToken(std::wstring* access_token) {
   return true;
 }
 
-std::vector<clipboard_history::Entry> MergeProjection(
-    const std::vector<clipboard_history::Entry>& remote,
-    const std::vector<clipboard_history::Entry>& current) {
-  std::vector<clipboard_history::Entry> merged = remote;
-  std::unordered_set<std::wstring> ids;
-  for (const auto& entry : merged) ids.insert(entry.id);
-  // A copy which arrived while the network request was in flight must survive
-  // until a later retry confirms its Keep note.
-  for (const auto& entry : current) {
-    if (entry.pending_upload && ids.insert(entry.id).second) merged.push_back(entry);
-  }
-  std::stable_sort(merged.begin(), merged.end(), [](const auto& left, const auto& right) {
-    return left.unix_time > right.unix_time;
-  });
-  if (merged.size() > clipboard_history::kMaxEntries) merged.resize(clipboard_history::kMaxEntries);
-  return merged;
-}
-
 void Synchronize() {
   if (!g_enabled.load()) return;
+  if (!clipboard_history::MigratePendingHistoryToOutbox()) return;
   std::wstring access_token;
   if (!GetAccessToken(&access_token)) return;
-  std::vector<clipboard_history::Entry> remote;
-  if (!FetchEntries(access_token, &remote) || !EnsureRemoteImages(access_token, remote)) { Wipe(&access_token); return; }
 
-  std::vector<clipboard_history::Entry> local = clipboard_history::ReadAll();
-  // Persist IDs generated while reading a legacy 0.9.x history before any
-  // network request. A retry must reuse exactly the same source ID.
-  if (!clipboard_history::ReplaceAll(local)) { Wipe(&access_token); return; }
-  std::vector<size_t> pending;
-  for (size_t index = local.size(); index > 0; --index) {
-    if (local[index - 1].pending_upload) pending.push_back(index - 1);  // oldest first
+  // The outbox is durable and ordered oldest first. Each successful request
+  // returns Keep's global sequence, so no follow-up 20-item reload is needed.
+  for (const auto& entry : clipboard_history::ReadPendingOutbox()) {
+    unsigned long long sequence = 0;
+    const bool uploaded = entry.kind == clipboard_history::EntryKind::PngImage
+        ? PostImageEntry(access_token, entry, &sequence)
+        : PostTextEntry(access_token, entry, &sequence);
+    if (!uploaded || !clipboard_history::AcknowledgeUploaded(entry.id, sequence)) {
+      Wipe(&access_token);
+      return;
+    }
+    // Keep has now accepted a local capture.  Do not round-trip it through
+    // SetClipboardData: doing so can discard rich formats that accompanied the
+    // original copy (for example HTML, file data, or an application's custom
+    // clipboard format).  A different device becoming HEAD still compares as
+    // new below and is applied normally.
+    RememberHandledHead(entry);
   }
-  for (const size_t index : pending) {
-    const bool uploaded = local[index].kind == clipboard_history::EntryKind::PngImage
-        ? PostImageEntry(access_token, local[index])
-        : PostTextEntry(access_token, local[index]);
-    // Do not clear pending until a subsequent read sees the server's
-    // idempotent record. A successful upload followed by a dropped response
-    // is safely retried using the same source ID.
-    if (!uploaded || !FetchEntries(access_token, &remote) || !EnsureRemoteImages(access_token, remote)) {
-      // Persist generated legacy IDs/pending flags even if this retry failed.
-      clipboard_history::ReplaceAll(MergeProjection(remote, clipboard_history::ReadAll()));
+
+  unsigned long long cursor = 0;
+  bool snapshot = !LoadCursor(&cursor);
+  bool refresh_snapshot = false;
+  for (int page_count = 0; page_count < 8; ++page_count) {
+    SyncPage page;
+    if (!FetchPage(access_token, cursor, snapshot, &page) ||
+        !EnsureRemoteImages(access_token, page.changes) ||
+        (page.snapshot ? !clipboard_history::ReplaceConfirmedSnapshot(SnapshotEntries(page.changes))
+                       : (!page.changes.empty() && !clipboard_history::ApplyConfirmedChanges(page.changes))) ||
+        !SaveCursor(page.cursor)) {
+      Wipe(&access_token);
+      return;
+    }
+    if (!page.snapshot) {
+      for (const auto& change : page.changes) {
+        if (change.kind == clipboard_history::RemoteChangeKind::Delete) {
+          refresh_snapshot = true;
+          break;
+        }
+      }
+    }
+    if (!page.has_more || page.cursor == cursor) break;
+    cursor = page.cursor;
+    snapshot = false;
+  }
+
+  // A DELETE can expose the 21st confirmed item. Fetch one authoritative
+  // HEAD(20) snapshot to fill that slot; copies and normal ADD events never
+  // take this path.
+  if (refresh_snapshot) {
+    SyncPage page;
+    if (!FetchPage(access_token, 0, true, &page) || !EnsureRemoteImages(access_token, page.changes)) {
+      Wipe(&access_token);
+      return;
+    }
+    if (!clipboard_history::ReplaceConfirmedSnapshot(SnapshotEntries(page.changes)) || !SaveCursor(page.cursor)) {
       Wipe(&access_token);
       return;
     }
   }
 
-  const std::vector<clipboard_history::Entry> projection =
-      MergeProjection(remote, clipboard_history::ReadAll());
-  if (clipboard_history::ReplaceAll(projection) && g_instant_paste.load() && !projection.empty() &&
-      IsNewRemoteHead(projection.front())) {
+  const std::vector<clipboard_history::Entry> projection = clipboard_history::ReadAll();
+  if (g_instant_paste.load() && !projection.empty() && !projection.front().pending_upload &&
+      IsUnhandledHead(projection.front())) {
     const bool applied = projection.front().kind == clipboard_history::EntryKind::PngImage
         ? clipboard_history::SetSystemClipboardImageFromKeep(projection.front())
         : clipboard_history::SetSystemClipboardTextFromKeep(projection.front().text);
     if (applied) {
-      RememberAppliedRemoteHead(projection.front());
+      RememberHandledHead(projection.front());
     }
   }
   Wipe(&access_token);
@@ -493,8 +786,48 @@ void WorkerMain() {
   while (g_running.load()) {
     Synchronize();
     if (!g_wake_event) break;
-    WaitForSingleObject(g_wake_event, kPollMilliseconds);
+    WaitForSingleObject(g_wake_event, g_sse_available.load() ? kSseFallbackPollMilliseconds : kPollMilliseconds);
     ResetEvent(g_wake_event);
+  }
+}
+
+void StreamWorkerMain() {
+  while (g_running.load()) {
+    if (!g_enabled.load()) {
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        WaitForSingleObject(g_stream_wake_event, kSseIdleRetryMilliseconds);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    std::wstring access_token;
+    unsigned long long cursor = 0;
+    if (!GetAccessToken(&access_token) || !LoadCursor(&cursor)) {
+      Wipe(&access_token);
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        WaitForSingleObject(g_stream_wake_event, kSseIdleRetryMilliseconds);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    const StreamResult result = WaitForSseSignal(access_token, cursor);
+    Wipe(&access_token);
+    if (!g_running.load()) break;
+    if (result == StreamResult::Unavailable || result == StreamResult::Unsupported) {
+      g_sse_available.store(false);
+      if (g_stream_wake_event) {
+        const DWORD retry = result == StreamResult::Unsupported
+            ? kSseUnsupportedRetryMilliseconds
+            : kSseUnavailableRetryMilliseconds;
+        WaitForSingleObject(g_stream_wake_event, retry);
+        ResetEvent(g_stream_wake_event);
+      }
+      continue;
+    }
+    g_sse_available.store(true);
+    if (result == StreamResult::Change) Wake();
   }
 }
 
@@ -508,19 +841,33 @@ void Start() {
   bool expected = false;
   if (!g_running.compare_exchange_strong(expected, true)) return;
   g_wake_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
-  if (!g_wake_event) { g_running.store(false); return; }
+  g_stream_wake_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+  if (!g_wake_event || !g_stream_wake_event) {
+    if (g_wake_event) CloseHandle(g_wake_event);
+    if (g_stream_wake_event) CloseHandle(g_stream_wake_event);
+    g_wake_event = nullptr;
+    g_stream_wake_event = nullptr;
+    g_running.store(false);
+    return;
+  }
   g_worker = std::thread(WorkerMain);
+  g_stream_worker = std::thread(StreamWorkerMain);
 }
 
 void Stop() {
   if (!g_running.exchange(false)) return;
+  g_sse_available.store(false);
+  CancelActiveStreamRequest();
   Wake();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   if (g_worker.joinable()) g_worker.join();
+  if (g_stream_worker.joinable()) g_stream_worker.join();
   if (g_wake_event) { CloseHandle(g_wake_event); g_wake_event = nullptr; }
+  if (g_stream_wake_event) { CloseHandle(g_stream_wake_event); g_stream_wake_event = nullptr; }
   std::lock_guard<std::mutex> lock(g_token_mutex);
   Wipe(&g_access_token);
   g_access_expiry = 0;
-  ForgetAppliedRemoteHead();
+  ForgetHandledHead();
 }
 
 void NotifyLocalClipboardChanged() {
@@ -533,17 +880,23 @@ void NotifyAccountChanged() {
     Wipe(&g_access_token);
     g_access_expiry = 0;
   }
+  g_sse_available.store(false);
+  CancelActiveStreamRequest();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   Wake();
 }
 
 void SetEnabled(bool enabled) {
   g_enabled.store(enabled);
+  g_sse_available.store(false);
+  if (!enabled) CancelActiveStreamRequest();
+  if (g_stream_wake_event) SetEvent(g_stream_wake_event);
   Wake();
 }
 
 void SetInstantPasteEnabled(bool enabled) {
   g_instant_paste.store(enabled);
-  if (enabled) ForgetAppliedRemoteHead();
+  if (enabled) ForgetHandledHead();
   Wake();
 }
 
