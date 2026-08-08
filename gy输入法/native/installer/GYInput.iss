@@ -287,12 +287,27 @@ begin
   Result := 0;
 end;
 
+function SharedActivationHelpersExist(): Boolean;
+begin
+  Result := FileExists(CommonFinalizerPath()) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\Prune-GYOldVersions.ps1')) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\GYInputTransaction.ps1')) and
+            FileExists(ExpandConstant('{commonappdata}\GYInput\Register-GYInputActivationTasks.ps1'));
+end;
+
 function ShouldInstallSharedHelpers(): Boolean;
 var
   ActiveVersion: String;
   Valid: Boolean;
   Comparison: Integer;
 begin
+  // Finalizer helpers are deliberately self-cleaning after a successful
+  // activation. A later install must recreate a missing transient set before
+  // it can schedule another core reload, even when this package is older.
+  if not SharedActivationHelpersExist() then begin
+    Result := True;
+    Exit;
+  end;
   // An older EXE must never overwrite the shared transaction/finalizer
   // scripts that a newer active release still needs. If the registry value
   // is malformed, fail closed and preserve the existing helpers.
@@ -754,7 +769,6 @@ begin
     end;
 end;
   end;
-
 
 
 

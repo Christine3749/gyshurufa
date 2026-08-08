@@ -35,6 +35,47 @@ function Remove-PendingTask {
   } catch {}
 }
 
+function Start-TransientHelperCleanup {
+  # A running PowerShell process cannot reliably delete the script that
+  # launched it. Start a short-lived child that first waits for this Finalizer
+  # to exit, then takes the same transaction mutex before removing only the
+  # known staged helpers. If a new installer owns the mutex or has created a
+  # fresh pending transaction, it exits without touching the new helpers.
+  $cleanupPaths = @(
+    (Join-Path $commonDataRoot 'Finalize-GYClientReload.ps1'),
+    (Join-Path $commonDataRoot 'Prune-GYOldVersions.ps1'),
+    (Join-Path $commonDataRoot 'GYInputTransaction.ps1'),
+    (Join-Path $commonDataRoot 'Register-GYInputActivationTasks.ps1')
+  )
+  $quotedPaths = ($cleanupPaths | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ','
+  $quotedPending = "'" + $pendingPath.Replace("'", "''") + "'"
+  $cleanup = @"
+`$parentProcessId = $PID
+`$pendingActivationPath = $quotedPending
+`$helperPaths = @($quotedPaths)
+try { Wait-Process -Id `$parentProcessId -ErrorAction SilentlyContinue } catch {}
+`$mutex = [Threading.Mutex]::new(`$false, 'Global\GYInputFinalizePending')
+`$lockTaken = `$false
+try {
+  `$lockTaken = `$mutex.WaitOne(0)
+  if (-not `$lockTaken -or (Test-Path -LiteralPath `$pendingActivationPath -PathType Leaf)) { exit 0 }
+  foreach (`$helperPath in `$helperPaths) {
+    if (Test-Path -LiteralPath `$helperPath -PathType Leaf) {
+      Remove-Item -LiteralPath `$helperPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+} finally {
+  if (`$lockTaken) { try { `$mutex.ReleaseMutex() } catch {} }
+  `$mutex.Dispose()
+}
+"@
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cleanup))
+  $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  Start-Process -FilePath $powershell -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+  ) -WindowStyle Hidden | Out-Null
+}
+
 function Write-Failure([string]$Message) {
   try {
     $stamp = [DateTime]::UtcNow.ToString('o')
@@ -52,6 +93,7 @@ function Test-ManagedPath([string]$Path) {
 try {
   if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
     Remove-PendingTask
+    try { Start-TransientHelperCleanup } catch {}
     exit 0
   }
 
@@ -133,6 +175,9 @@ try {
   Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
   Remove-PendingTask
+  # Cleanup starts after the durable state and task removal. A cleanup failure
+  # must not roll back a successfully verified registration.
+  try { Start-TransientHelperCleanup } catch {}
   exit 0
 } catch {
   # If registration succeeded but a later verification/write failed, restore

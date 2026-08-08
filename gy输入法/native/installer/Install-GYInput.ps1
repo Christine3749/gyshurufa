@@ -42,6 +42,14 @@ function Get-X64RegSvr32 {
 function Should-PreserveExistingPendingHelpers {
   $activeVersion = Get-ActiveGyHostVersion
   if ([string]::IsNullOrWhiteSpace([string]$activeVersion)) { return $false }
+  $existingTransaction = Join-Path $commonDataRoot 'GYInputTransaction.ps1'
+  $existingRegistrar = Join-Path $commonDataRoot 'Register-GYInputActivationTasks.ps1'
+  if (-not ((Test-Path -LiteralPath $commonFinalizer -PathType Leaf) -and
+            (Test-Path -LiteralPath $commonPrune -PathType Leaf) -and
+            (Test-Path -LiteralPath $existingTransaction -PathType Leaf) -and
+            (Test-Path -LiteralPath $existingRegistrar -PathType Leaf))) {
+    return $false
+  }
   try { return ([version]$activeVersion -gt [version]$version) }
   catch { throw "无法比较当前激活版本 $activeVersion 与待安装版本 $version；拒绝修改共享激活助手。" }
 }
@@ -49,7 +57,8 @@ function Should-PreserveExistingPendingHelpers {
 function Install-PendingActivationAssets {
   if (-not (Test-Path -LiteralPath $finalizerSource -PathType Leaf) -or
       -not (Test-Path -LiteralPath $pruneSource -PathType Leaf) -or
-      -not (Test-Path -LiteralPath $taskRegistrarSource -PathType Leaf)) {
+      -not (Test-Path -LiteralPath $taskRegistrarSource -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $packageRoot 'GYInputTransaction.ps1') -PathType Leaf)) {
     throw 'Pending activation helper files are missing from the ZIP package.'
   }
   New-Item -ItemType Directory -Path $commonDataRoot -Force | Out-Null
@@ -555,4 +564,3 @@ try {
 }
   throw
 }
-

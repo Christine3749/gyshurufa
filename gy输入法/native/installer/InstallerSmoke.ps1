@@ -33,11 +33,14 @@ Assert-Contains $clientFinalizer 'Pending GY activation rollback state is missin
 Assert-Contains $clientFinalizer 'requiresClientReload = $false' 'Finalizer does not close the pending reload state.'
 Assert-Contains $clientFinalizer 'GYInputTransaction.ps1' 'Finalizer does not load the shared transaction helper.'
 Assert-Contains $clientFinalizer '$LockAlreadyHeld' 'Finalizer cannot be safely invoked by a lock-owning installer transaction.'
+Assert-Contains $clientFinalizer 'Start-TransientHelperCleanup' 'Finalizer does not clean one-shot helper files after successful activation.'
+Assert-Contains $clientFinalizer '$pendingActivationPath' 'Finalizer cleanup does not protect a newly staged activation transaction.'
 $finalizerWaitCount = [regex]::Matches($clientFinalizer, '\$mutex\.WaitOne\(0\)').Count
 Assert-Contains $taskRegistrar 'Wait-GYInputScheduledTask' 'Activation task registrar does not read back task persistence.'
 Assert-Contains $taskRegistrar "'ONSTART'" 'Activation task registrar does not create an ONSTART task.'
 Assert-Contains $taskRegistrar "'ONLOGON'" 'Activation task registrar does not create an ONLOGON task.'
-if ($finalizerWaitCount -ne 1) { throw "Finalizer must acquire the shared mutex exactly once; found $finalizerWaitCount WaitOne calls." }
+Assert-Contains $taskRegistrar 'Remove-StaleTransientHelpers' 'Task registrar does not clean unneeded one-shot helper files.'
+if ($finalizerWaitCount -ne 2) { throw "Finalizer must acquire the shared mutex for activation and guarded cleanup; found $finalizerWaitCount WaitOne calls." }
 if ($installer -match '\$host\b' -or $rollback -match '\$host\b') { throw 'Installer scripts must not assign PowerShell automatic variable Host.' }
 Assert-Contains $prune 'Get-GYOldSiblingPath' 'Prune script does not preserve occupied paths with deterministic old names.'
 Assert-Contains $prune '.old.' 'Prune script does not use .old.N recovery names.'
@@ -88,6 +91,7 @@ Assert-Contains $inno 'AcquireActivationMutex' 'EXE installer does not acquire t
 Assert-Contains $inno 'Global\GYInputFinalizePending' 'EXE installer does not use the canonical activation mutex name.'
 Assert-Contains $inno 'uninsneveruninstall' 'EXE installer may delete shared helper files during uninstall.'
 Assert-Contains $inno 'ShouldInstallSharedHelpers' 'EXE installer may overwrite shared helpers from a newer active release.'
+Assert-Contains $inno 'SharedActivationHelpersExist' 'EXE installer does not recreate self-cleaned helper files for a future upgrade.'
 Assert-Contains $inno 'CompareGyVersions' 'EXE installer lacks numeric version ordering for shared helper protection.'
 Assert-Contains $inno 'Check: ShouldInstallSharedHelpers' 'EXE installer does not apply the downgrade guard to shared helper files.'
 Assert-Contains $inno 'OtherReleaseIsActive' 'EXE installer does not protect a newer active release during old-version uninstall.'
