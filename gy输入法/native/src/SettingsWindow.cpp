@@ -11,6 +11,7 @@
 #include <objbase.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <shellapi.h>
 #include <cstdint>
 #include <ctime>
 #include <windowsx.h>
@@ -26,12 +27,18 @@
 namespace {
 constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
 constexpr UINT kAccountRequestComplete = WM_APP + 0x2A1;
+constexpr UINT kUpdateRepairComplete = WM_APP + 0x2A2;
 constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 
 struct AccountRequestCompletion {
   std::uint64_t window_instance_id = 0;
   std::uint64_t request_id = 0;
   gy::account_auth::Result result;
+};
+
+struct UpdateRepairCompletion {
+  std::uint64_t window_instance_id = 0;
+  DWORD exit_code = ERROR_GEN_FAILURE;
 };
 
 void SecureErase(std::wstring* value) {
@@ -184,6 +191,13 @@ WrappedCard WrapCardText(HDC dc, const std::wstring& value, HFONT font, int max_
 int ClipboardCardHeight(UINT dpi, int lines) {
   return Scale(dpi, 8) + lines * Scale(dpi, 18) + (lines - 1) * Scale(dpi, 7) +
          Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+
+void PostUpdateRepairCompletion(HWND hwnd, std::uint64_t window_instance_id, DWORD exit_code) {
+  auto* completion = new UpdateRepairCompletion{window_instance_id, exit_code};
+  if (!PostMessageW(hwnd, kUpdateRepairComplete, 0, reinterpret_cast<LPARAM>(completion))) {
+    delete completion;
+  }
 }
 int ClipboardImageCardHeight(UINT dpi) {
   return Scale(dpi, 8) + Scale(dpi, 72) + Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
@@ -593,7 +607,7 @@ void SettingsWindow::Layout() {
   phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
-  version_card_ = {}; update_card_ = {};
+  version_card_ = {}; update_card_ = {}; update_repair_rect_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -673,6 +687,8 @@ void SettingsWindow::Layout() {
   } else if (page_ == Page::Updates) {
     version_card_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 106)};
     update_card_ = {content_left, version_card_.bottom + Scale(dpi_, 14), content_left + card_width, version_card_.bottom + Scale(dpi_, 314)};
+    update_repair_rect_ = {update_card_.right - Scale(dpi_, 126), update_card_.bottom - Scale(dpi_, 54),
+                           update_card_.right - Scale(dpi_, 16), update_card_.bottom - Scale(dpi_, 18)};
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = update_card_.bottom + Scale(dpi_, 22);
   }
@@ -724,6 +740,22 @@ void SettingsWindow::MeasureClipboardCards() {
     if (acc >= list_h) { history_max_scroll_ = i; break; }
   }
   history_scroll_ = std::clamp(history_scroll_, 0, history_max_scroll_);
+}
+
+std::wstring ParentDirectory(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+}
+
+std::wstring InstalledRepairScriptPath() {
+  // Host runs from <Program Files>\\GYInput\\versions\\<version>.  Walk only
+  // that fixed hierarchy, then require the signed installer-owned maintenance
+  // script; never construct a path from user-controlled settings data.
+  const std::wstring version_root = ModuleDirectory();
+  const std::wstring versions_root = ParentDirectory(version_root);
+  const std::wstring install_root = ParentDirectory(versions_root);
+  if (install_root.empty()) return {};
+  return install_root + L"\\Repair-GYInput.ps1";
 }
 
 SettingsWindow::ClipboardThumbnail* SettingsWindow::FindOrCreateThumbnail(
@@ -960,10 +992,23 @@ void SettingsWindow::Paint(HDC dc) {
     } else {
       int note_y = update_card_.top + Scale(dpi_, 50);
       for (const auto& note : release_notes_) {
+        if (note_y + Scale(dpi_, 26) > update_repair_rect_.top - Scale(dpi_, 10)) break;
         Text(dc, L"• " + note, RECT{update_card_.left + Scale(dpi_, 16), note_y, update_card_.right - Scale(dpi_, 16), note_y + Scale(dpi_, 26)}, pal.muted, DT_LEFT, tiny);
         note_y += Scale(dpi_, 29);
       }
     }
+    const std::wstring default_repair_status = versions_consistent_
+        ? L"清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
+        : L"检测到激活版本不一致；可修复当前安装并安全清理旧版本残留。";
+    const std::wstring& repair_status = update_repair_status_.empty() ? default_repair_status : update_repair_status_;
+    const COLORREF repair_status_color = update_repair_failed_ ? RGB(210, 80, 80) : pal.muted;
+    Text(dc, repair_status, RECT{update_card_.left + Scale(dpi_, 16), update_repair_rect_.top,
+                                 update_repair_rect_.left - Scale(dpi_, 12), update_repair_rect_.bottom},
+         repair_status_color, DT_LEFT | DT_WORDBREAK, tiny);
+    const COLORREF repair_fill = update_repair_in_progress_ ? pal.border : kBlue;
+    Rounded(dc, update_repair_rect_, repair_fill, repair_fill, Scale(dpi_, 7));
+    Text(dc, update_repair_in_progress_ ? L"处理中…" : L"修复并清理", update_repair_rect_,
+         kOnAccent, DT_CENTER, tiny);
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
@@ -976,7 +1021,15 @@ void SettingsWindow::Load() {
   release_version_ = WidenAscii(GY_RELEASE_VERSION);
   registered_version_ = ReadRegisteredVersion();
   registered_core_version_ = ReadRegisteredDllVersion();
-  versions_consistent_ = !registered_version_.empty() && registered_version_ == registered_core_version_;
+  // The update page's own compiled release is part of the truth.  A Host
+  // executable from 0.10.64 with the registry still on 0.10.61 must be shown
+  // as repairable instead of pretending that the old Host/DLL pair is healthy.
+  versions_consistent_ = !release_version_.empty() && !registered_version_.empty() &&
+      release_version_ == registered_version_ && registered_version_ == registered_core_version_;
+  if (!update_repair_in_progress_) {
+    update_repair_status_.clear();
+    update_repair_failed_ = false;
+  }
   release_notes_ = ReadReleaseNotes(ModuleDirectory());
   if (release_notes_.empty()) {
     release_notes_ = {L"版本独立目录：Host、核心 DLL 与词库按版本隔离。", L"安装后自动校验注册、Logo 与离线引擎状态。"};
@@ -1048,6 +1101,87 @@ void SettingsWindow::ImportBackup() {
   const int imported_mode = static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", gy::input_mode::kSimplified, destination.c_str()));
   gy::input_mode::Write(imported_mode);
   Load(); InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void SettingsWindow::BeginUpdateRepair() {
+  if (!hwnd_ || update_repair_in_progress_) return;
+
+  const std::wstring repair_script = InstalledRepairScriptPath();
+  if (repair_script.empty() || GetFileAttributesW(repair_script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    update_repair_failed_ = true;
+    update_repair_status_ = L"当前安装缺少维护脚本；请先安装同版本或更高版本的 GY 安装包。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+
+  // Resolve the System32 PowerShell path directly so an unusual PATH value
+  // cannot redirect this maintenance action to an untrusted executable.
+  wchar_t windows_directory[MAX_PATH]{};
+  const UINT windows_length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
+  if (windows_length == 0 || windows_length >= std::size(windows_directory)) {
+    update_repair_failed_ = true;
+    update_repair_status_ = L"无法定位 Windows PowerShell；未执行任何修复。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  const std::wstring powershell_path = std::wstring(windows_directory, windows_length) +
+      L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const std::wstring parameters = L"-NoProfile -ExecutionPolicy Bypass -File \"" + repair_script + L"\" -Elevated";
+
+  SHELLEXECUTEINFOW execute{};
+  execute.cbSize = sizeof(execute);
+  execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+  execute.hwnd = hwnd_;
+  execute.lpVerb = L"runas";
+  execute.lpFile = powershell_path.c_str();
+  execute.lpParameters = parameters.c_str();
+  execute.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&execute) || !execute.hProcess) {
+    const DWORD error = GetLastError();
+    update_repair_failed_ = true;
+    update_repair_status_ = error == ERROR_CANCELLED
+        ? L"未授予管理员权限，未修改任何内容。"
+        : L"无法启动修复；未修改任何内容，请稍后重试。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+
+  update_repair_in_progress_ = true;
+  update_repair_failed_ = false;
+  update_repair_status_ = L"正在修复当前安装并清理旧版本…";
+  InvalidateRect(hwnd_, nullptr, FALSE);
+  const HWND target = hwnd_;
+  const std::uint64_t instance = window_instance_id_;
+  const HANDLE process = execute.hProcess;
+  try {
+    std::thread([target, instance, process]() {
+      WaitForSingleObject(process, INFINITE);
+      DWORD exit_code = ERROR_GEN_FAILURE;
+      GetExitCodeProcess(process, &exit_code);
+      CloseHandle(process);
+      PostUpdateRepairCompletion(target, instance, exit_code);
+    }).detach();
+  } catch (...) {
+    CloseHandle(process);
+    update_repair_in_progress_ = false;
+    update_repair_failed_ = true;
+    update_repair_status_ = L"无法监控修复进程；请运行开始菜单中的“修复并清理 GY 输入法”。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void SettingsWindow::FinishUpdateRepair(std::uint64_t window_instance_id, DWORD exit_code) {
+  if (window_instance_id != window_instance_id_) return;
+  update_repair_in_progress_ = false;
+  Load();
+  if (exit_code == 0) {
+    update_repair_failed_ = false;
+    update_repair_status_ = L"已修复当前安装，并清理旧版本与失效临时安装文件。";
+  } else {
+    update_repair_failed_ = true;
+    update_repair_status_ = L"修复未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
+  }
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void SettingsWindow::BeginAccountLogin() {
@@ -1215,6 +1349,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_repair_rect_, point);
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
     case WM_SETCURSOR: {
@@ -1226,6 +1361,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_repair_rect_, point);
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
     case WM_LBUTTONUP: {
@@ -1241,6 +1377,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; gy::keep_sync::SetEnabled(self->clip_enabled_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_repair_rect_, point)) { self->BeginUpdateRepair(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->phrases_rect_, point)) { self->TogglePhrases(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; }
@@ -1257,6 +1394,13 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       } else {
         SecureEraseAccountResult(&completion->result);
       }
+      delete completion;
+      return 0;
+    }
+    case kUpdateRepairComplete: {
+      auto* completion = reinterpret_cast<UpdateRepairCompletion*>(lparam);
+      if (!completion) return 0;
+      self->FinishUpdateRepair(completion->window_instance_id, completion->exit_code);
       delete completion;
       return 0;
     }

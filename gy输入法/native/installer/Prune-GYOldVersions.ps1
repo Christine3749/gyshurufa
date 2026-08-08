@@ -94,7 +94,9 @@ if (Test-Path -LiteralPath $pendingFile) {
 $targets = @()
 if ($All) {
   foreach ($dir in (Get-ChildItem -LiteralPath $InstallRoot -Directory -ErrorAction SilentlyContinue)) {
-    if ($dir.Name -eq 'versions' -or $dir.Name -like 'tsf-*') { $targets += $dir.FullName }
+    if ($dir.Name -eq 'versions' -or $dir.Name -match '^versions\.old\.\d+$' -or $dir.Name -like 'tsf-*') {
+      $targets += $dir.FullName
+    }
   }
   $targets += (Join-Path $InstallRoot 'install-state.json')
   $targets += (Join-Path $InstallRoot 'install-state.previous.json')
@@ -106,7 +108,11 @@ if ($All) {
     }
   }
   foreach ($dir in (Get-ChildItem -LiteralPath $InstallRoot -Directory -ErrorAction SilentlyContinue)) {
-    if ($dir.Name -match '^tsf-(.+)$' -and ($keepList -notcontains $Matches[1])) { $targets += $dir.FullName }
+    # A locked versions root can be renamed to versions.old.N during a prior
+    # cleanup attempt.  It is never an active path, so a later verified repair
+    # may safely retry it alongside stale tsf-* siblings.
+    if ($dir.Name -match '^versions\.old\.\d+$') { $targets += $dir.FullName }
+    elseif ($dir.Name -match '^tsf-(.+)$' -and ($keepList -notcontains $Matches[1])) { $targets += $dir.FullName }
   }
 }
 

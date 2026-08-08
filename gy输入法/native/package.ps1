@@ -35,6 +35,7 @@ Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime-data') -Destination (Join-Pa
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Install-GYInput.ps1') -Destination (Join-Path $packageRoot 'Install-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1') -Destination (Join-Path $packageRoot 'Validate-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Repair-GYInput.ps1') -Destination (Join-Path $packageRoot 'Repair-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientReload.ps1') -Destination (Join-Path $packageRoot 'Finalize-GYClientReload.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Prune-GYOldVersions.ps1') -Destination (Join-Path $packageRoot 'Prune-GYOldVersions.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Register-GYInputActivationTasks.ps1') -Destination (Join-Path $packageRoot 'Register-GYInputActivationTasks.ps1')
@@ -64,6 +65,7 @@ ZIP 是离线/高级用户备用包
 2. 在解压目录右键 Install-GYInput.ps1，选择“使用 PowerShell 运行”。
 3. 脚本先校验 SHA-256，再请求管理员权限完成系统注册。
 4. 若某次已验证升级不适配你的环境，可运行 .\Rollback-GYInput.ps1 回退到上一版；脚本会先自检旧版引擎。
+5. 若“更新”页提示版本不一致，可点击“修复并清理”：它会重新核验当前安装，并只清理旧版本和失效临时安装文件。
 
 长期更新架构
 - TSF DLL 保持为小型 Windows 兼容层；词库、拼音算法和排序在本机 GyImeHost 进程运行。

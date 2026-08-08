@@ -18,6 +18,7 @@ function Assert-ScriptParses([string]$Path) {
 
 $installer = Assert-ScriptParses $InstallerPath
 $rollback = Assert-ScriptParses $RollbackPath
+$repair = Assert-ScriptParses (Join-Path $PSScriptRoot 'Repair-GYInput.ps1')
 $prune = Assert-ScriptParses (Join-Path $PSScriptRoot 'Prune-GYOldVersions.ps1')
 $clientFinalizer = Assert-ScriptParses (Join-Path $PSScriptRoot 'Finalize-GYClientReload.ps1')
 $releaseState = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYReleaseState.ps1')
@@ -29,6 +30,12 @@ $settingsSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\Sett
 Assert-Contains $transaction 'Global\GYInputFinalizePending' 'Shared transaction helper does not define the canonical mutex name.'
 Assert-Contains $installer 'Invoke-WithGYInputTransaction' 'ZIP installer does not serialize its full elevated transaction.'
 Assert-Contains $rollback 'Invoke-WithGYInputTransaction' 'Standalone rollback does not serialize its activation transaction.'
+Assert-Contains $repair 'Invoke-WithGYInputTransaction' 'One-click repair does not serialize its activation transaction.'
+Assert-Contains $repair 'Complete-PendingActivation' 'One-click repair cannot complete a pending core activation.'
+Assert-Contains $repair 'Test-ManagedGyPath' 'One-click repair does not constrain registry targets to managed paths.'
+Assert-Contains $repair 'Start-Process -FilePath (Get-X64RegSvr32)' 'One-click repair does not re-register the verified TSF DLL.'
+Assert-Contains $repair 'Remove-StaleTransientHelpers' 'One-click repair does not clean expired staged helper files.'
+Assert-Contains $repair 'Prune-GYOldVersions.ps1' 'One-click repair does not invoke the audited old-version cleaner.'
 Assert-Contains $clientFinalizer 'Pending GY activation rollback state is missing or unmanaged.' 'Finalizer does not validate its rollback paths.'
 Assert-Contains $clientFinalizer 'requiresClientReload = $false' 'Finalizer does not close the pending reload state.'
 Assert-Contains $clientFinalizer 'GYInputTransaction.ps1' 'Finalizer does not load the shared transaction helper.'
@@ -44,6 +51,7 @@ if ($finalizerWaitCount -ne 2) { throw "Finalizer must acquire the shared mutex 
 if ($installer -match '\$host\b' -or $rollback -match '\$host\b') { throw 'Installer scripts must not assign PowerShell automatic variable Host.' }
 Assert-Contains $prune 'Get-GYOldSiblingPath' 'Prune script does not preserve occupied paths with deterministic old names.'
 Assert-Contains $prune '.old.' 'Prune script does not use .old.N recovery names.'
+Assert-Contains $prune 'versions\.old\.\d+' 'Prune script does not retry abandoned versions.old.N directories.'
 Assert-Contains $prune 'Preserve-GYLockedFiles' 'Prune script does not probe locked DLLs before delete.'
 Assert-Contains $prune 'Copy-Item -LiteralPath $file.FullName -Destination $fileSibling' 'Prune script does not preserve an occupied DLL payload.'
 if ($prune.Contains('.trash')) { throw 'Prune script must not use ambiguous .trash names.' }
@@ -66,6 +74,9 @@ Assert-Contains $rollback "activationState = 'rollback'" 'Rollback does not expo
 Assert-Contains $settingsSource 'ReadRegisteredDllVersion' 'Settings page does not read the actual registered TSF version.'
 Assert-Contains $settingsSource 'registered_core_version_' 'Settings page does not retain the actual TSF version.'
 Assert-Contains $settingsSource 'versions_consistent_' 'Settings page does not display real Host/DLL/TSF consistency.'
+Assert-Contains $settingsSource 'BeginUpdateRepair' 'Settings update page does not provide a repair action.'
+Assert-Contains $settingsSource 'Repair-GYInput.ps1' 'Settings repair action does not use the installed maintenance script.'
+Assert-Contains $settingsSource 'ShellExecuteExW' 'Settings repair action does not request administrator elevation.'
 Assert-Contains $installer 'Test-ThisReleaseActive' 'ZIP installer does not verify that registry activation matches the staged release.'
 Assert-Contains $installer 'Write-GyStateAtomically' 'ZIP installer does not atomically persist activation state.'
 Assert-Contains $installer 'release-notes.txt' 'ZIP installer does not install version-specific release notes.'
@@ -82,6 +93,7 @@ Assert-Contains $rollback 'Previous version health check failed' 'Standalone rol
 Assert-Contains $rollback 'ActivatePendingLogon' 'Standalone rollback does not remove the redundant ONLOGON activation task.'
 Assert-Contains $rollback "activationState = 'active'" 'Standalone rollback does not normalize the restored state to active.'
 Assert-Contains $inno 'Rollback-GYInput.ps1' 'EXE installer does not ship rollback support.'
+Assert-Contains $inno 'Repair-GYInput.ps1' 'EXE installer does not ship one-click repair support.'
 Assert-Contains $inno 'SaveCapturedPreviousGyState' 'EXE installer does not preserve an upgrade rollback point.'
 Assert-Contains $inno 'CoreConnectorIsNew' 'EXE installer does not distinguish a Host-only update from a core update.'
 Assert-Contains $inno 'VerifyActivatedRelease' 'EXE installer does not verify the activated DLL / Host version.'
