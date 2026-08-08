@@ -5,12 +5,21 @@
 #import "GYSettingsStore.h"
 #import "GYSyncWire.h"
 
-#import <CommonCrypto/CommonDigest.h>
 #import <unistd.h>
 
 static NSString *const kKeepBase = @"https://keep.gyenbox.com";
 static NSString *const kSyncPath = @"/api/clipboard/sync";
 static NSString *const kImagePathPrefix = @"/api/clipboard/images/";
+// This class never appends `?format=wire-v4` — every GET below is v3-only,
+// which is confirmed live and is what Windows 0.10.79 sends too (see the
+// NAMING note in GYSyncWire.h). GYSyncWire already has a tested v4 parser
+// and GYSyncFormatNegotiation already has the tested rule for when it would
+// be safe to start requesting v4 (authenticated 200 + response actually
+// v4-shaped; auto-downgrade if the server ignores the parameter; never flip
+// on a 401/404/503). Neither is wired into the request path here yet — that
+// is a live-behavior change deferred to once a real, authenticated probe
+// confirms v4 is actually enabled on the deployed revision, not something
+// to flip alongside the parser/negotiation logic itself.
 // Windows 0.10.79 polls every 750ms and only backs off to 5s once its SSE
 // wake channel is confirmed available (MACOS-SESSION-HANDOFF-20260808.md).
 // keep.gyenbox.com does not have /api/clipboard/stream deployed yet (probed
@@ -19,19 +28,6 @@ static NSString *const kImagePathPrefix = @"/api/clipboard/images/";
 static const NSTimeInterval kPollInterval = 0.75;
 static const NSTimeInterval kRequestTimeout = 20;
 static const NSInteger kMaxPagesPerRound = 8;
-
-static NSString *GYSHA256Hex(NSData *data) {
-  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
-  static const char *kHex = "0123456789abcdef";
-  char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
-  hex[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
-  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
-    hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
-    hex[i * 2 + 1] = kHex[digest[i] & 0xF];
-  }
-  return [NSString stringWithUTF8String:hex];
-}
 
 static NSString *GYLocalDeviceName(void) {
   char host[256] = {0};

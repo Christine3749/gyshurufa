@@ -1,7 +1,8 @@
 #import "GYClipboardHistory.h"
+#import "GYSelfWriteFingerprint.h"
+#import "GYSyncWire.h"
 
 #import <AppKit/AppKit.h>
-#import <CommonCrypto/CommonDigest.h>
 
 // macOS 没有剪贴板变化通知，只能轮询 changeCount。
 // 最坏发现延迟 ≈ 200ms，平均 ≈ 100ms，常驻进程开销可忽略。
@@ -19,19 +20,6 @@ static NSUInteger const kGYMaxImageBytes = 10 * 1024 * 1024;  // spec §7.3
 
 NSString *GYNewClipboardEntryId(void) {
   return [NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
-}
-
-static NSString *GYSHA256HexOfData(NSData *data) {
-  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
-  static const char *kHex = "0123456789abcdef";
-  char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
-  hex[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
-  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
-    hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
-    hex[i * 2 + 1] = kHex[digest[i] & 0xF];
-  }
-  return [NSString stringWithUTF8String:hex];
 }
 
 @implementation GYClipboardEntry
@@ -154,8 +142,7 @@ static NSString *GYSHA256HexOfData(NSData *data) {
   NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
 
   // 是不是我们自己刚写进去的远端文本？必须内容和 changeCount 同时对上才算。
-  if (_selfWrittenText != nil && changeCount == _selfWrittenChangeCount &&
-      [text isEqualToString:_selfWrittenText]) {
+  if (GYIsOwnPasteboardWrite(_selfWrittenText, _selfWrittenChangeCount, text, changeCount)) {
     _selfWrittenText = nil;
     _selfWrittenChangeCount = NSNotFound;
     [self commitChangeCount:changeCount];  // 记账但不入库，避免回传成环
@@ -215,11 +202,10 @@ static NSString *GYSHA256HexOfData(NSData *data) {
 
 - (void)captureImageData:(NSData *)pngData changeCount:(NSInteger)changeCount {
   if (pngData.length == 0 || pngData.length > kGYMaxImageBytes) return;  // 超限仅本机提示交给设置页
-  NSString *sha256 = GYSHA256HexOfData(pngData);
+  NSString *sha256 = GYSHA256Hex(pngData);
 
   // 是不是我们自己刚写进去的远端图片？
-  if (_selfWrittenImageSHA256 != nil && changeCount == _selfWrittenImageChangeCount &&
-      [sha256 isEqualToString:_selfWrittenImageSHA256]) {
+  if (GYIsOwnPasteboardWrite(_selfWrittenImageSHA256, _selfWrittenImageChangeCount, sha256, changeCount)) {
     _selfWrittenImageSHA256 = nil;
     _selfWrittenImageChangeCount = NSNotFound;
     return;
@@ -266,7 +252,7 @@ static NSString *GYSHA256HexOfData(NSData *data) {
 
 - (BOOL)publishRemoteImageToSystemPasteboard:(NSData *)pngData {
   if (pngData.length == 0) return NO;
-  NSString *sha256 = GYSHA256HexOfData(pngData);
+  NSString *sha256 = GYSHA256Hex(pngData);
   dispatch_block_t write = ^{
     NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
     [pasteboard clearContents];

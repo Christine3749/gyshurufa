@@ -48,6 +48,13 @@ typedef NS_ENUM(NSInteger, GYBlockState) {
 
 + (instancetype)sharedStore;
 
+/// For tests only: opens (or creates) a store at an arbitrary file path
+/// instead of the app's Application Support singleton. Each call opens a
+/// fresh sqlite3 connection, so two instances pointed at the same path can
+/// simulate "quit app, relaunch app" for restart-recovery tests. The running
+/// app never calls this — only `sharedStore`.
++ (instancetype)storeAtPath:(NSString *)path;
+
 // MARK: Capture (queued, unconfirmed)
 
 - (GYBlock *)insertCapturedTextBlock:(NSString *)text

@@ -43,13 +43,25 @@ static GYBlockState GYStateFromName(NSString *name) {
 + (instancetype)sharedStore {
   static GYBlockStore *store;
   static dispatch_once_t once;
-  dispatch_once(&once, ^{ store = [[self alloc] initPrivate]; });
+  dispatch_once(&once, ^{
+    NSURL *directory = [self appSupportDirectory];
+    store = [[self alloc] initWithDatabaseURL:[directory URLByAppendingPathComponent:@"sync.sqlite"]];
+  });
   return store;
+}
+
+/// For tests only: opens (or creates) a store at an arbitrary file path
+/// instead of the app's Application Support singleton. Each call opens a
+/// fresh sqlite3 connection, so two instances pointed at the same path can
+/// simulate "quit app, relaunch app" — see GYBlockStoreTests's
+/// restart-recovery group. Not used by the running app.
++ (instancetype)storeAtPath:(NSString *)path {
+  return [[self alloc] initWithDatabaseURL:[NSURL fileURLWithPath:path]];
 }
 
 - (instancetype)init { return [GYBlockStore sharedStore]; }
 
-- (NSURL *)supportDirectory {
++ (NSURL *)appSupportDirectory {
   NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                         inDomains:NSUserDomainMask].firstObject;
   NSURL *directory = [support URLByAppendingPathComponent:@"GYInput" isDirectory:YES];
@@ -60,18 +72,16 @@ static GYBlockState GYStateFromName(NSString *name) {
   return directory;
 }
 
-- (instancetype)initPrivate {
+- (instancetype)initWithDatabaseURL:(NSURL *)dbURL {
   self = [super init];
   if (!self) return nil;
   _lock = [[NSLock alloc] init];
-  NSURL *directory = [self supportDirectory];
-  NSURL *dbURL = [directory URLByAppendingPathComponent:@"sync.sqlite"];
-  [NSFileManager.defaultManager createDirectoryAtURL:[directory URLByAppendingPathComponent:@"blobs" isDirectory:YES]
+  [NSFileManager.defaultManager createDirectoryAtURL:dbURL.URLByDeletingLastPathComponent
                           withIntermediateDirectories:YES
                                            attributes:nil
                                                 error:nil];
   if (sqlite3_open(dbURL.fileSystemRepresentation, &_db) != SQLITE_OK) {
-    NSLog(@"GY blockstore: failed to open sync.sqlite (%s)", sqlite3_errmsg(_db));
+    NSLog(@"GY blockstore: failed to open %@ (%s)", dbURL.lastPathComponent, sqlite3_errmsg(_db));
   }
   sqlite3_exec(_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
   sqlite3_exec(_db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
@@ -462,7 +472,7 @@ static NSString *const kGYBlockColumns =
   [_lock unlock];
   if (alreadyMigrated || hasBlocks) return;
 
-  NSURL *tsvURL = [[self supportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv"];
+  NSURL *tsvURL = [[GYBlockStore appSupportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv"];
   NSString *content = [NSString stringWithContentsOfURL:tsvURL encoding:NSUTF8StringEncoding error:nil];
   NSMutableArray<GYBlock *> *queued = [NSMutableArray array];
   NSMutableArray<GYBlock *> *localOnly = [NSMutableArray array];
@@ -531,7 +541,7 @@ static NSString *const kGYBlockColumns =
   [_lock unlock];
 
   if (queued.count + localOnly.count > 0) {
-    NSURL *backupURL = [[self supportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv.migrated-backup"];
+    NSURL *backupURL = [[GYBlockStore appSupportDirectory] URLByAppendingPathComponent:@"clipboard-history.tsv.migrated-backup"];
     [NSFileManager.defaultManager removeItemAtURL:backupURL error:nil];
     [NSFileManager.defaultManager moveItemAtURL:tsvURL toURL:backupURL error:nil];
     NSLog(@"GY blockstore: migrated %lu queued + %lu local-only rows from legacy TSV",

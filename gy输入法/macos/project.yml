@@ -58,6 +58,10 @@ targets:
       - path: GYInput/Sources/GYSyncWire.m
       - path: GYInput/Sources/GYBlockStore.h
       - path: GYInput/Sources/GYBlockStore.m
+      - path: GYInput/Sources/GYSelfWriteFingerprint.h
+      - path: GYInput/Sources/GYSelfWriteFingerprint.m
+      - path: GYInput/Sources/GYSyncFormatNegotiation.h
+      - path: GYInput/Sources/GYSyncFormatNegotiation.m
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.inputmethod.GYInputTests
