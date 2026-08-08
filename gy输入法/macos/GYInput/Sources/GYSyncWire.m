@@ -1,4 +1,4 @@
-#import "GYWireV4.h"
+#import "GYSyncWire.h"
 
 static NSUInteger const kGYMaxWireChangesPerPayload = 64;
 // 2000-01-01T00:00:00Z in ms — anything before this is treated as a
@@ -44,7 +44,7 @@ BOOL GYIsHexSHA256(NSString *value) {
   return [value rangeOfCharacterFromSet:hex].location == NSNotFound;
 }
 
-NSArray<GYWireChange *> *_Nullable GYParseWireV4Payload(NSString *_Nullable base64Payload) {
+NSArray<GYWireChange *> *_Nullable GYParseSyncWirePayload(NSString *_Nullable base64Payload) {
   if (base64Payload.length == 0) return @[];
   NSData *decoded = [[NSData alloc] initWithBase64EncodedString:base64Payload options:0];
   if (decoded == nil) return nil;
@@ -128,7 +128,7 @@ NSArray<GYWireChange *> *_Nullable GYParseSyncPage(NSData *_Nullable data,
   id wirePayload = payload[@"payload"];
   if (![cursor isKindOfClass:NSString.class] || !GYIsDecimalCursor(cursor)) return nil;
   if (![hasMore isKindOfClass:NSNumber.class]) return nil;
-  NSArray<GYWireChange *> *changes = GYParseWireV4Payload([wirePayload isKindOfClass:NSString.class] ? wirePayload : nil);
+  NSArray<GYWireChange *> *changes = GYParseSyncWirePayload([wirePayload isKindOfClass:NSString.class] ? wirePayload : nil);
   if (changes == nil) return nil;
   if (outCursor != NULL) *outCursor = cursor;
   if (outHasMore != NULL) *outHasMore = hasMore;

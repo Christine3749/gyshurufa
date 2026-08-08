@@ -3,7 +3,7 @@
 #import "GYBlockStore.h"
 #import "GYClipboardHistory.h"
 #import "GYSettingsStore.h"
-#import "GYWireV4.h"
+#import "GYSyncWire.h"
 
 #import <CommonCrypto/CommonDigest.h>
 #import <unistd.h>

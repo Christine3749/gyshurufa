@@ -54,8 +54,8 @@ targets:
       - path: GYInputTests
       - path: GYInput/Sources/GYCandidateGridMath.h
       - path: GYInput/Sources/GYPunctuationPolicy.h
-      - path: GYInput/Sources/GYWireV4.h
-      - path: GYInput/Sources/GYWireV4.m
+      - path: GYInput/Sources/GYSyncWire.h
+      - path: GYInput/Sources/GYSyncWire.m
       - path: GYInput/Sources/GYBlockStore.h
       - path: GYInput/Sources/GYBlockStore.m
     settings:
