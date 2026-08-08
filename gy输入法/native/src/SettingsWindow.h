@@ -81,9 +81,22 @@ private:
   bool clip_instant_ = true;
   std::vector<gy::clipboard_history::Entry> history_entries_;
   std::vector<int> history_card_heights_;  // variable: content owns 1..4 lines
+  struct ClipboardThumbnail {
+    std::wstring entry_id;
+    HBITMAP bitmap = nullptr;
+    SIZE size{};
+  };
+  // Decoded thumbnails are window-local only. The full PNG stays in the
+  // clipboard asset store; this avoids decoding a 10 MiB screenshot on every
+  // WM_PAINT while the settings page is open.
+  std::vector<ClipboardThumbnail> history_thumbnails_;
   int history_scroll_ = 0;
   int history_max_scroll_ = 0;
   void MeasureClipboardCards();
+  ClipboardThumbnail* FindOrCreateThumbnail(const gy::clipboard_history::Entry& entry,
+                                            int max_width, int max_height);
+  void PruneClipboardThumbnails();
+  void ClearClipboardThumbnails();
   RECT clip_sync_card_{};
   RECT clip_sync_switch_{};
   RECT clip_instant_card_{};

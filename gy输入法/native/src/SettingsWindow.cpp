@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <objbase.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <cstdint>
 #include <ctime>
 #include <windowsx.h>
@@ -181,6 +184,85 @@ WrappedCard WrapCardText(HDC dc, const std::wstring& value, HFONT font, int max_
 int ClipboardCardHeight(UINT dpi, int lines) {
   return Scale(dpi, 8) + lines * Scale(dpi, 18) + (lines - 1) * Scale(dpi, 7) +
          Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+int ClipboardImageCardHeight(UINT dpi) {
+  return Scale(dpi, 8) + Scale(dpi, 72) + Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+
+ULONG_PTR SettingsGdiPlusToken() {
+  static const ULONG_PTR token = []() {
+    Gdiplus::GdiplusStartupInput startup{};
+    ULONG_PTR value = 0;
+    return Gdiplus::GdiplusStartup(&value, &startup, nullptr) == Gdiplus::Ok
+        ? value : static_cast<ULONG_PTR>(0);
+  }();
+  return token;
+}
+
+HBITMAP DecodeClipboardThumbnail(const gy::clipboard_history::Entry& entry, int max_width,
+                                 int max_height, SIZE* size) {
+  if (!size || entry.kind != gy::clipboard_history::EntryKind::PngImage ||
+      max_width <= 0 || max_height <= 0 || !SettingsGdiPlusToken()) return nullptr;
+  size->cx = 0;
+  size->cy = 0;
+  std::string png;
+  if (!gy::clipboard_history::ReadImagePng(entry, &png) || png.empty()) return nullptr;
+  IStream* stream = nullptr;
+  if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) != S_OK) {
+    std::fill(png.begin(), png.end(), '\0');
+    return nullptr;
+  }
+  ULONG written = 0;
+  const bool written_all = stream->Write(png.data(), static_cast<ULONG>(png.size()), &written) == S_OK &&
+      written == png.size();
+  std::fill(png.begin(), png.end(), '\0');
+  png.clear();
+  LARGE_INTEGER zero{};
+  if (!written_all || stream->Seek(zero, STREAM_SEEK_SET, nullptr) != S_OK) {
+    stream->Release();
+    return nullptr;
+  }
+  Gdiplus::Image source(stream, FALSE);
+  const UINT source_width = source.GetWidth();
+  const UINT source_height = source.GetHeight();
+  if (source.GetLastStatus() != Gdiplus::Ok || source_width == 0 || source_height == 0) {
+    stream->Release();
+    return nullptr;
+  }
+  const double scale = std::min(static_cast<double>(max_width) / source_width,
+                                static_cast<double>(max_height) / source_height);
+  const int width = std::max(1, static_cast<int>(source_width * scale + 0.5));
+  const int height = std::max(1, static_cast<int>(source_height * scale + 0.5));
+  Gdiplus::Bitmap thumbnail(width, height, PixelFormat32bppPARGB);
+  Gdiplus::Graphics graphics(&thumbnail);
+  graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+  graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+  const bool drawn = thumbnail.GetLastStatus() == Gdiplus::Ok &&
+      graphics.DrawImage(&source, Gdiplus::Rect(0, 0, width, height), 0, 0,
+                         source_width, source_height, Gdiplus::UnitPixel) == Gdiplus::Ok;
+  HBITMAP bitmap = nullptr;
+  const bool copied = drawn && thumbnail.GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &bitmap) == Gdiplus::Ok && bitmap;
+  stream->Release();
+  if (!copied) return nullptr;
+  size->cx = width;
+  size->cy = height;
+  return bitmap;
+}
+
+void DrawClipboardThumbnail(HDC dc, HBITMAP bitmap, const SIZE& size, const RECT& bounds) {
+  if (!bitmap || size.cx <= 0 || size.cy <= 0) return;
+  HDC image_dc = CreateCompatibleDC(dc);
+  if (!image_dc) return;
+  const HGDIOBJ previous = SelectObject(image_dc, bitmap);
+  const int bounds_width = static_cast<int>(bounds.right - bounds.left);
+  const int bounds_height = static_cast<int>(bounds.bottom - bounds.top);
+  const int image_width = static_cast<int>(size.cx);
+  const int image_height = static_cast<int>(size.cy);
+  const int x = static_cast<int>(bounds.left) + std::max(0, (bounds_width - image_width) / 2);
+  const int y = static_cast<int>(bounds.top) + std::max(0, (bounds_height - image_height) / 2);
+  BitBlt(dc, x, y, image_width, image_height, image_dc, 0, 0, SRCCOPY);
+  SelectObject(image_dc, previous);
+  DeleteDC(image_dc);
 }
 void DrawCardText(HDC dc, const WrappedCard& card, RECT rect, COLORREF color, HFONT font,
                   int line_height, int line_gap) {
@@ -585,6 +667,7 @@ void SettingsWindow::Layout() {
                            content_left + card_width, top + Scale(dpi_, 28)};
     clip_history_list_ = {content_left, top + Scale(dpi_, 34), content_left + card_width, done_y - Scale(dpi_, 10)};
     history_entries_ = gy::clipboard_history::ReadAll();
+    PruneClipboardThumbnails();
     MeasureClipboardCards();
     ShowWindow(phrases_edit_, SW_HIDE);
   } else if (page_ == Page::Updates) {
@@ -622,8 +705,12 @@ void SettingsWindow::MeasureClipboardCards() {
   HDC measure_dc = GetDC(nullptr);
   const HFONT body = Font(dpi_, 16, FW_SEMIBOLD);
   for (const auto& entry : history_entries_) {
-    const WrappedCard wrapped = WrapCardText(measure_dc, entry.text, body, content_width);
-    history_card_heights_.push_back(ClipboardCardHeight(dpi_, std::max(1, static_cast<int>(wrapped.lines.size()))));
+    if (entry.kind == gy::clipboard_history::EntryKind::PngImage) {
+      history_card_heights_.push_back(ClipboardImageCardHeight(dpi_));
+    } else {
+      const WrappedCard wrapped = WrapCardText(measure_dc, entry.text, body, content_width);
+      history_card_heights_.push_back(ClipboardCardHeight(dpi_, std::max(1, static_cast<int>(wrapped.lines.size()))));
+    }
   }
   DeleteObject(body);
   ReleaseDC(nullptr, measure_dc);
@@ -637,6 +724,42 @@ void SettingsWindow::MeasureClipboardCards() {
     if (acc >= list_h) { history_max_scroll_ = i; break; }
   }
   history_scroll_ = std::clamp(history_scroll_, 0, history_max_scroll_);
+}
+
+SettingsWindow::ClipboardThumbnail* SettingsWindow::FindOrCreateThumbnail(
+    const gy::clipboard_history::Entry& entry, int max_width, int max_height) {
+  if (entry.kind != gy::clipboard_history::EntryKind::PngImage || entry.id.empty()) return nullptr;
+  for (auto& thumbnail : history_thumbnails_) {
+    if (thumbnail.entry_id == entry.id) return thumbnail.bitmap ? &thumbnail : nullptr;
+  }
+  ClipboardThumbnail thumbnail;
+  thumbnail.entry_id = entry.id;
+  thumbnail.bitmap = DecodeClipboardThumbnail(entry, max_width, max_height, &thumbnail.size);
+  if (!thumbnail.bitmap) return nullptr;
+  history_thumbnails_.push_back(std::move(thumbnail));
+  return &history_thumbnails_.back();
+}
+
+void SettingsWindow::PruneClipboardThumbnails() {
+  for (auto it = history_thumbnails_.begin(); it != history_thumbnails_.end();) {
+    const bool still_visible = std::any_of(history_entries_.begin(), history_entries_.end(),
+        [&](const gy::clipboard_history::Entry& entry) {
+          return entry.kind == gy::clipboard_history::EntryKind::PngImage && entry.id == it->entry_id;
+        });
+    if (still_visible) {
+      ++it;
+      continue;
+    }
+    if (it->bitmap) DeleteObject(it->bitmap);
+    it = history_thumbnails_.erase(it);
+  }
+}
+
+void SettingsWindow::ClearClipboardThumbnails() {
+  for (auto& thumbnail : history_thumbnails_) {
+    if (thumbnail.bitmap) DeleteObject(thumbnail.bitmap);
+  }
+  history_thumbnails_.clear();
 }
 
 void SettingsWindow::Paint(HDC dc) {
@@ -780,9 +903,26 @@ void SettingsWindow::Paint(HDC dc) {
         const COLORREF row_fill = (index % 2 == 0) ? pal.surface : pal.surface_alt;
         Rounded(dc, card, row_fill, pal.border, Scale(dpi_, 10));
         const auto& entry = history_entries_[static_cast<size_t>(index)];
-        const WrappedCard wrapped = WrapCardText(dc, entry.text, large, card.right - card.left - Scale(dpi_, 28));
-        DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
-                                       card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
+        if (entry.kind == gy::clipboard_history::EntryKind::PngImage) {
+          const RECT preview{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
+                             card.left + Scale(dpi_, 126), card.top + Scale(dpi_, 80)};
+          Rounded(dc, preview, pal.ink, pal.border, Scale(dpi_, 6));
+          if (ClipboardThumbnail* thumbnail = FindOrCreateThumbnail(entry, Scale(dpi_, 104), Scale(dpi_, 64))) {
+            DrawClipboardThumbnail(dc, thumbnail->bitmap, thumbnail->size, preview);
+          } else {
+            Text(dc, L"图片不可读取", preview, pal.muted, DT_CENTER, tiny);
+          }
+          Text(dc, L"图片", RECT{preview.right + Scale(dpi_, 14), card.top + Scale(dpi_, 14),
+                                   card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 40)},
+               pal.text, DT_LEFT, medium);
+          Text(dc, L"PNG · 已保存到 Keep", RECT{preview.right + Scale(dpi_, 14), card.top + Scale(dpi_, 42),
+                                                card.right - Scale(dpi_, 14), card.top + Scale(dpi_, 62)},
+               pal.muted, DT_LEFT, tiny);
+        } else {
+          const WrappedCard wrapped = WrapCardText(dc, entry.text, large, card.right - card.left - Scale(dpi_, 28));
+          DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
+                                         card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
+        }
         const std::wstring status = entry.pending_upload ? L"同步中 · " : L"已确认 · ";
         Text(dc, status + FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
                                                                   card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)},
@@ -890,6 +1030,7 @@ void SettingsWindow::ClearHistory() {
   if (MessageBoxW(hwnd_, L"清空本机剪贴板历史？不影响其他设备。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
   gy::clipboard_history::Clear();
   history_entries_.clear();
+  ClearClipboardThumbnails();
   history_scroll_ = 0;
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -1134,6 +1275,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       std::vector<gy::clipboard_history::Entry> latest = gy::clipboard_history::ReadAll();
       if (!SameClipboardEntries(self->history_entries_, latest)) {
         self->history_entries_ = std::move(latest);
+        self->PruneClipboardThumbnails();
         self->MeasureClipboardCards();
         self->history_scroll_ = std::min(self->history_scroll_, self->history_max_scroll_);
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1151,6 +1293,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_DPICHANGED: {
       self->dpi_ = std::min<UINT>(HIWORD(wparam), kMaxSettingsDpi);
+      self->ClearClipboardThumbnails();
       const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
       HMONITOR monitor = MonitorFromRect(suggested, MONITOR_DEFAULTTONEAREST);
       MONITORINFO info{sizeof(info)}; GetMonitorInfoW(monitor, &info);
@@ -1166,6 +1309,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       }
       if (self->page_ == Page::Clipboard) {
         self->history_entries_ = gy::clipboard_history::ReadAll();
+        self->PruneClipboardThumbnails();
         self->MeasureClipboardCards();
         InvalidateRect(hwnd, nullptr, FALSE);
       }
@@ -1176,6 +1320,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       SetWindowTextW(self->account_password_edit_, L"");
       KillTimer(hwnd, kClipboardStatusTimer);
       RemoveClipboardFormatListener(hwnd);
+      self->ClearClipboardThumbnails();
       if (self->edit_brush_) { DeleteObject(self->edit_brush_); self->edit_brush_ = nullptr; }
       if (self->account_input_brush_) { DeleteObject(self->account_input_brush_); self->account_input_brush_ = nullptr; }
       self->hwnd_ = nullptr;
