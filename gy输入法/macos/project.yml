@@ -38,7 +38,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
         # Security: Keychain 存放 GY 账户的 refresh token（GYAccountAuth）。
-        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -framework Security -lrime"
+        OTHER_LDFLAGS: "$(inherited) -framework InputMethodKit -framework Cocoa -framework Carbon -framework Security -lrime -lsqlite3"
     scheme:
       testTargets:
         - GYInputTests
@@ -54,8 +54,14 @@ targets:
       - path: GYInputTests
       - path: GYInput/Sources/GYCandidateGridMath.h
       - path: GYInput/Sources/GYPunctuationPolicy.h
+      - path: GYInput/Sources/GYWireV4.h
+      - path: GYInput/Sources/GYWireV4.m
+      - path: GYInput/Sources/GYBlockStore.h
+      - path: GYInput/Sources/GYBlockStore.m
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: wang.shurufa.inputmethod.GYInputTests
         GENERATE_INFOPLIST_FILE: YES
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        # GYBlockStore.m links sqlite3 directly (see GYInput target).
+        OTHER_LDFLAGS: "$(inherited) -lsqlite3"

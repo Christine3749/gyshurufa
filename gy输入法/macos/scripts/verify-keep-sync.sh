@@ -6,7 +6,10 @@
 set -uo pipefail
 
 app="/Library/Input Methods/GYInput.app"
-history_file="$HOME/Library/Application Support/GYInput/clipboard-history.tsv"
+# v4 起，SQLite（GYBlockStore）才是唯一事实来源；旧 TSV 迁移后改名为
+# clipboard-history.tsv.migrated-backup，不再被写入，不能再用来判断同步状态
+# （这正是 G-01 事故：脚本曾经把本地 TSV 标记当作服务端唯一真相）。
+db_file="$HOME/Library/Application Support/GYInput/sync.sqlite"
 settings_file="$HOME/Library/Application Support/GYInput/settings.json"
 log_file="$(mktemp -t gy-verify-log)"
 pass=0
@@ -23,7 +26,7 @@ if [[ -d "$app" ]]; then
   short="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null)"
   if [[ "${build:-0}" -ge 209 ]]; then ok "已安装 $short (build $build)"
   else bad "已安装 $short (build $build)，低于 209 —— 修复未生效，先装新包"; fi
-  for sym in GYKeepSync GYAccountAuth; do
+  for sym in GYKeepSync GYAccountAuth GYBlockStore; do
     if nm -U "$app/Contents/MacOS/GYInput" 2>/dev/null | grep -q "$sym"; then ok "$sym 已编入"
     else bad "$sym 不在二进制里"; fi
   done
@@ -62,10 +65,12 @@ info "已复制探针字符串"
 
 captured=""; confirmed=""
 for _ in $(seq 1 400); do   # 最多 20 秒
-  if [[ -z "$captured" ]] && grep -q "$probe" "$history_file" 2>/dev/null; then
+  if [[ -z "$captured" ]] && [[ -f "$db_file" ]] && \
+     sqlite3 "$db_file" "SELECT 1 FROM blocks WHERE text='$probe' LIMIT 1;" 2>/dev/null | grep -q 1; then
     captured=$(python3 -c "import time;print(f'{time.time()-$t0:.3f}')")
   fi
-  if [[ -n "$captured" ]] && awk -F'\t' -v p="$probe" '$4 ~ p && $3=="0"' "$history_file" 2>/dev/null | grep -q .; then
+  if [[ -n "$captured" ]] && [[ -f "$db_file" ]] && \
+     sqlite3 "$db_file" "SELECT 1 FROM blocks WHERE text='$probe' AND state='confirmed' AND sequence IS NOT NULL LIMIT 1;" 2>/dev/null | grep -q 1; then
     confirmed=$(python3 -c "import time;print(f'{time.time()-$t0:.3f}')")
     break
   fi
@@ -74,8 +79,8 @@ done
 
 if [[ -n "$captured" ]]; then ok "进入本机历史：${captured}s"
 else bad "20 秒内没进本机历史 —— 捕获层有问题"; fi
-if [[ -n "$confirmed" ]]; then ok "Keep 确认接收：${confirmed}s"
-else bad "20 秒内 Keep 未确认（pending 仍为 1）—— 上传或拉取有问题"; fi
+if [[ -n "$confirmed" ]]; then ok "Keep 确认接收（state=confirmed，sequence 非空）：${confirmed}s"
+else bad "20 秒内 Keep 未确认 —— 上传或拉取有问题，或本轮就没跑（见第 6 步日志）"; fi
 
 head_ "5. 截图存活（复制图片后不应被同步覆盖）"
 png="$(mktemp -t gy-verify).png"
@@ -97,10 +102,12 @@ if osascript -e "set the clipboard to (read (POSIX file \"$png\") as «class PNG
     bad "剪贴板已被文本覆盖 —— 截图保护失效"
     info "当前内容类型: $(osascript -e 'clipboard info' 2>/dev/null | head -c 120)"
   fi
-  if grep -q "$(date +%Y)" <<<"x" && awk -F'\t' '{print $4}' "$history_file" 2>/dev/null | tail -1 | grep -q "PNG"; then
-    bad "图片疑似进了文本历史"
+  since=$(python3 -c 'import time;print(time.time()-15)')
+  if [[ -f "$db_file" ]] && sqlite3 "$db_file" \
+      "SELECT 1 FROM blocks WHERE kind='image' AND captured_at > $since LIMIT 1;" 2>/dev/null | grep -q 1; then
+    ok "图片作为 kind=image 进入本机历史（不是占位文字）"
   else
-    ok "图片没有进入文字历史"
+    bad "没找到对应的 kind=image 记录 —— 图片捕获没有落库"
   fi
 else
   info "（跳过：无法通过 osascript 写入图片剪贴板）"

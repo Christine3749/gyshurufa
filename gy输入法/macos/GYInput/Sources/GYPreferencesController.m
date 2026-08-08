@@ -185,7 +185,9 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 - (void)resetCursorRects { [self addCursorRect:self.bounds cursor:NSCursor.pointingHandCursor]; }
 @end
 
-@interface GYCardView : NSView
+// GYClickView base: 剪贴板卡片需要点击写回系统剪贴板（spec §6），其余用途
+// 仍可以不设置 onClick，此时行为与普通 NSView 一致。
+@interface GYCardView : GYClickView
 @property(nonatomic, strong) GYPalette *palette;
 @property(nonatomic) CGFloat radius;
 // Per-entry zebra striping (clipboard history list), matching Windows
@@ -194,6 +196,12 @@ static void GYDrawWordmark(NSRect bounds, NSColor *color) {
 @end
 @implementation GYCardView
 - (BOOL)isFlipped { return YES; } // children use top-down coordinates
+// Most GYCardView instances are plain containers (settings sections) with no
+// onClick — only show the pointing-hand affordance where a click actually
+// does something, instead of GYClickView's unconditional cursor rect.
+- (void)resetCursorRects {
+  if (self.onClick != nil) [self addCursorRect:self.bounds cursor:NSCursor.pointingHandCursor];
+}
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
   [(self.altRow ? self.palette.surfaceAlt : self.palette.surface) setFill];
@@ -999,34 +1007,65 @@ static NSString *GYClipboardPreviewText(NSString *text) {
 
   CGFloat y = 0;
   NSInteger entryIndex = 0;
+  const CGFloat kThumbSize = 56;
   for (GYClipboardEntry *entry in entries) {
-    NSString *displayText =
-        entry.text.length == 0 ? @"（空白内容已过滤）" : GYClipboardPreviewText(entry.text);
-    const NSInteger lineCount = [self clipboardLineCountForText:displayText width:textWidth];
-    const CGFloat cardHeight = [self clipboardCardHeightForLineCount:lineCount];
-    const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;
+    const BOOL isImage = entry.kind == GYBlockKindImage;
+    NSInteger lineCount = 1;
+    CGFloat cardHeight;
+    NSString *displayText = nil;
+    if (isImage) {
+      cardHeight = kThumbSize + 20;
+    } else {
+      displayText = entry.text.length == 0 ? @"（空白内容已过滤）" : GYClipboardPreviewText(entry.text);
+      lineCount = [self clipboardLineCountForText:displayText width:textWidth];
+      cardHeight = [self clipboardCardHeightForLineCount:lineCount];
+    }
 
     GYCardView *card = [[GYCardView alloc] initWithFrame:NSMakeRect(sidePad, y, cardWidth, cardHeight)];
     card.palette = palette;
     card.radius = 10;
     card.altRow = (entryIndex % 2) != 0;
     ++entryIndex;
+    // 点击卡片：写回系统剪贴板，不创建新的 Keep 条目（spec §6 剪贴板页）。
+    card.onClick = ^{ [GYClipboardHistory.sharedHistory republishEntryToSystemPasteboard:entry]; };
     [_clipboardListView addSubview:card];
 
-    NSTextField *text = [self labelWithText:displayText font:GYAuxFont()];
-    text.textColor = palette.text;
-    text.frame = NSMakeRect(16, 10, textWidth, textHeight);
-    text.cell.wraps = YES;
-    text.maximumNumberOfLines = lineCount;
-    text.lineBreakMode = NSLineBreakByTruncatingTail;
-    text.alignment = NSTextAlignmentLeft;
-    [card addSubview:text];
+    if (isImage) {
+      NSImage *thumbnail = entry.blobPath.length > 0 ? [[NSImage alloc] initWithContentsOfFile:entry.blobPath] : nil;
+      NSImageView *imageView = [[NSImageView alloc] initWithFrame:NSMakeRect(16, 10, kThumbSize, kThumbSize)];
+      imageView.image = thumbnail;
+      imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
+      [card addSubview:imageView];
 
-    NSTextField *time = [self labelWithText:[self formatClipboardTime:entry.unixTime] font:GYAuxFont()];
-    time.textColor = palette.muted;
-    time.alignment = NSTextAlignmentLeft;
-    time.frame = NSMakeRect(16, cardHeight - 24, textWidth, 16);
-    [card addSubview:time];
+      NSString *caption = thumbnail != nil
+          ? [NSString stringWithFormat:@"图片 · %.0f KB", entry.byteSize / 1024.0]
+          : @"图片同步中…";
+      NSTextField *label = [self labelWithText:caption font:GYAuxFont()];
+      label.textColor = palette.muted;
+      label.frame = NSMakeRect(16 + kThumbSize + 12, cardHeight / 2 - 8, textWidth - kThumbSize - 12, 16);
+      [card addSubview:label];
+
+      NSTextField *time = [self labelWithText:[self formatClipboardTime:entry.unixTime] font:GYAuxFont()];
+      time.textColor = palette.muted;
+      time.frame = NSMakeRect(16 + kThumbSize + 12, cardHeight / 2 + 10, textWidth - kThumbSize - 12, 16);
+      [card addSubview:time];
+    } else {
+      const CGFloat textHeight = lineCount * lineHeight + (lineCount - 1) * 4;
+      NSTextField *text = [self labelWithText:displayText font:GYAuxFont()];
+      text.textColor = palette.text;
+      text.frame = NSMakeRect(16, 10, textWidth, textHeight);
+      text.cell.wraps = YES;
+      text.maximumNumberOfLines = lineCount;
+      text.lineBreakMode = NSLineBreakByTruncatingTail;
+      text.alignment = NSTextAlignmentLeft;
+      [card addSubview:text];
+
+      NSTextField *time = [self labelWithText:[self formatClipboardTime:entry.unixTime] font:GYAuxFont()];
+      time.textColor = palette.muted;
+      time.alignment = NSTextAlignmentLeft;
+      time.frame = NSMakeRect(16, cardHeight - 24, textWidth, 16);
+      [card addSubview:time];
+    }
 
     y += cardHeight + gap;
   }
