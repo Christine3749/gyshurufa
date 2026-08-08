@@ -173,13 +173,18 @@ static NSString *GYLocalDeviceName(void) {
              typeof(self) self_ = weakSelf;
              if (self_ == nil) return;
              NSString *cursor = [GYBlockStore.sharedStore cursorForAccount:accountId];
-             const BOOL snapshot = cursor.length == 0 || [cursor isEqualToString:@"0"];
+             // A pending repair (see GYBlockStore.h needsSnapshotForAccount:)
+             // forces a snapshot fetch regardless of cursor — a prior
+             // round's DELETE recovery that failed (network, image hash,
+             // crash) must retry as a snapshot, not resume incremental
+             // cursor paging, or the exposed HEAD-20 gap never gets filled.
+             const BOOL needsSnapshot = [GYBlockStore.sharedStore needsSnapshotForAccount:accountId];
+             const BOOL snapshot = needsSnapshot || cursor.length == 0 || [cursor isEqualToString:@"0"];
              [self_ pullPageWithToken:token
                              accountId:accountId
                                 cursor:cursor
                               snapshot:snapshot
-                             pagesLeft:kMaxPagesPerRound
-                             sawDelete:NO];
+                             pagesLeft:kMaxPagesPerRound];
            }];
 }
 
@@ -273,10 +278,9 @@ static NSString *GYLocalDeviceName(void) {
                 accountId:(NSString *)accountId
                    cursor:(NSString *)cursor
                  snapshot:(BOOL)snapshot
-                pagesLeft:(NSInteger)pagesLeft
-                sawDelete:(BOOL)sawDelete {
+                pagesLeft:(NSInteger)pagesLeft {
   if (pagesLeft <= 0) {
-    [self finishPullToken:token accountId:accountId sawDelete:sawDelete];
+    [self maybeRepairThenFinalizeToken:token accountId:accountId];
     return;
   }
   NSString *path = snapshot ? [kSyncPath stringByAppendingString:@"?snapshot=1"]
@@ -298,41 +302,63 @@ static NSString *GYLocalDeviceName(void) {
                        (unsigned long)changes.count, (unsigned long)data.length);
                  dispatch_async(self_->_queue, ^{
                    if (changes == nil || nextCursor == nil) {
-                     self_->_syncing = NO;  // abort round; retried next tick from the same cursor
+                     // Abort round; retried next tick from the same cursor.
+                     // If this fetch was itself the repair snapshot,
+                     // needsSnapshot was never cleared, so it will be
+                     // retried as a snapshot again, not lost as incremental
+                     // cursor paging resumes.
+                     self_->_syncing = NO;
                      return;
                    }
                    [self_ downloadImagesForChanges:changes
                                               token:token
                                          completion:^(BOOL imagesOk) {
-                     if (!imagesOk) { self_->_syncing = NO; return; }
+                     if (!imagesOk) { self_->_syncing = NO; return; }  // same retry guarantee as above
                      [self_ applyChanges:changes snapshot:snapshot];
-                     [GYBlockStore.sharedStore setCursor:nextCursor forAccount:accountId];
-                     BOOL sawDeleteNow = sawDelete;
+                     // Order matters: a DELETE's repair flag must be durably
+                     // set BEFORE the cursor advances past it. If the app
+                     // dies between these two lines, the flag is already
+                     // true on disk — the cursor write below never executes
+                     // without the flag write having already committed.
                      if (!snapshot) {
                        for (GYWireChange *change in changes) {
-                         if (change.kind == GYWireChangeDelete) { sawDeleteNow = YES; break; }
+                         if (change.kind == GYWireChangeDelete) {
+                           [GYBlockStore.sharedStore setNeedsSnapshot:YES forAccount:accountId];
+                           break;
+                         }
                        }
                      }
+                     [GYBlockStore.sharedStore setCursor:nextCursor forAccount:accountId];
+                     // This fetch WAS the repair snapshot and it just fully
+                     // succeeded (parsed, images verified, applied, cursor
+                     // moved) — only now is the gap actually filled.
+                     if (snapshot) [GYBlockStore.sharedStore setNeedsSnapshot:NO forAccount:accountId];
                      if (!hasMore.boolValue || [nextCursor isEqualToString:cursor]) {
-                       [self_ finishPullToken:token accountId:accountId sawDelete:sawDeleteNow];
+                       [self_ maybeRepairThenFinalizeToken:token accountId:accountId];
                        return;
                      }
                      [self_ pullPageWithToken:token
                                      accountId:accountId
                                         cursor:nextCursor
                                       snapshot:NO
-                                     pagesLeft:pagesLeft - 1
-                                     sawDelete:sawDeleteNow];
+                                     pagesLeft:pagesLeft - 1];
                    }];
                  });
                }] resume];
 }
 
 /// A DELETE can expose a 21st confirmed item that was previously hidden
-/// behind the HEAD-20 view. One authoritative snapshot fills that slot;
-/// ordinary ADD events never take this path. Always continues on `_queue`.
-- (void)finishPullToken:(NSString *)token accountId:(NSString *)accountId sawDelete:(BOOL)sawDelete {
-  if (!sawDelete) {
+/// behind the HEAD-20 view; one authoritative snapshot fills that slot.
+/// Called after the round's normal incremental paging finishes — re-reads
+/// GYBlockStore's durable needsSnapshot flag (not an in-memory parameter)
+/// rather than the round's own `sawDelete` history, so this correctly picks
+/// up BOTH a delete seen just now AND a repair a previous round left
+/// unfinished (crash, network failure, image hash mismatch). If this
+/// round's own fetch already was the repair snapshot, the flag was already
+/// cleared on success, so this is a no-op — no redundant fetch. Always
+/// continues on `_queue`.
+- (void)maybeRepairThenFinalizeToken:(NSString *)token accountId:(NSString *)accountId {
+  if (![GYBlockStore.sharedStore needsSnapshotForAccount:accountId]) {
     [self finalizeRound];
     return;
   }
@@ -348,13 +374,23 @@ static NSString *GYLocalDeviceName(void) {
                  NSArray<GYWireChange *> *changes = nil;
                  if (error == nil && code == 200 && data != nil) changes = GYParseSyncPage(data, &nextCursor, &hasMore);
                  dispatch_async(self_->_queue, ^{
-                   if (changes == nil || nextCursor == nil) { self_->_syncing = NO; return; }
+                   if (changes == nil || nextCursor == nil) {
+                     // Repair failed: flag stays set (never cleared), so the
+                     // very next round retries the snapshot fetch instead of
+                     // resuming incremental cursor paging that would never
+                     // see this DELETE again.
+                     self_->_syncing = NO;
+                     return;
+                   }
                    [self_ downloadImagesForChanges:changes
                                               token:token
                                          completion:^(BOOL imagesOk) {
-                     if (!imagesOk) { self_->_syncing = NO; return; }
+                     if (!imagesOk) { self_->_syncing = NO; return; }  // same retry guarantee as above
                      [self_ applyChanges:changes snapshot:YES];
                      [GYBlockStore.sharedStore setCursor:nextCursor forAccount:accountId];
+                     // Only clear now that fetch, image verification, store
+                     // update, and cursor advance have ALL succeeded.
+                     [GYBlockStore.sharedStore setNeedsSnapshot:NO forAccount:accountId];
                      [self_ finalizeRound];
                    }];
                  });

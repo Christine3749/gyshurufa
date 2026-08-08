@@ -370,6 +370,98 @@
                 @"deleting a visible entry should let the 21st-oldest confirmed entry fill the gap");
 }
 
+#pragma mark - DELETE → snapshot 失败 → 重启 → snapshot 成功 → Head-20 恢复满格
+
+// Review finding (P1): GYKeepSync used to advance the cursor past a DELETE
+// and only THEN attempt a repair snapshot, tracked purely in an in-memory
+// `sawDelete` parameter. If that repair fetch failed (network, 500, image
+// hash mismatch) or the process died, the cursor had already moved past the
+// DELETE, the in-memory flag was gone, and no future round would ever know
+// a repair was still owed — HEAD-20 would be permanently short one slot.
+//
+// The fix is GYBlockStore's durable needs_snapshot flag (GYKeepSync sets it
+// before advancing the cursor, clears it only after a full repair success).
+// This test covers exactly the sequence in the finding, at the level that's
+// actually testable without mocking HTTP: the flag's persistence and its
+// effect on the HEAD-20 view survive a real "quit app, relaunch" (a fresh
+// sqlite3 connection against the same file, same pattern as the restart-
+// recovery group above). The retry-on-HTTP-failure control flow itself
+// lives in GYKeepSync and is exercised by the real network in the
+// install/verify phase, not here.
+- (void)testDeleteRepairSurvivesFailureAndRestartThenFillsHeadTwenty {
+  NSString *dbPath = [self freshDBPath];
+  NSString *accountId = @"user@example.com";
+
+  // --- Round 1: this device's local cache is exactly the top-20 snapshot
+  // window it got at login -- it has NEVER seen the 21st-oldest item, which
+  // is the realistic case a repair snapshot exists to fix. (If the device
+  // already had >20 confirmed rows cached locally from years of accumulated
+  // ADD events, a DELETE would self-heal from local data alone with no
+  // server round trip needed -- that is a real, easier case, but not the
+  // one this fix is for.) applyConfirmedAdd simulates the 20 ADD events a
+  // snapshot page would have produced.
+  GYBlockStore *round1 = [GYBlockStore storeAtPath:dbPath];
+  NSMutableArray<NSString *> *visibleIds = [NSMutableArray array];
+  for (NSUInteger i = 0; i < 20; ++i) {
+    NSString *entryId = [self newEntryId];
+    [visibleIds addObject:entryId];
+    [round1 applyConfirmedAdd:[self confirmedTextBlockWithId:entryId
+                                                       sequence:[NSString stringWithFormat:@"%lu", (unsigned long)(i + 2)]
+                                                           text:[NSString stringWithFormat:@"entry %lu", (unsigned long)i]]];
+  }
+  XCTAssertEqual([round1 headProjectionWithLimit:20].count, (NSUInteger)20);
+
+  // A DELETE for one of the 20 arrives. GYKeepSync's sequence: set the
+  // repair flag, apply the delete, THEN advance the cursor -- durability
+  // requires the flag write to commit before the cursor write.
+  [round1 setNeedsSnapshot:YES forAccount:accountId];
+  [round1 applyDeleteEntryId:visibleIds[0]];
+  [round1 setCursor:@"22" forAccount:accountId];
+
+  // The repair snapshot fetch now fails (network error / 500 / image hash
+  // mismatch -- whatever the reason, GYKeepSync never calls
+  // setNeedsSnapshot:NO). Nothing locally can fill the gap: this device
+  // never had a 21st entry cached.
+  XCTAssertTrue([round1 needsSnapshotForAccount:accountId]);
+  XCTAssertEqual([round1 headProjectionWithLimit:20].count, (NSUInteger)19,
+                 @"one slot is genuinely missing -- no local data can fill it, only a server round trip can");
+
+  // --- Simulated restart: fresh sqlite3 connection, same file ---
+  GYBlockStore *round2 = [GYBlockStore storeAtPath:dbPath];
+  XCTAssertTrue([round2 needsSnapshotForAccount:accountId],
+                @"the repair obligation must survive a restart, not just live in memory");
+  XCTAssertEqualObjects([round2 cursorForAccount:accountId], @"22", @"the cursor also survived, as it always did");
+  XCTAssertEqual([round2 headProjectionWithLimit:20].count, (NSUInteger)19, @"still short one, as it should be");
+
+  // --- Round 2 (post-restart): repair snapshot now succeeds ---
+  // GYKeepSync's maybeRepairThenFinalizeToken: sees needsSnapshot==YES and
+  // forces a snapshot fetch instead of resuming incremental cursor paging
+  // (which could never see the already-consumed DELETE again). The
+  // authoritative snapshot returns the 19 survivors PLUS one entry this
+  // device has never seen before -- the real 21st-oldest, backfilling the
+  // gap left by the delete.
+  NSString *backfillId = [self newEntryId];
+  NSMutableArray<GYBlock *> *recoveredSnapshot = [NSMutableArray array];
+  for (NSString *entryId in visibleIds) {
+    if ([entryId isEqualToString:visibleIds[0]]) continue;  // the actually-deleted one
+    [recoveredSnapshot addObject:[self confirmedTextBlockWithId:entryId sequence:@"1" text:@"recovered"]];
+  }
+  [recoveredSnapshot addObject:[self confirmedTextBlockWithId:backfillId sequence:@"1" text:@"backfilled 21st entry"]];
+  XCTAssertEqual(recoveredSnapshot.count, (NSUInteger)20);
+  [round2 replaceConfirmedSnapshot:recoveredSnapshot];
+  [round2 setCursor:@"22" forAccount:accountId];
+  [round2 setNeedsSnapshot:NO forAccount:accountId];  // only after everything above succeeded
+
+  XCTAssertFalse([round2 needsSnapshotForAccount:accountId]);
+  NSArray<GYBlock *> *headAfterRepair = [round2 headProjectionWithLimit:20];
+  NSArray<NSString *> *headIdsAfterRepair = [headAfterRepair valueForKey:@"entryId"];
+  XCTAssertEqual(headAfterRepair.count, (NSUInteger)20, @"Head-20 must be back to full after the repair lands");
+  XCTAssertFalse([headIdsAfterRepair containsObject:visibleIds[0]],
+                 @"the actually-deleted entry must not reappear");
+  XCTAssertTrue([headIdsAfterRepair containsObject:backfillId],
+                @"the previously-unseen 21st entry must now be visible -- this is the gap actually getting filled");
+}
+
 #pragma mark - 图片 hash (image capture/round-trip integrity)
 
 - (void)testImageBlockRoundTripsHashAndSize {

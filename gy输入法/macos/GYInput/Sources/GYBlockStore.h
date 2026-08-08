@@ -113,6 +113,17 @@ typedef NS_ENUM(NSInteger, GYBlockState) {
 - (void)setCursor:(NSString *)cursor forAccount:(NSString *)accountId;
 - (void)resetCursorForAccount:(NSString *)accountId;
 
+/// Durable "a DELETE exposed a slot that still needs an authoritative
+/// snapshot to fill — see spec §7.4" flag. GYKeepSync sets this the moment
+/// it applies a page containing a DELETE, strictly before it advances the
+/// cursor past that page — so even a crash, a failed network request, or a
+/// 500 partway through the repair snapshot leaves this durably set in
+/// SQLite rather than only in an in-memory flag that a dropped connection
+/// or relaunch would silently lose. Only cleared once a repair snapshot's
+/// fetch, image verification, and store update have ALL succeeded.
+- (BOOL)needsSnapshotForAccount:(NSString *)accountId;
+- (void)setNeedsSnapshot:(BOOL)needsSnapshot forAccount:(NSString *)accountId;
+
 /// Stable per-install device id (URL-safe, 8–128 chars). Generated once and
 /// persisted; never changes across launches or re-logins.
 @property(nonatomic, readonly, copy) NSString *deviceId;

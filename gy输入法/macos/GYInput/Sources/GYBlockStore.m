@@ -119,7 +119,8 @@ static GYBlockState GYStateFromName(NSString *name) {
       ");"
       "CREATE TABLE IF NOT EXISTS sync_state ("
       "  account_id TEXT PRIMARY KEY,"
-      "  cursor TEXT NOT NULL DEFAULT '0'"
+      "  cursor TEXT NOT NULL DEFAULT '0',"
+      "  needs_snapshot INTEGER NOT NULL DEFAULT 0"
       ");"
       "CREATE TABLE IF NOT EXISTS tombstones ("
       "  entry_id TEXT PRIMARY KEY,"
@@ -473,6 +474,31 @@ static NSString *const kGYBlockColumns =
 
 - (void)resetCursorForAccount:(NSString *)accountId {
   [self setCursor:@"0" forAccount:accountId];
+}
+
+- (BOOL)needsSnapshotForAccount:(NSString *)accountId {
+  [_lock lock];
+  sqlite3_stmt *stmt = NULL;
+  sqlite3_prepare_v2(_db, "SELECT needs_snapshot FROM sync_state WHERE account_id=?", -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, accountId.UTF8String ?: "", -1, SQLITE_TRANSIENT);
+  BOOL needsSnapshot = NO;
+  if (sqlite3_step(stmt) == SQLITE_ROW) needsSnapshot = sqlite3_column_int(stmt, 0) != 0;
+  sqlite3_finalize(stmt);
+  [_lock unlock];
+  return needsSnapshot;
+}
+
+- (void)setNeedsSnapshot:(BOOL)needsSnapshot forAccount:(NSString *)accountId {
+  [_lock lock];
+  sqlite3_stmt *stmt = NULL;
+  sqlite3_prepare_v2(_db, "INSERT INTO sync_state (account_id, needs_snapshot) VALUES (?, ?)"
+                          " ON CONFLICT(account_id) DO UPDATE SET needs_snapshot=excluded.needs_snapshot",
+                     -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, accountId.UTF8String ?: "", -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 2, needsSnapshot ? 1 : 0);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  [_lock unlock];
 }
 
 // MARK: - Legacy migration
