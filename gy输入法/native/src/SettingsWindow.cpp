@@ -998,8 +998,8 @@ void SettingsWindow::Paint(HDC dc) {
       }
     }
     const std::wstring default_repair_status = versions_consistent_
-        ? L"清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
-        : L"检测到激活版本不一致；可修复当前安装并安全清理旧版本残留。";
+        ? L"整备完成后会清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
+        : L"检测到激活版本不一致；可整备当前安装并安全清理旧版本残留。";
     const std::wstring& repair_status = update_repair_status_.empty() ? default_repair_status : update_repair_status_;
     const COLORREF repair_status_color = update_repair_failed_ ? RGB(210, 80, 80) : pal.muted;
     Text(dc, repair_status, RECT{update_card_.left + Scale(dpi_, 16), update_repair_rect_.top,
@@ -1007,7 +1007,7 @@ void SettingsWindow::Paint(HDC dc) {
          repair_status_color, DT_LEFT | DT_WORDBREAK, tiny);
     const COLORREF repair_fill = update_repair_in_progress_ ? pal.border : kBlue;
     Rounded(dc, update_repair_rect_, repair_fill, repair_fill, Scale(dpi_, 7));
-    Text(dc, update_repair_in_progress_ ? L"处理中…" : L"修复并清理", update_repair_rect_,
+    Text(dc, update_repair_in_progress_ ? L"处理中…" : L"整备", update_repair_rect_,
          kOnAccent, DT_CENTER, tiny);
   }
 
@@ -1120,7 +1120,7 @@ void SettingsWindow::BeginUpdateRepair() {
   const UINT windows_length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
   if (windows_length == 0 || windows_length >= std::size(windows_directory)) {
     update_repair_failed_ = true;
-    update_repair_status_ = L"无法定位 Windows PowerShell；未执行任何修复。";
+    update_repair_status_ = L"无法定位 Windows PowerShell；未执行任何整备操作。";
     InvalidateRect(hwnd_, nullptr, FALSE);
     return;
   }
@@ -1141,14 +1141,14 @@ void SettingsWindow::BeginUpdateRepair() {
     update_repair_failed_ = true;
     update_repair_status_ = error == ERROR_CANCELLED
         ? L"未授予管理员权限，未修改任何内容。"
-        : L"无法启动修复；未修改任何内容，请稍后重试。";
+        : L"无法启动整备；未修改任何内容，请稍后重试。";
     InvalidateRect(hwnd_, nullptr, FALSE);
     return;
   }
 
   update_repair_in_progress_ = true;
   update_repair_failed_ = false;
-  update_repair_status_ = L"正在修复当前安装并清理旧版本…";
+  update_repair_status_ = L"正在整备当前安装并清理旧版本…";
   InvalidateRect(hwnd_, nullptr, FALSE);
   const HWND target = hwnd_;
   const std::uint64_t instance = window_instance_id_;
@@ -1165,7 +1165,7 @@ void SettingsWindow::BeginUpdateRepair() {
     CloseHandle(process);
     update_repair_in_progress_ = false;
     update_repair_failed_ = true;
-    update_repair_status_ = L"无法监控修复进程；请运行开始菜单中的“修复并清理 GY 输入法”。";
+    update_repair_status_ = L"无法监控整备进程；请运行开始菜单中的“整备 GY 输入法”。";
     InvalidateRect(hwnd_, nullptr, FALSE);
   }
 }
@@ -1176,10 +1176,10 @@ void SettingsWindow::FinishUpdateRepair(std::uint64_t window_instance_id, DWORD 
   Load();
   if (exit_code == 0) {
     update_repair_failed_ = false;
-    update_repair_status_ = L"已修复当前安装，并清理旧版本与失效临时安装文件。";
+    update_repair_status_ = L"已整备当前安装，并清理旧版本与失效临时安装文件。";
   } else {
     update_repair_failed_ = true;
-    update_repair_status_ = L"修复未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
+    update_repair_status_ = L"整备未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
   }
   InvalidateRect(hwnd_, nullptr, FALSE);
 }

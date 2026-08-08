@@ -101,7 +101,7 @@ Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion rec
 [Icons]
 Name: "{group}\Windows 输入法设置"; Filename: "{sys}\explorer.exe"; Parameters: "ms-settings:regionlanguage"
 Name: "{group}\验证 GY 输入法安装"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Validate-GYInput.ps1"""
-Name: "{group}\修复并清理 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Repair-GYInput.ps1"""
+Name: "{group}\整备 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Repair-GYInput.ps1"""
 Name: "{group}\回退到上一版 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Rollback-GYInput.ps1"""
 Name: "{group}\卸载 GY 输入法"; Filename: "{uninstallexe}"
 [Run]
@@ -771,5 +771,4 @@ begin
     end;
 end;
   end;
-
 
