@@ -1,4 +1,5 @@
 #import "GYRimeBridge.h"
+#import "GYPinyinFallback.h"
 #import <CommonCrypto/CommonDigest.h>
 
 #if __has_include(<rime_api.h>)
@@ -97,6 +98,14 @@ static BOOL GYEnsureBundledWorkspace(NSURL *sharedDataURL, NSURL *userDataURL, N
   [fileManager removeItemAtURL:backup error:nil];
   return YES;
 }
+// The 5×5 first page (spec §5.2 / Windows PinyinEngine.cpp
+// kFirstPageCandidateTarget): exact input owns the front of the candidate
+// list, but must not leave the grid mostly empty when the exact encoding is
+// too specific (e.g. "gei"有真实候选很少). -candidatesForCode:upToCount:
+// exactCount: keeps broadening to shorter, real pinyin prefixes until this
+// many candidates are collected or the prefix ladder bottoms out.
+static NSUInteger const kGYFirstPageCandidateTarget = 25;
+
 // Candidate governance gate (WINDOWS-DESIGN.md §6): pure CJK ideographs,
 // at most 12 characters; emoji, PUA, symbols and duplicates are filtered.
 static BOOL GYIsQualityCandidate(NSString *text) {
@@ -256,6 +265,60 @@ static BOOL GYIsQualityCandidate(NSString *text) {
   return result;
 #else
   (void)limit;
+  return @[];
+#endif
+}
+
+- (NSArray<NSString *> *)candidatesForCode:(NSString *)code
+                                  upToCount:(NSUInteger)limit
+                                 exactCount:(NSUInteger *)outExactCount {
+#if GY_HAS_RIME
+  if (![self isReady] || code.length == 0) {
+    if (outExactCount != NULL) *outExactCount = 0;
+    return @[];
+  }
+  NSArray<NSString *> *exact = [self candidatesForCode:code];
+  exact = exact.count != 0 ? [self candidatesUpToCount:limit] : @[];
+  NSMutableArray<NSString *> *pool = [exact mutableCopy];
+  NSMutableSet<NSString *> *seen = [NSMutableSet setWithArray:pool];
+
+  // Ported from Windows PinyinEngine::Lookup(): exact input always owns the
+  // front of the list. Only when it cannot fill the 5×5 first page do we add
+  // shorter, valid pinyin prefixes behind it — gei → ge, nihao → niha → nih,
+  // … . A prefix is queried, never guessed: if Rime has no real candidates
+  // for it, it contributes nothing.
+  BOOL fallbackRan = NO;
+  NSString *fallback = code;
+  while (pool.count < kGYFirstPageCandidateTarget) {
+    fallback = GYNextFallbackPinyinCode(fallback);
+    if (fallback == nil) break;
+    fallbackRan = YES;
+    NSArray<NSString *> *more = [self candidatesForCode:fallback];
+    more = more.count != 0 ? [self candidatesUpToCount:(limit - pool.count)] : @[];
+    for (NSString *candidate in more) {
+      if (pool.count >= limit) break;
+      if ([seen containsObject:candidate]) continue;
+      [seen addObject:candidate];
+      [pool addObject:candidate];
+    }
+  }
+
+  if (fallbackRan) {
+    // The fallback queries above left the Rime session composed with the
+    // last (shortest) prefix, not `code` — restore it so paging, commit,
+    // and remainingCompositionInput all reflect what the user is actually
+    // typing, and rebuild the exact-code index map the fallback queries
+    // clobbered.
+    [self candidatesForCode:code];
+    [self candidatesUpToCount:exact.count];
+  }
+
+  if (outExactCount != NULL) *outExactCount = exact.count;
+  return pool;
+#else
+  (void)code;
+  (void)limit;
+  if (outExactCount != NULL) *outExactCount = 0;
   return @[];
 #endif
 }

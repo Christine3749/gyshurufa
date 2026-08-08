@@ -248,11 +248,16 @@ static const NSUInteger kCandidateFetchLimit = 75;
 // Keep the candidate window presentation as plain strings while retaining the
 // exact selection owner. Local phrases never enter Rime; Rime entries retain
 // their filtered display index so GYRimeBridge can translate it to raw Rime.
+// `exactCount` marks where fallback (shortened-pinyin) candidates begin —
+// see GYCandidateGovernance.h and GYRimeBridge
+// -candidatesForCode:upToCount:exactCount:.
 - (void)setCandidateSelectionsFromRimeCandidates:(NSArray<NSString *> *)rimeCandidates
-                                          forCode:(NSString *)code {
+                                          forCode:(NSString *)code
+                                       exactCount:(NSUInteger)exactCount {
   _candidateSelections = [GYCandidateGovernance
       selectionsForRimeCandidates:rimeCandidates
-                     customPhrases:[GYSettingsStore.sharedStore customPhrasesForCode:code]];
+                     customPhrases:[GYSettingsStore.sharedStore customPhrasesForCode:code]
+                        exactCount:exactCount];
   NSMutableArray<NSString *> *texts = [NSMutableArray arrayWithCapacity:_candidateSelections.count];
   for (GYCandidateSelection *selection in _candidateSelections) {
     [texts addObject:selection.text];
@@ -261,11 +266,16 @@ static const NSUInteger kCandidateFetchLimit = 75;
 }
 
 // Fetches the governed 75-candidate pool and merges per-code custom phrases
-// at the front, like the Windows pipeline.
+// at the front, like the Windows pipeline. When the exact composition can't
+// fill the 5×5 first page on its own, GYRimeBridge broadens to shorter
+// pinyin prefixes (gei -> ge) behind it — spec §5.2, ported from Windows
+// PinyinEngine::Lookup().
 - (void)refetchCandidatesForCode:(NSString *)code {
-  NSArray<NSString *> *rime = [_engine candidatesForCode:code];
-  rime = rime.count != 0 ? [_engine candidatesUpToCount:kCandidateFetchLimit] : @[];
-  [self setCandidateSelectionsFromRimeCandidates:rime forCode:code];
+  NSUInteger exactCount = 0;
+  NSArray<NSString *> *rime = [_engine candidatesForCode:code
+                                                 upToCount:kCandidateFetchLimit
+                                                exactCount:&exactCount];
+  [self setCandidateSelectionsFromRimeCandidates:rime forCode:code exactCount:exactCount];
   _selected = 0;
   _pageStart = 0;
 }
@@ -335,15 +345,21 @@ static const NSUInteger kCandidateFetchLimit = 75;
 // Commits the displayed candidate at index, then refreshes any composition
 // remainder Rime kept (sentence-style partial commits). A custom phrase at
 // index 0 bypasses Rime, so the engine composition is cleared instead.
-// Commits a governed selection. Local phrases bypass Rime; every Rime entry
-// keeps the bridge display index even when local phrases were prepended.
+// Commits a governed selection. Local phrases and directFallback candidates
+// (spec §5.2's commitKind: directFallback — a shortened-pinyin fallback
+// match, e.g. picking a "ge" candidate while the composition is still
+// "gei") both bypass Rime: their rimeDisplayIndex does not correspond to
+// the Rime session's current composition state, so
+// -commitCandidateAtAbsoluteIndex: would resolve it against the wrong
+// candidate entirely. Every remaining (exact-composition) entry keeps the
+// bridge display index even when local phrases were prepended.
 - (void)commitCandidateSelectionAtIndex:(NSUInteger)index
                                  suffix:(nullable NSString *)suffix
                                  client:(id)client {
   if (index >= _candidateSelections.count || client == nil) return;
   GYCandidateSelection *selection = _candidateSelections[index];
   NSString *tail = suffix ?: @"";
-  if (selection.localPhrase) {
+  if (selection.localPhrase || selection.directFallback) {
     [_engine clearComposition];
     _composition = @"";
     _candidates = @[];

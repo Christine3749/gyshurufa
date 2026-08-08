@@ -60,6 +60,10 @@ targets:
       - path: GYInput/Sources/GYBlockStore.m
       - path: GYInput/Sources/GYSelfWriteFingerprint.h
       - path: GYInput/Sources/GYSelfWriteFingerprint.m
+      - path: GYInput/Sources/GYPinyinFallback.h
+      - path: GYInput/Sources/GYPinyinFallback.m
+      - path: GYInput/Sources/GYCandidateGovernance.h
+      - path: GYInput/Sources/GYCandidateGovernance.m
       - path: GYInput/Sources/GYSyncFormatNegotiation.h
       - path: GYInput/Sources/GYSyncFormatNegotiation.m
     settings:
