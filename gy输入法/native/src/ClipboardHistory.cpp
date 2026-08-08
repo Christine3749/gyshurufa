@@ -23,6 +23,7 @@ constexpr ULONGLONG kMaxOutboxManifestBytes = 128ULL * 1024ULL * 1024ULL;
 std::mutex g_suppression_mutex;
 std::wstring g_remote_clipboard_text;
 bool g_remote_clipboard_image = false;
+DWORD g_remote_clipboard_sequence = 0;
 ULONGLONG g_remote_clipboard_until = 0;
 
 std::wstring RootDirectory() {
@@ -54,34 +55,52 @@ std::wstring CreateEntryId() {
   return std::wstring(buffer + 1, 36);
 }
 
-bool IsSuppressedRemoteText(const std::wstring& text) {
-  std::lock_guard<std::mutex> lock(g_suppression_mutex);
-  if (GetTickCount64() > g_remote_clipboard_until) {
-    g_remote_clipboard_text.clear();
-    g_remote_clipboard_image = false;
-    return false;
-  }
-  return text == g_remote_clipboard_text;
+void ClearRemoteClipboardSuppressionLocked() {
+  g_remote_clipboard_text.clear();
+  g_remote_clipboard_image = false;
+  g_remote_clipboard_sequence = 0;
+  g_remote_clipboard_until = 0;
 }
 
-bool TakeSuppressedRemoteImage() {
-  std::lock_guard<std::mutex> lock(g_suppression_mutex);
-  if (GetTickCount64() > g_remote_clipboard_until || !g_remote_clipboard_image) return false;
-  g_remote_clipboard_image = false;
+bool IsCurrentRemoteClipboardWriteLocked(DWORD clipboard_sequence) {
+  if (GetTickCount64() > g_remote_clipboard_until || clipboard_sequence != g_remote_clipboard_sequence) {
+    ClearRemoteClipboardSuppressionLocked();
+    return false;
+  }
   return true;
 }
 
-void SuppressRemoteText(const std::wstring& text) {
+bool IsSuppressedRemoteText(const std::wstring& text, DWORD clipboard_sequence) {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  if (!IsCurrentRemoteClipboardWriteLocked(clipboard_sequence) || text != g_remote_clipboard_text) {
+    return false;
+  }
+  ClearRemoteClipboardSuppressionLocked();
+  return true;
+}
+
+bool TakeSuppressedRemoteImage(DWORD clipboard_sequence) {
+  std::lock_guard<std::mutex> lock(g_suppression_mutex);
+  if (!IsCurrentRemoteClipboardWriteLocked(clipboard_sequence) || !g_remote_clipboard_image) {
+    return false;
+  }
+  ClearRemoteClipboardSuppressionLocked();
+  return true;
+}
+
+void SuppressRemoteText(const std::wstring& text, DWORD clipboard_sequence) {
   std::lock_guard<std::mutex> lock(g_suppression_mutex);
   g_remote_clipboard_text = text;
   g_remote_clipboard_image = false;
+  g_remote_clipboard_sequence = clipboard_sequence;
   g_remote_clipboard_until = GetTickCount64() + 2000;
 }
 
-void SuppressRemoteImage() {
+void SuppressRemoteImage(DWORD clipboard_sequence) {
   std::lock_guard<std::mutex> lock(g_suppression_mutex);
   g_remote_clipboard_text.clear();
   g_remote_clipboard_image = true;
+  g_remote_clipboard_sequence = clipboard_sequence;
   g_remote_clipboard_until = GetTickCount64() + 2000;
 }
 
@@ -276,6 +295,22 @@ namespace testing {
 
 bool EncodeBitmapAsPng(HBITMAP bitmap, std::string* png) {
   return ::gy::clipboard_history::EncodeBitmapAsPng(bitmap, png);
+}
+
+void SuppressRemoteText(const std::wstring& text, DWORD clipboard_sequence) {
+  ::gy::clipboard_history::SuppressRemoteText(text, clipboard_sequence);
+}
+
+bool IsSuppressedRemoteText(const std::wstring& text, DWORD clipboard_sequence) {
+  return ::gy::clipboard_history::IsSuppressedRemoteText(text, clipboard_sequence);
+}
+
+void SuppressRemoteImage(DWORD clipboard_sequence) {
+  ::gy::clipboard_history::SuppressRemoteImage(clipboard_sequence);
+}
+
+bool TakeSuppressedRemoteImage(DWORD clipboard_sequence) {
+  return ::gy::clipboard_history::TakeSuppressedRemoteImage(clipboard_sequence);
 }
 
 }  // namespace testing
@@ -504,6 +539,7 @@ bool AppendFromClipboard() {
   bool opened = false;
   for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
   if (!opened) return false;
+  const DWORD clipboard_sequence = GetClipboardSequenceNumber();
 
   bool allowed = true;
   const UINT opt_in = HistoryOptInFormat();
@@ -527,7 +563,7 @@ bool AppendFromClipboard() {
   if (!allowed) return false;
 
   if (kind == EntryKind::Text) {
-    if (text.empty() || IsSuppressedRemoteText(text)) return false;
+    if (text.empty() || IsSuppressedRemoteText(text, clipboard_sequence)) return false;
     const std::string utf8 = ToUtf8(text);
     if (utf8.empty() || utf8.size() > kMaxItemBytes) return false;
     std::vector<Entry> entries = ReadAll();
@@ -543,7 +579,7 @@ bool AppendFromClipboard() {
     return WriteAll(entries);
   }
 
-  if (png.empty() || png.size() > kMaxImageBytes || TakeSuppressedRemoteImage()) return false;
+  if (png.empty() || png.size() > kMaxImageBytes || TakeSuppressedRemoteImage(clipboard_sequence)) return false;
   const std::wstring id = CreateEntryId();
   if (id.empty() || !WriteBytesAtomically(ImagePath(id), png)) return false;
   std::vector<Entry> entries = ReadAll();
@@ -599,8 +635,8 @@ bool SetSystemClipboardTextFromKeep(const std::wstring& text) {
   void* locked = GlobalLock(data);
   if (!locked) { GlobalFree(data); CloseClipboard(); return false; }
   memcpy(locked, text.c_str(), bytes); GlobalUnlock(data);
-  SuppressRemoteText(text);
   if (!SetClipboardData(CF_UNICODETEXT, data)) { GlobalFree(data); CloseClipboard(); return false; }
+  SuppressRemoteText(text, GetClipboardSequenceNumber());
   CloseClipboard();
   return true;
 }
@@ -616,14 +652,15 @@ bool SetSystemClipboardImageFromKeep(const Entry& entry) {
   if (!stream_ok || stream->Seek(zero, STREAM_SEEK_SET, nullptr) != S_OK) { stream->Release(); return false; }
   Gdiplus::Bitmap image(stream);
   HBITMAP bitmap = nullptr;
-  const bool bitmap_ok = image.GetLastStatus() == Gdiplus::Ok && image.GetHBITMAP(Gdiplus::Color::White, &bitmap) == Gdiplus::Ok && bitmap;
+  const bool bitmap_ok = image.GetLastStatus() == Gdiplus::Ok &&
+      image.GetHBITMAP(Gdiplus::Color(static_cast<Gdiplus::ARGB>(Gdiplus::Color::White)), &bitmap) == Gdiplus::Ok && bitmap;
   stream->Release();
   if (!bitmap_ok) return false;
   bool opened = false;
   for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
   if (!opened || !EmptyClipboard()) { if (opened) CloseClipboard(); DeleteObject(bitmap); return false; }
-  SuppressRemoteImage();
   if (!SetClipboardData(CF_BITMAP, bitmap)) { DeleteObject(bitmap); CloseClipboard(); return false; }
+  SuppressRemoteImage(GetClipboardSequenceNumber());
   CloseClipboard();
   return true;
 }

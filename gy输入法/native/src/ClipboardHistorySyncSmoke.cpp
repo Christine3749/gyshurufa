@@ -99,6 +99,28 @@ int main() {
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after image test");
 
+  // A remote write must be ignored exactly once, and only for the Windows
+  // clipboard sequence it created.  A user who copies immediately afterwards
+  // gets a new sequence and must never be swallowed by the two-second guard.
+  gy::clipboard_history::testing::SuppressRemoteText(L"remote text", 100);
+  if (gy::clipboard_history::testing::IsSuppressedRemoteText(L"remote text", 101)) {
+    return Fail("a user text copy after a remote write was incorrectly suppressed");
+  }
+  gy::clipboard_history::testing::SuppressRemoteText(L"remote text", 102);
+  if (!gy::clipboard_history::testing::IsSuppressedRemoteText(L"remote text", 102) ||
+      gy::clipboard_history::testing::IsSuppressedRemoteText(L"remote text", 102)) {
+    return Fail("a remote text write was not suppressed exactly once");
+  }
+  gy::clipboard_history::testing::SuppressRemoteImage(200);
+  if (gy::clipboard_history::testing::TakeSuppressedRemoteImage(201)) {
+    return Fail("a user image copy after a remote write was incorrectly suppressed");
+  }
+  gy::clipboard_history::testing::SuppressRemoteImage(202);
+  if (!gy::clipboard_history::testing::TakeSuppressedRemoteImage(202) ||
+      gy::clipboard_history::testing::TakeSuppressedRemoteImage(202)) {
+    return Fail("a remote image write was not suppressed exactly once");
+  }
+
   const Entry first = Text(L"sync-smoke-first", L"first", 10);
   const Entry deleted = Text(L"sync-smoke-deleted", L"deleted", 20);
   if (!gy::clipboard_history::ReplaceConfirmedSnapshot({first, deleted}) ||
