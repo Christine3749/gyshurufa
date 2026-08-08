@@ -108,6 +108,7 @@ private:
   RECT version_card_{};
   RECT update_card_{};
   RECT update_repair_rect_{};
+  RECT update_status_rect_{};
   std::wstring release_version_;
   std::wstring registered_version_;
   std::vector<std::wstring> release_notes_;

@@ -111,7 +111,7 @@ try {
     throw 'GY 安装维护组件不完整；请重新运行同版本或更高版本安装包。'
   }
   if (-not (Test-Path -LiteralPath $prunePath -PathType Leaf)) {
-    throw 'GY 旧版本整备组件缺失；请重新运行同版本或更高版本安装包。'
+    throw 'GY 旧版本校正组件缺失；请重新运行同版本或更高版本安装包。'
   }
   . $transactionHelper
 
@@ -194,13 +194,13 @@ try {
       '-InstallRoot', $installRoot, '-KeepVersions', $keep
     ) -Wait -PassThru -WindowStyle Hidden
     if ($prune.ExitCode -ne 0) {
-      throw "旧版本整备器异常退出（退出码：$($prune.ExitCode)）。"
+      throw "旧版本校正器异常退出（退出码：$($prune.ExitCode)）。"
     }
     Remove-StaleTransientHelpers
   }
 
   Remove-Item -LiteralPath $repairErrorPath -Force -ErrorAction SilentlyContinue
-  Write-Host 'GY 整备完成：当前版本已校验，旧版本和失效临时安装文件已清理。' -ForegroundColor Green
+  Write-Host 'GY 校正完成：当前版本已校验，旧版本和失效临时安装文件已清理。' -ForegroundColor Green
   exit 0
 } catch {
   try {
