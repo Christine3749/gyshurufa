@@ -1004,7 +1004,12 @@ void SettingsWindow::Paint(HDC dc) {
         ? L"整备会核验当前安装，并清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
         : L"检测到激活版本不一致；可整备当前安装并安全清理旧版本残留。";
     const std::wstring& repair_status = update_repair_status_.empty() ? default_repair_status : update_repair_status_;
-    const COLORREF repair_status_color = update_repair_failed_ ? RGB(210, 80, 80) : pal.muted;
+    // A failed housekeeping pass is not the same thing as a broken input
+    // method. Keep red for a real version mismatch; use calm amber when the
+    // active Host / DLL / TSF trio is already healthy and only cleanup waits.
+    const COLORREF repair_status_color = update_repair_failed_
+        ? (versions_consistent_ ? RGB(191, 151, 83) : RGB(210, 80, 80))
+        : pal.muted;
     Text(dc, repair_status, update_status_rect_, repair_status_color, DT_LEFT | DT_WORDBREAK, tiny);
     Text(dc, update_repair_in_progress_ ? L"处理中…" : L"整备", update_repair_rect_,
          update_repair_in_progress_ ? pal.muted : kBlue, DT_RIGHT, medium);
@@ -1178,7 +1183,9 @@ void SettingsWindow::FinishUpdateRepair(std::uint64_t window_instance_id, DWORD 
     update_repair_status_ = L"已整备当前安装，并清理旧版本与失效临时安装文件。";
   } else {
     update_repair_failed_ = true;
-    update_repair_status_ = L"整备未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
+    update_repair_status_ = versions_consistent_
+        ? L"待整备 · 输入法仍可用；关闭占用程序后可再次尝试。"
+        : L"整备未完成；已保留回滚与诊断信息，可在关闭占用程序后再次尝试。";
   }
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
