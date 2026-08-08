@@ -27,6 +27,13 @@ constexpr DWORD kKeepPort = INTERNET_DEFAULT_HTTPS_PORT;
 constexpr DWORD kMaxResponseBytes = 48 * 1024 * 1024;
 constexpr DWORD kPollMilliseconds = 750;
 constexpr DWORD kSseFallbackPollMilliseconds = 5000;
+// The ordinary cursor sync remains the authoritative fallback and is woken
+// immediately by a local copy.  These intervals only govern the optional SSE
+// wake channel, so an unavailable endpoint must never make an idle IME keep
+// opening network connections every 750 ms.
+constexpr DWORD kSseIdleRetryMilliseconds = 30 * 1000;
+constexpr DWORD kSseUnavailableRetryMilliseconds = 15 * 1000;
+constexpr DWORD kSseUnsupportedRetryMilliseconds = 5 * 60 * 1000;
 
 std::atomic_bool g_running{false};
 std::atomic_bool g_enabled{true};
@@ -60,7 +67,7 @@ struct SyncPage {
   bool snapshot = false;
 };
 
-enum class StreamResult { Change, KeepAlive, Unavailable };
+enum class StreamResult { Change, KeepAlive, Unsupported, Unavailable };
 
 void Wake();
 
@@ -297,7 +304,13 @@ StreamResult WaitForSseSignal(const std::wstring& access_token, unsigned long lo
     }
     if (read == 0) break;
   }
-  if (ok && status == 200 && saw_live_preamble) {
+  if (ok && status == 404) {
+    // Older Keep deployments do not have the optional SSE endpoint.  This is
+    // not a transient connectivity failure: cursor polling already preserves
+    // correctness, so retrying the missing route every 750 ms wastes CPU and
+    // keeps the input host visibly busy while it is otherwise idle.
+    result = StreamResult::Unsupported;
+  } else if (ok && status == 200 && saw_live_preamble) {
     result = body.find("event: clipboard\n") != std::string::npos
         ? StreamResult::Change
         : StreamResult::KeepAlive;
@@ -783,7 +796,7 @@ void StreamWorkerMain() {
     if (!g_enabled.load()) {
       g_sse_available.store(false);
       if (g_stream_wake_event) {
-        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        WaitForSingleObject(g_stream_wake_event, kSseIdleRetryMilliseconds);
         ResetEvent(g_stream_wake_event);
       }
       continue;
@@ -794,7 +807,7 @@ void StreamWorkerMain() {
       Wipe(&access_token);
       g_sse_available.store(false);
       if (g_stream_wake_event) {
-        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        WaitForSingleObject(g_stream_wake_event, kSseIdleRetryMilliseconds);
         ResetEvent(g_stream_wake_event);
       }
       continue;
@@ -802,10 +815,13 @@ void StreamWorkerMain() {
     const StreamResult result = WaitForSseSignal(access_token, cursor);
     Wipe(&access_token);
     if (!g_running.load()) break;
-    if (result == StreamResult::Unavailable) {
+    if (result == StreamResult::Unavailable || result == StreamResult::Unsupported) {
       g_sse_available.store(false);
       if (g_stream_wake_event) {
-        WaitForSingleObject(g_stream_wake_event, kPollMilliseconds);
+        const DWORD retry = result == StreamResult::Unsupported
+            ? kSseUnsupportedRetryMilliseconds
+            : kSseUnavailableRetryMilliseconds;
+        WaitForSingleObject(g_stream_wake_event, retry);
         ResetEvent(g_stream_wake_event);
       }
       continue;
