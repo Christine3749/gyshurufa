@@ -62,6 +62,30 @@ void ClearRemoteClipboardSuppressionLocked() {
   g_remote_clipboard_until = 0;
 }
 
+std::wstring SkippedOutboxArchivePath(unsigned long long unix_time) {
+  const std::wstring root = RootDirectory();
+  return root.empty() ? std::wstring{} : root + L"\\clipboard-outbox-skipped-" +
+      std::to_wstring(unix_time) + L".tsv";
+}
+
+std::wstring SkipAuditPath() {
+  const std::wstring root = RootDirectory();
+  return root.empty() ? std::wstring{} : root + L"\\clipboard-sync-skip-audit.tsv";
+}
+
+bool AppendSkipAudit(unsigned long long unix_time, size_t skipped_count) {
+  const std::wstring path = SkipAuditPath();
+  if (path.empty()) return false;
+  const std::string row = std::to_string(unix_time) + "\t" + std::to_string(skipped_count) + "\tpre-onboarding\n";
+  HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, row.data(), static_cast<DWORD>(row.size()), &written, nullptr) && written == row.size();
+  CloseHandle(file);
+  return ok;
+}
+
 bool IsCurrentRemoteClipboardWriteLocked(DWORD clipboard_sequence) {
   if (GetTickCount64() > g_remote_clipboard_until || clipboard_sequence != g_remote_clipboard_sequence) {
     ClearRemoteClipboardSuppressionLocked();
@@ -475,6 +499,45 @@ bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequenc
     return entry.id == id;
   }), outbox.end());
   return outbox.size() == before || WriteOutbox(outbox);
+}
+
+bool SkipPendingUploads(size_t* skipped_count) {
+  if (!skipped_count) return false;
+  *skipped_count = 0;
+  const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  std::vector<Entry> retained;
+  retained.reserve(outbox.size());
+  for (const auto& entry : outbox) {
+    if (entry.unix_time > now) retained.push_back(entry);
+    else ++*skipped_count;
+  }
+
+  // Archive before replacing the retry manifest.  The archive remains local
+  // and gives the user an auditable recovery point without contacting Keep.
+  if (*skipped_count > 0) {
+    const std::wstring source = OutboxPath();
+    const std::wstring archive = SkippedOutboxArchivePath(now);
+    if (source.empty() || archive.empty() || !CopyFileW(source.c_str(), archive.c_str(), TRUE)) return false;
+  }
+  if (!WriteOutbox(retained)) return false;
+
+  std::vector<Entry> history = ReadAll();
+  bool changed = false;
+  for (auto& entry : history) {
+    if (entry.pending_upload && entry.unix_time <= now) {
+      entry.pending_upload = false;
+      entry.sync_sequence = 0;  // local-only, never accepted by Keep
+      changed = true;
+    }
+  }
+  if (changed && !WriteAll(history)) return false;
+  if (*skipped_count > 0 && !AppendSkipAudit(now, *skipped_count)) return false;
+  return true;
+}
+
+size_t PendingUploadCount() {
+  return ReadPendingOutbox().size();
 }
 
 bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes) {

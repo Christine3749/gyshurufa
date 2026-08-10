@@ -630,7 +630,7 @@ void SettingsWindow::Layout() {
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
   account_email_rect_ = {}; account_password_rect_ = {}; account_action_rect_ = {}; account_logout_rect_ = {};
   phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
-  clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
+  clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {}; clip_skip_card_ = {}; clip_skip_action_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
   version_card_ = {}; update_card_ = {}; update_install_rect_ = {}; update_repair_rect_ = {}; update_rollback_rect_ = {}; update_status_rect_ = {};
 
@@ -652,7 +652,11 @@ void SettingsWindow::Layout() {
                           clip_sync_card_.bottom + Scale(dpi_, 100)};
     clip_instant_switch_ = {clip_instant_card_.right - Scale(dpi_, 60), clip_instant_card_.top + Scale(dpi_, 30),
                             clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 56)};
-    done_y = clip_instant_card_.bottom + Scale(dpi_, 22);
+    clip_skip_card_ = {content_left, clip_instant_card_.bottom + Scale(dpi_, 14), content_left + card_width,
+                       clip_instant_card_.bottom + Scale(dpi_, 78)};
+    clip_skip_action_ = {clip_skip_card_.right - Scale(dpi_, 112), clip_skip_card_.top + Scale(dpi_, 19),
+                         clip_skip_card_.right - Scale(dpi_, 16), clip_skip_card_.top + Scale(dpi_, 45)};
+    done_y = clip_skip_card_.bottom + Scale(dpi_, 22);
   } else if (page_ == Page::Input) {
     for (int i = 0; i < 3; ++i) input_mode_rects_[i] = {content_left + i * option_width, base_y, content_left + (i + 1) * option_width, base_y + group_height};
     phrases_rect_ = {content_left, base_y + group_height + Scale(dpi_, 28), content_left + card_width, base_y + group_height + Scale(dpi_, 86)};
@@ -935,6 +939,12 @@ void SettingsWindow::Paint(HDC dc) {
     Text(dc, L"我复制的内容直接写入其他设备的剪贴板，Ctrl+V 即可粘贴", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 32), clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 51)}, pal.muted, DT_LEFT, tiny);
     Text(dc, L"关闭后，收到的内容只进入剪贴板历史，需手动选择", RECT{clip_instant_card_.left + Scale(dpi_, 16), clip_instant_card_.top + Scale(dpi_, 54), clip_instant_card_.right - Scale(dpi_, 16), clip_instant_card_.bottom - Scale(dpi_, 12)}, pal.muted, DT_LEFT, tiny);
     DrawSwitch(dc, clip_instant_switch_, clip_instant_, pal, dpi_);
+    Rounded(dc, clip_skip_card_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"登录前记录", RECT{clip_skip_card_.left + Scale(dpi_, 16), clip_skip_card_.top + Scale(dpi_, 9), clip_skip_action_.left - Scale(dpi_, 12), clip_skip_card_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    const std::wstring skip_detail = pending_upload_count_ == 0 ? L"没有待上传的旧复制记录" : L"待上传 " + std::to_wstring(pending_upload_count_) + L" 条；可保留在本机并跳过同步";
+    Text(dc, skip_detail, RECT{clip_skip_card_.left + Scale(dpi_, 16), clip_skip_card_.top + Scale(dpi_, 33), clip_skip_action_.left - Scale(dpi_, 12), clip_skip_card_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
+    Rounded(dc, clip_skip_action_, pending_upload_count_ ? pal.surface_hover : pal.surface_alt, pal.border, Scale(dpi_, 7));
+    Text(dc, pending_upload_count_ ? L"跳过旧记录" : L"已无积压", clip_skip_action_, pending_upload_count_ ? kBlue : pal.muted, DT_CENTER, tiny);
   } else if (page_ == Page::Input) {
     Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 22), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* input_modes[] = {L"简体", L"繁体", L"EN"};
@@ -1041,7 +1051,7 @@ void SettingsWindow::Paint(HDC dc) {
           DrawCardText(dc, wrapped, RECT{card.left + Scale(dpi_, 14), card.top + Scale(dpi_, 8),
                                          card.right - Scale(dpi_, 14), card.bottom}, pal.text, large, line_h, Scale(dpi_, 7));
         }
-        const std::wstring status = entry.pending_upload ? L"同步中 · " : L"已确认 · ";
+        const std::wstring status = entry.pending_upload ? L"同步中 · " : (entry.sync_sequence == 0 ? L"仅本机 · " : L"已确认 · ");
         Text(dc, status + FormatEntryTime(entry.unix_time), RECT{card.left + Scale(dpi_, 14), card.bottom - Scale(dpi_, 22),
                                                                   card.right - Scale(dpi_, 14), card.bottom - Scale(dpi_, 7)},
              entry.pending_upload ? kBlue : pal.muted, DT_LEFT, tiny);
@@ -1154,6 +1164,7 @@ void SettingsWindow::Load() {
   // CLIPBOARD-PAGE-DESIGN §4：跨设备剪贴板与即时粘贴均默认开。
   clip_enabled_ = GetPrivateProfileIntW(L"Clipboard", L"Enabled", 1, path.c_str()) != 0;
   clip_instant_ = GetPrivateProfileIntW(L"Clipboard", L"InstantPaste", 1, path.c_str()) != 0;
+  pending_upload_count_ = gy::clipboard_history::PendingUploadCount();
   gy::keep_sync::SetEnabled(clip_enabled_);
   gy::keep_sync::SetInstantPasteEnabled(clip_instant_);
 
@@ -1223,6 +1234,24 @@ void SettingsWindow::ImportBackup() {
   const int imported_mode = static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", gy::input_mode::kSimplified, destination.c_str()));
   gy::input_mode::Write(imported_mode);
   Load(); InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void SettingsWindow::SkipPendingClipboardUploads() {
+  if (pending_upload_count_ == 0) return;
+  const std::wstring message = L"将跳过当前 " + std::to_wstring(pending_upload_count_) +
+      L" 条登录前复制记录。它们会保留在本机，但不会上传到 Keep；操作会留下本地审计记录。是否继续？";
+  if (MessageBoxW(hwnd_, message.c_str(), L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+  size_t skipped = 0;
+  if (!gy::clipboard_history::SkipPendingUploads(&skipped)) {
+    MessageBoxW(hwnd_, L"未能跳过旧同步队列；没有上传任何记录。", L"GY 输入法", MB_OK | MB_ICONERROR);
+    return;
+  }
+  pending_upload_count_ = gy::clipboard_history::PendingUploadCount();
+  history_entries_ = gy::clipboard_history::ReadAll();
+  MeasureClipboardCards();
+  MessageBoxW(hwnd_, (L"已跳过 " + std::to_wstring(skipped) + L" 条旧记录。以后新复制的内容会正常同步到 Keep。").c_str(),
+              L"GY 输入法", MB_OK | MB_ICONINFORMATION);
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void SettingsWindow::BeginUpdateRepair() {
@@ -1575,7 +1604,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
-      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
+      if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point) || self->Hit(self->clip_skip_action_, point);
       if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
@@ -1609,6 +1638,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       // 剪贴板开关在通用页：拨动即写入（不等“完成”）；剪贴板页只剩清空。
       if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; gy::keep_sync::SetEnabled(self->clip_enabled_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::General && self->Hit(self->clip_skip_action_, point)) { self->SkipPendingClipboardUploads(); return 0; }
       if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && !self->update_install_in_progress_ && self->Hit(self->update_install_rect_, point)) { self->BeginAutomaticUpdate(); return 0; }
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_rollback_rect_, point)) { self->BeginUpdateRollback(); return 0; }

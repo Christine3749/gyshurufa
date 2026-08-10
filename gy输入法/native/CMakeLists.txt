@@ -189,6 +189,21 @@ if(GY_BUILD_HOST_SMOKE)
   add_test(NAME GyClipboardHistorySyncSmoke COMMAND $<TARGET_FILE:GyClipboardHistorySyncSmoke>)
   set_tests_properties(GyClipboardHistorySyncSmoke PROPERTIES TIMEOUT 10 LABELS "native;clipboard;sync;regression"
     ENVIRONMENT "LOCALAPPDATA=${GY_HEALTH_LOCALAPPDATA}")
+
+  # One-time maintenance utility used by release validation and support to
+  # skip a pre-login clipboard backlog without exposing its contents.
+  add_executable(GyClipboardSkipPending
+    src/ClipboardSkipPending.cpp
+    src/ClipboardHistory.cpp
+  )
+  target_compile_features(GyClipboardSkipPending PRIVATE cxx_std_20)
+  target_compile_definitions(GyClipboardSkipPending PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_include_directories(GyClipboardSkipPending PRIVATE src)
+  target_link_libraries(GyClipboardSkipPending PRIVATE ole32 gdiplus)
+  if(MSVC)
+    target_compile_options(GyClipboardSkipPending PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  set_target_properties(GyClipboardSkipPending PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_executable(GyHostedPinyinEngineSmoke
     src/HostedPinyinEngineSmoke.cpp
     src/HostedPinyinEngine.cpp

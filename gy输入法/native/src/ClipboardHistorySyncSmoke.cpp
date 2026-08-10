@@ -72,6 +72,32 @@ int main() {
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after ACK test");
 
+  // First-login onboarding must be able to retain local captures without
+  // replaying an offline backlog into Keep.  The retry manifest is archived,
+  // the visible entry stays local-only, and later migration must not recreate it.
+  {
+    HANDLE file = CreateFileW(gy::clipboard_history::HistoryPath().c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return Fail("could not seed skip-history fixture");
+    DWORD written = 0;
+    const bool wrote = WriteFile(file, pending_row.data(), static_cast<DWORD>(pending_row.size()), &written, nullptr) &&
+        written == pending_row.size();
+    CloseHandle(file);
+    if (!wrote || !gy::clipboard_history::MigratePendingHistoryToOutbox()) return Fail("could not seed skip outbox");
+  }
+  size_t skipped = 0;
+  if (!gy::clipboard_history::SkipPendingUploads(&skipped) || skipped != 1 ||
+      !gy::clipboard_history::ReadPendingOutbox().empty() ||
+      !gy::clipboard_history::MigratePendingHistoryToOutbox() ||
+      !gy::clipboard_history::ReadPendingOutbox().empty()) {
+    return Fail("skipped onboarding records were queued for upload");
+  }
+  const std::vector<Entry> after_skip = gy::clipboard_history::ReadAll();
+  if (after_skip.size() != 1 || after_skip.front().pending_upload || after_skip.front().sync_sequence != 0) {
+    return Fail("skip did not retain a local-only history entry");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after skip test");
+
   // This exercises the production screenshot conversion path without opening
   // the real clipboard: an off-screen bitmap becomes PNG, is stored exactly
   // as a screenshot asset, and remains readable from the confirmed HEAD.

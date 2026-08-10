@@ -27,6 +27,7 @@ private:
   void ApplyThemeBrush();
   void ClearLearning();
   void ClearHistory();
+  void SkipPendingClipboardUploads();
   void ExportBackup();
   void ImportBackup();
   void BeginUpdateRepair();
@@ -84,6 +85,7 @@ private:
   // 本机历史卡直接在页内列出最近 20 条文本，滚轮翻页。
   bool clip_enabled_ = true;
   bool clip_instant_ = true;
+  size_t pending_upload_count_ = 0;
   std::vector<gy::clipboard_history::Entry> history_entries_;
   std::vector<int> history_card_heights_;  // variable: content owns 1..4 lines
   struct ClipboardThumbnail {
@@ -106,6 +108,8 @@ private:
   RECT clip_sync_switch_{};
   RECT clip_instant_card_{};
   RECT clip_instant_switch_{};
+  RECT clip_skip_card_{};
+  RECT clip_skip_action_{};
   RECT clip_history_clear_{};
   RECT clip_history_list_{};
   RECT version_card_{};
