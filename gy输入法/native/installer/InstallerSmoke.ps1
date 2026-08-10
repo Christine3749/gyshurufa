@@ -19,6 +19,7 @@ function Assert-ScriptParses([string]$Path) {
 $installer = Assert-ScriptParses $InstallerPath
 $rollback = Assert-ScriptParses $RollbackPath
 $repair = Assert-ScriptParses (Join-Path $PSScriptRoot 'Repair-GYInput.ps1')
+$autoUpdate = Assert-ScriptParses (Join-Path $PSScriptRoot 'AutoUpdate-GYInput.ps1')
 $prune = Assert-ScriptParses (Join-Path $PSScriptRoot 'Prune-GYOldVersions.ps1')
 $clientFinalizer = Assert-ScriptParses (Join-Path $PSScriptRoot 'Finalize-GYClientReload.ps1')
 $releaseState = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYReleaseState.ps1')
@@ -41,6 +42,11 @@ Assert-Contains $repair 'Start-Process -FilePath (Get-X64RegSvr32)' 'One-click r
 Assert-Contains $repair 'Remove-StaleTransientHelpers' 'One-click repair does not clean expired staged helper files.'
 Assert-Contains $repair 'Prune-GYOldVersions.ps1' 'One-click repair does not invoke the audited old-version cleaner.'
 Assert-Contains $repair 'Write-RecoveryReport' 'One-click repair does not persist a durable recovery result.'
+Assert-Contains $autoUpdate 'Get-FileHash' 'Automatic updater does not verify the installer SHA-256.'
+Assert-Contains $autoUpdate 'Get-AuthenticodeSignature' 'Automatic updater does not verify the installer signature.'
+Assert-Contains $autoUpdate 'Start-Process -FilePath $installer -Verb RunAs' 'Automatic updater does not launch the standard installer through UAC.'
+Assert-Contains $autoUpdate 'update-state.ini' 'Automatic updater does not persist a user-visible local update state.'
+Assert-Contains $autoUpdate 'gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest' 'Automatic updater is not pinned to the official release API.'
 Assert-Contains $repair '部分旧版本清理将于下次整备继续' 'One-click repair treats non-critical cleanup as a hard recovery failure.'
 if ($repair -match '(?m)^\s*return\s+if\s*\(') { throw 'One-click repair uses PowerShell return-if syntax that fails at runtime.' }
 Assert-Contains $clientFinalizer 'Pending GY activation rollback state is missing or unmanaged.' 'Finalizer does not validate its rollback paths.'
@@ -94,6 +100,9 @@ Assert-Contains $settingsSource 'ShellExecuteExW' 'Settings repair action does n
 Assert-Contains $settingsSource 'BeginUpdateRollback' 'Settings update page does not provide a one-click rollback action.'
 Assert-Contains $settingsSource 'Rollback-GYInput.ps1' 'Settings rollback action does not use the installed rollback script.'
 Assert-Contains $settingsSource 'InstalledRollbackVersion' 'Settings update page cannot display a rollback target.'
+Assert-Contains $settingsSource 'BeginAutomaticUpdate' 'Settings update page does not expose the automatic update trigger.'
+Assert-Contains $settingsSource 'kAutomaticUpdateComplete' 'Settings page cannot receive the automatic updater completion result.'
+Assert-Contains $settingsSource 'update-state.ini' 'Settings page does not display the local automatic update state.'
 Assert-Contains $installer 'Test-ThisReleaseActive' 'ZIP installer does not verify that registry activation matches the staged release.'
 Assert-Contains $installer 'Write-GyStateAtomically' 'ZIP installer does not atomically persist activation state.'
 Assert-Contains $installer 'release-notes.txt' 'ZIP installer does not install version-specific release notes.'
@@ -101,6 +110,7 @@ Assert-Contains $installer 'Invoke-InstalledValidation' 'ZIP installer does not 
 Assert-Contains $installer 'Should-PreserveExistingPendingHelpers' 'ZIP installer may downgrade shared activation helpers from a newer active release.'
 Assert-Contains $installer 'A failed task registration must not leave a false pending marker behind.' 'ZIP installer does not clean a failed pending-task registration transaction.'
 Assert-Contains $installer 'Register-GYInputActivationTasks.ps1' 'ZIP installer does not use the shared activation task registrar.'
+Assert-Contains $inno 'AutoUpdate-GYInput.ps1' 'Inno package does not include the automatic updater.'
 Assert-Contains $installer 'Set-WinDefaultInputMethodOverride' 'ZIP installer does not contest a competing IME for the default zh-Hans-CN input method.'
 Assert-Contains $installer '.InputMethodTips.Insert(0,' 'ZIP installer appends to the language list instead of claiming the preferred (first) position.'
 Assert-Contains $keyboard 'Set-WinDefaultInputMethodOverride' 'Standalone keyboard helper does not contest a competing IME for the default zh-Hans-CN input method.'

@@ -93,6 +93,7 @@ Source: "{#SourcePath}\Validate-GYInput.ps1"; DestDir: "{app}"; Flags: ignorever
 Source: "{#SourcePath}\Get-GYLoadedClientState.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Rollback-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Repair-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\AutoUpdate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\GYInputTransaction.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Finalize-GYClientReload.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers

@@ -37,6 +37,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Get-GYLoadedClientState.ps1') -Destination (Join-Path $packageRoot 'Get-GYLoadedClientState.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Repair-GYInput.ps1') -Destination (Join-Path $packageRoot 'Repair-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\AutoUpdate-GYInput.ps1') -Destination (Join-Path $packageRoot 'AutoUpdate-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientReload.ps1') -Destination (Join-Path $packageRoot 'Finalize-GYClientReload.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Prune-GYOldVersions.ps1') -Destination (Join-Path $packageRoot 'Prune-GYOldVersions.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Register-GYInputActivationTasks.ps1') -Destination (Join-Path $packageRoot 'Register-GYInputActivationTasks.ps1')
@@ -75,6 +76,7 @@ ZIP 是离线/高级用户备用包
 - 以后词库、拼音算法、排序和候选窗外观都由 Host 更新：下一次输入会使用新 Host，无需关闭应用或重启电脑。
 - 仅从 0.5 或更早版本首次升级到 0.6.x 时需要注销一次；之后候选窗与交互更新只升级 Host，不会向其他应用注入按键。
 - TSF DLL/核心连接器升级会先暂存新版本，重启 Windows 时自动激活并清理旧版本；Host、词库和候选窗更新不需要重启。
+- Host 启动后会在后台每 6 小时检查一次官方 Windows 发布 API；发现新版本时，“更新”页显示“安装更新”。下载前强制校验版本、字节数、SHA-256 和 Authenticode 签名，随后由标准安装器请求 UAC，不会静默安装。
 
 卸载：在 PowerShell 中运行 .\Install-GYInput.ps1 -Uninstall，或使用 Windows“已安装的应用”中的 GY 输入法。
 本发行包完全离线运行，不上传输入内容。

@@ -68,6 +68,7 @@ $sourceScripts = @(
   'Get-GYLoadedClientState.ps1',
   'Rollback-GYInput.ps1',
   'Repair-GYInput.ps1',
+  'AutoUpdate-GYInput.ps1',
   'Finalize-GYClientReload.ps1',
   'Prune-GYOldVersions.ps1',
   'Register-GYInputActivationTasks.ps1',

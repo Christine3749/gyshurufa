@@ -31,8 +31,11 @@ private:
   void ImportBackup();
   void BeginUpdateRepair();
   void BeginUpdateRollback();
+  void BeginAutomaticUpdate();
   void BeginUpdateMaintenance(bool rollback);
   void FinishUpdateMaintenance(std::uint64_t window_instance_id, DWORD exit_code, bool rollback);
+  void FinishAutomaticUpdate(std::uint64_t window_instance_id, DWORD exit_code);
+  void LoadUpdateState();
   void BeginAccountLogin();
   void BeginAccountRestore();
   void BeginAccountLogout();
@@ -107,6 +110,7 @@ private:
   RECT clip_history_list_{};
   RECT version_card_{};
   RECT update_card_{};
+  RECT update_install_rect_{};
   RECT update_repair_rect_{};
   RECT update_rollback_rect_{};
   RECT update_status_rect_{};
@@ -119,6 +123,11 @@ private:
   bool update_repair_in_progress_ = false;
   bool update_repair_failed_ = false;
   std::wstring update_repair_status_;
+  bool update_available_ = false;
+  bool update_install_in_progress_ = false;
+  bool update_install_failed_ = false;
+  std::wstring update_version_;
+  std::wstring update_install_status_;
 
   // GY account credentials are never written into settings.ini. The refresh
   // token is DPAPI-protected in a separate file; the access token lives only

@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <iterator>
+#include <vector>
 
 #ifndef GY_HOST_VERSION
 #define GY_HOST_VERSION "dev"
@@ -89,6 +90,45 @@ std::wstring ModuleDirectory() {
   std::wstring directory(path, length);
   const size_t slash = directory.find_last_of(L"\\/");
   return slash == std::wstring::npos ? L"." : directory.substr(0, slash);
+}
+
+std::wstring ParentDirectory(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+}
+
+void StartAutomaticUpdateCheck(const std::wstring& module_directory) {
+#ifdef GY_TESTING
+  // Unit/smoke Hosts must never make network requests or create user state.
+  (void)module_directory;
+#else
+  if (GetEnvironmentVariableW(L"GYINPUT_DISABLE_UPDATE_CHECK", nullptr, 0) > 0) return;
+  const std::wstring version_root = module_directory;
+  const std::wstring versions_root = ParentDirectory(version_root);
+  const std::wstring install_root = ParentDirectory(versions_root);
+  if (install_root.empty()) return;
+  const std::wstring script = install_root + L"\\AutoUpdate-GYInput.ps1";
+  if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+
+  wchar_t windows_directory[MAX_PATH]{};
+  const UINT length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
+  if (length == 0 || length >= std::size(windows_directory)) return;
+  const std::wstring powershell = std::wstring(windows_directory, length) +
+      L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  std::thread([powershell, script]() {
+    std::wstring command = L"\"" + powershell + L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script + L"\" -Action Check";
+    std::vector<wchar_t> mutable_command(command.begin(), command.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr,
+                        &startup, &process)) return;
+    WaitForSingleObject(process.hProcess, 60000);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  }).detach();
+#endif
 }
 
 constexpr DWORD kPipeInstanceCount = 8;
@@ -384,6 +424,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   DebugStep(L"step: before engine");
   PinyinEngine engine(ModuleDirectory());
   DebugStep(L"step: engine ready");
+  StartAutomaticUpdateCheck(ModuleDirectory());
   std::atomic_bool running{true};
   HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   std::thread server(ServeRequests, &engine, &running, ui_thread_id, stop_event);
