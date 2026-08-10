@@ -6,6 +6,7 @@
 #include "PinyinEngine.h"
 #include "SettingsWindow.h"
 #include "TrayController.h"
+#include "UpdateNotification.h"
 
 #include <windows.h>
 #include <sddl.h>
@@ -97,6 +98,119 @@ std::wstring ParentDirectory(const std::wstring& path) {
   return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
 }
 
+std::wstring ReadUtf8TextFile(const std::wstring& path) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024) {
+    CloseHandle(file);
+    return {};
+  }
+  std::vector<char> bytes(static_cast<size_t>(size.QuadPart));
+  DWORD read = 0;
+  const bool ok = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) != FALSE;
+  CloseHandle(file);
+  if (!ok || read == 0) return {};
+  size_t offset = 0;
+  if (read >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
+      static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF) {
+    offset = 3;
+  }
+  const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data() + offset,
+                                         static_cast<int>(read - offset), nullptr, 0);
+  if (length <= 0) return {};
+  std::wstring result(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data() + offset,
+                      static_cast<int>(read - offset), result.data(), length);
+  return result;
+}
+
+std::wstring ReadUpdateStateValue(const wchar_t* name) {
+  wchar_t local_app_data[MAX_PATH]{};
+  const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data,
+                                                static_cast<DWORD>(std::size(local_app_data)));
+  if (length == 0 || length >= std::size(local_app_data)) return {};
+  const std::wstring raw = ReadUtf8TextFile(std::wstring(local_app_data, length) + L"\\GYInput\\update-state.ini");
+  const std::wstring prefix = std::wstring(name) + L"=";
+  size_t begin = 0;
+  while (begin <= raw.size()) {
+    const size_t end = raw.find_first_of(L"\r\n", begin);
+    const std::wstring line = raw.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
+    if (line.rfind(prefix, 0) == 0) return line.substr(prefix.size());
+    if (end == std::wstring::npos) break;
+    begin = raw.find_first_not_of(L"\r\n", end);
+    if (begin == std::wstring::npos) break;
+  }
+  return {};
+}
+
+std::wstring UpdateNotificationMarkerPath() {
+  wchar_t local_app_data[MAX_PATH]{};
+  const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data,
+                                                static_cast<DWORD>(std::size(local_app_data)));
+  if (length == 0 || length >= std::size(local_app_data)) return {};
+  return std::wstring(local_app_data, length) + L"\\GYInput\\update-notified.txt";
+}
+
+bool UpdateNotificationAlreadyShown(const std::wstring& version) {
+  return !version.empty() && ReadUtf8TextFile(UpdateNotificationMarkerPath()) == version;
+}
+
+void MarkUpdateNotificationShown(const std::wstring& version) {
+  const std::wstring path = UpdateNotificationMarkerPath();
+  if (path.empty() || version.empty()) return;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_HIDDEN, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  std::string ascii;
+  ascii.reserve(version.size());
+  for (const wchar_t character : version) {
+    if (character > 0x7F) {
+      CloseHandle(file);
+      return;
+    }
+    ascii.push_back(static_cast<char>(character));
+  }
+  DWORD written = 0;
+  WriteFile(file, ascii.data(), static_cast<DWORD>(ascii.size()), &written, nullptr);
+  CloseHandle(file);
+}
+
+bool SetCurrentUserRegistryString(const wchar_t* subkey, const wchar_t* value_name,
+                                  const std::wstring& value) {
+  HKEY key = nullptr;
+  DWORD disposition = 0;
+  const LONG open_result = RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0,
+                                           KEY_SET_VALUE, nullptr, &key, &disposition);
+  if (open_result != ERROR_SUCCESS || !key) return false;
+  const BYTE* data = reinterpret_cast<const BYTE*>(value.c_str());
+  const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+  const LONG write_result = RegSetValueExW(key, value_name, 0, REG_SZ, data, bytes);
+  RegCloseKey(key);
+  return write_result == ERROR_SUCCESS;
+}
+
+void RegisterGyInputProtocol(const std::wstring& powershell, const std::wstring& script) {
+  // Register per-user so the toast action works without an additional UAC
+  // prompt and an older version's uninstaller cannot remove this protocol.
+  const std::wstring command = L"\"" + powershell +
+      L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script +
+      L"\" -ToastActionUri \"%1\"";
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput", nullptr,
+                               L"URL:GY Input Update");
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput", L"URL Protocol", L"");
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput\\shell\\open\\command", nullptr,
+                               command);
+}
+
+void MaybeShowUpdateNotification() {
+  const std::wstring status = ReadUpdateStateValue(L"status");
+  const std::wstring version = ReadUpdateStateValue(L"version");
+  if (status != L"update-available" || version.empty() || UpdateNotificationAlreadyShown(version)) return;
+  if (ShowGyUpdateNotification(version)) MarkUpdateNotificationShown(version);
+}
+
 void StartAutomaticUpdateCheck(const std::wstring& module_directory) {
 #ifdef GY_TESTING
   // Unit/smoke Hosts must never make network requests or create user state.
@@ -115,6 +229,7 @@ void StartAutomaticUpdateCheck(const std::wstring& module_directory) {
   if (length == 0 || length >= std::size(windows_directory)) return;
   const std::wstring powershell = std::wstring(windows_directory, length) +
       L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  RegisterGyInputProtocol(powershell, script);
   std::thread([powershell, script]() {
     std::wstring command = L"\"" + powershell + L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script + L"\" -Action Check";
     std::vector<wchar_t> mutable_command(command.begin(), command.end());
@@ -124,7 +239,8 @@ void StartAutomaticUpdateCheck(const std::wstring& module_directory) {
     if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr,
                         &startup, &process)) return;
-    WaitForSingleObject(process.hProcess, 60000);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 60000);
+    if (wait == WAIT_OBJECT_0) MaybeShowUpdateNotification();
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
   }).detach();

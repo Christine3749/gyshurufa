@@ -4,6 +4,7 @@ param(
   [string]$Action = 'Check',
   [string]$ReleaseApiUrl = 'https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest',
   [string]$ExpectedVersion = '',
+  [string]$ToastActionUri = '',
   [switch]$Force
 )
 
@@ -48,7 +49,7 @@ function Get-StatePath {
 
 function Write-State([hashtable]$Values) {
   $path = Get-StatePath
-  $lines = foreach ($key in @('schemaVersion','checkedAtUtc','currentVersion','available','version','status','downloadUrl','sha256','bytes','error')) {
+  $lines = foreach ($key in @('schemaVersion','checkedAtUtc','currentVersion','available','version','status','downloadUrl','sha256','bytes','snoozeUntilUtc','error')) {
     if ($Values.ContainsKey($key)) {
       $value = [string]$Values[$key]
       $value = $value.Replace("`r", ' ').Replace("`n", ' ')
@@ -114,6 +115,11 @@ function Get-ReleaseInfo {
 function Invoke-Check {
   $now = [DateTime]::UtcNow.ToString('o')
   $current = Get-InstalledVersion
+  $snoozeUntil = $null
+  if ([DateTime]::TryParse((Get-StateValue 'snoozeUntilUtc'), [Globalization.DateTimeStyles]::RoundtripKind, [ref]$snoozeUntil) -and
+      $snoozeUntil.ToUniversalTime() -gt [DateTime]::UtcNow) {
+    return 0
+  }
   if (-not $Force) {
     $previous = $null
     if ([DateTime]::TryParse((Get-StateValue 'checkedAtUtc'), [Globalization.DateTimeStyles]::RoundtripKind, [ref]$previous) -and
@@ -123,16 +129,16 @@ function Invoke-Check {
   }
   try {
     if (-not $current) {
-      Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = ''; available = 0; version = ''; status = 'not-installed'; downloadUrl = ''; sha256 = ''; bytes = 0; error = '' }
+      Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = ''; available = 0; version = ''; status = 'not-installed'; downloadUrl = ''; sha256 = ''; bytes = 0; snoozeUntilUtc = ''; error = '' }
       return 0
     }
     $release = Get-ReleaseInfo
     $available = $release.Version -gt $current
     $status = if ($available) { 'update-available' } else { 'up-to-date' }
-    Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = $current.ToString(3); available = [int]$available; version = $release.VersionText; status = $status; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; error = '' }
+    Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = $current.ToString(3); available = [int]$available; version = $release.VersionText; status = $status; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
     return 0
   } catch {
-    Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = if ($current) { $current.ToString(3) } else { '' }; available = 0; version = ''; status = 'check-failed'; downloadUrl = ''; sha256 = ''; bytes = 0; error = $_.Exception.Message }
+    Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = if ($current) { $current.ToString(3) } else { '' }; available = 0; version = ''; status = 'check-failed'; downloadUrl = ''; sha256 = ''; bytes = 0; snoozeUntilUtc = ''; error = $_.Exception.Message }
     return 2
   }
 }
@@ -144,7 +150,7 @@ function Invoke-Install {
     if (-not $current) { throw '未检测到已安装的 GY 输入法。' }
     $release = Get-ReleaseInfo
     if (-not $Force -and $release.Version -le $current) {
-      Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 0; version = $release.VersionText; status = 'up-to-date'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; error = '' }
+      Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 0; version = $release.VersionText; status = 'up-to-date'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
       return 0
     }
     if ($ExpectedVersion -and $release.VersionText -ne (Get-VersionText $ExpectedVersion)) { throw '线上版本已变化，请重新检查后再安装。' }
@@ -158,19 +164,31 @@ function Invoke-Install {
     if ($actualHash -ne $release.Sha256) { throw '安装器 SHA-256 校验失败，已删除不可信文件。' }
     $signature = Get-AuthenticodeSignature -LiteralPath $installer
     if ($signature.Status -ne 'Valid') { throw "安装器签名校验失败：$($signature.Status)。未启动安装。" }
-    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'ready-to-install'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; error = '' }
+    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'ready-to-install'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
     Start-Process -FilePath $installer -Verb RunAs -WorkingDirectory $downloadRoot | Out-Null
-    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'installer-launched'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; error = '' }
+    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'installer-launched'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
     return 0
   } catch {
     $versionText = if ($release) { $release.VersionText } else { '' }
     $downloadUrl = if ($release) { $release.DownloadUri.AbsoluteUri } else { '' }
     $sha = if ($release) { $release.Sha256 } else { '' }
     $bytes = if ($release) { $release.Bytes } else { 0 }
-    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = if ($current) { $current.ToString(3) } else { '' }; available = [int]([bool]$release); version = $versionText; status = 'install-failed'; downloadUrl = $downloadUrl; sha256 = $sha; bytes = $bytes; error = $_.Exception.Message }
+    Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = if ($current) { $current.ToString(3) } else { '' }; available = [int]([bool]$release); version = $versionText; status = 'install-failed'; downloadUrl = $downloadUrl; sha256 = $sha; bytes = $bytes; snoozeUntilUtc = ''; error = $_.Exception.Message }
     return 3
   }
 }
 
+function Invoke-Snooze {
+  $version = Get-StateValue 'version'
+  $current = Get-StateValue 'currentVersion'
+  if ([string]::IsNullOrWhiteSpace($version)) { return 0 }
+  $marker = Join-Path (Split-Path -Parent (Get-StatePath)) 'update-notified.txt'
+  Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+  Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current; available = 1; version = $version; status = 'snoozed'; downloadUrl = Get-StateValue 'downloadUrl'; sha256 = Get-StateValue 'sha256'; bytes = [int64](Get-StateValue 'bytes'); snoozeUntilUtc = [DateTime]::UtcNow.AddHours(24).ToString('o'); error = '' }
+  return 0
+}
+
+if ($ToastActionUri -eq 'gyinput://update/install') { exit (Invoke-Install) }
+if ($ToastActionUri -eq 'gyinput://update/snooze') { exit (Invoke-Snooze) }
 if ($Action -eq 'Install') { exit (Invoke-Install) }
 exit (Invoke-Check)

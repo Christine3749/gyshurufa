@@ -88,6 +88,14 @@ set_target_properties(GyIme PROPERTIES
 
 # The updatable out-of-process engine. Later Host-only releases can update
 # dictionaries and ranking without asking users to restart Windows or apps.
+get_filename_component(GY_PROGRAM_FILES_X86 "$ENV{ProgramFiles}/../Program Files (x86)" ABSOLUTE)
+file(GLOB GY_CPPWINRT_INCLUDE_CANDIDATES "${GY_PROGRAM_FILES_X86}/Windows Kits/10/Include/*/cppwinrt")
+list(SORT GY_CPPWINRT_INCLUDE_CANDIDATES ORDER DESCENDING)
+list(LENGTH GY_CPPWINRT_INCLUDE_CANDIDATES GY_CPPWINRT_INCLUDE_COUNT)
+if(GY_CPPWINRT_INCLUDE_COUNT LESS 1)
+  message(FATAL_ERROR "C++/WinRT headers are required for the Windows update notification.")
+endif()
+list(GET GY_CPPWINRT_INCLUDE_CANDIDATES 0 GY_CPPWINRT_INCLUDE)
 add_executable(GyImeHost WIN32
   src/GyImeHost.cpp
   src/CandidateWindow.cpp
@@ -97,11 +105,12 @@ add_executable(GyImeHost WIN32
   src/GyKeepSync.cpp
   src/ClipboardHistory.cpp
   src/PinyinEngine.cpp
+  src/UpdateNotification.cpp
 )
 target_compile_features(GyImeHost PRIVATE cxx_std_20)
 target_compile_definitions(GyImeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_HOST_VERSION=\"${GY_VERSION}\" GY_RELEASE_VERSION=\"${GY_VERSION}\")
-target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include")
-target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 ole32 winhttp crypt32 gdiplus "${GY_RIME_ROOT}/lib/rime.lib")
+target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include" "${GY_CPPWINRT_INCLUDE}")
+target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 ole32 runtimeobject winhttp crypt32 gdiplus "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
   target_compile_options(GyImeHost PRIVATE /utf-8)
 endif()

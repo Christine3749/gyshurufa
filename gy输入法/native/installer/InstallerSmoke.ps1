@@ -47,6 +47,9 @@ Assert-Contains $autoUpdate 'Get-AuthenticodeSignature' 'Automatic updater does 
 Assert-Contains $autoUpdate 'Start-Process -FilePath $installer -Verb RunAs' 'Automatic updater does not launch the standard installer through UAC.'
 Assert-Contains $autoUpdate 'update-state.ini' 'Automatic updater does not persist a user-visible local update state.'
 Assert-Contains $autoUpdate 'gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest' 'Automatic updater is not pinned to the official release API.'
+Assert-Contains $autoUpdate 'ToastActionUri' 'Automatic updater cannot receive a Windows toast action.'
+Assert-Contains $autoUpdate 'Invoke-Snooze' 'Automatic updater does not implement the deferred reminder action.'
+Assert-Contains $autoUpdate 'snoozeUntilUtc' 'Automatic updater does not persist the deferred reminder deadline.'
 Assert-Contains $repair '部分旧版本清理将于下次整备继续' 'One-click repair treats non-critical cleanup as a hard recovery failure.'
 if ($repair -match '(?m)^\s*return\s+if\s*\(') { throw 'One-click repair uses PowerShell return-if syntax that fails at runtime.' }
 Assert-Contains $clientFinalizer 'Pending GY activation rollback state is missing or unmanaged.' 'Finalizer does not validate its rollback paths.'
@@ -111,6 +114,7 @@ Assert-Contains $installer 'Should-PreserveExistingPendingHelpers' 'ZIP installe
 Assert-Contains $installer 'A failed task registration must not leave a false pending marker behind.' 'ZIP installer does not clean a failed pending-task registration transaction.'
 Assert-Contains $installer 'Register-GYInputActivationTasks.ps1' 'ZIP installer does not use the shared activation task registrar.'
 Assert-Contains $inno 'AutoUpdate-GYInput.ps1' 'Inno package does not include the automatic updater.'
+Assert-Contains $inno 'GYInput.Desktop' 'EXE installer does not register the stable toast AppUserModelID.'
 Assert-Contains $installer 'Set-WinDefaultInputMethodOverride' 'ZIP installer does not contest a competing IME for the default zh-Hans-CN input method.'
 Assert-Contains $installer '.InputMethodTips.Insert(0,' 'ZIP installer appends to the language list instead of claiming the preferred (first) position.'
 Assert-Contains $keyboard 'Set-WinDefaultInputMethodOverride' 'Standalone keyboard helper does not contest a competing IME for the default zh-Hans-CN input method.'
@@ -202,12 +206,19 @@ Assert-Contains $worker 'releases/latest.json' 'Download worker is not driven by
 if ($worker.Contains('0.4.2')) { throw 'Download worker still contains a hard-coded legacy release version.' }
 $hostSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\GyImeHost.cpp') -Raw
 $settingsSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\SettingsWindow.cpp') -Raw
+$notificationSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\UpdateNotification.cpp') -Raw
 Assert-Contains $settingsSource 'Page::Updates' 'Settings window does not expose the version/update page.'
 Assert-Contains $settingsSource 'ReadRegisteredVersion' 'Settings window does not compare the registry activation version.'
 Assert-Contains $settingsSource 'RELEASE-NOTES.txt' 'Settings window does not load installed release notes.'
 Assert-Contains $hostSource 'AddClipboardFormatListener' 'Host no longer registers the clipboard history listener.'
 Assert-Contains $hostSource 'SettingsWindow settings_' 'Host no longer owns the settings window.'
 Assert-Contains $hostSource 'TrayController tray' 'Host no longer owns the tray controller.'
+Assert-Contains $hostSource 'RegisterGyInputProtocol' 'Host does not register the per-user toast action protocol.'
+Assert-Contains $hostSource 'Software\\Classes\\gyinput' 'Host does not register the gyinput protocol under the current user.'
+Assert-Contains $hostSource '-ToastActionUri' 'Host protocol does not dispatch toast actions to the updater.'
+Assert-Contains $notificationSource 'ToastNotificationManager' 'Host update notification does not use the Windows Toast API.'
+Assert-Contains $notificationSource 'gyinput://update/install' 'Update notification has no install action.'
+Assert-Contains $notificationSource 'gyinput://update/snooze' 'Update notification has no snooze action.'
 $candidateHeader = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\CandidateWindow.h') -Raw
 Assert-Contains $candidateHeader 'kCandidatesPerPage = 5' 'Candidate contract changed: default row must have five candidates.'
 Assert-Contains $candidateHeader 'kExpandedColumns = gy::candidate_layout::ExpandedColumns()' 'Candidate contract changed: expanded grid must have five columns.'
