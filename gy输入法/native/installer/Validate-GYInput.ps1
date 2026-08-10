@@ -32,6 +32,32 @@ try {
   if ($state -and $state.requiresClientReload -eq $true) {
     Write-Host '[提示] 新版 TSF 核心已注册，但已打开的应用可能仍加载旧 DLL。请关闭并重新打开正在输入的应用；若仍显示旧版本，再重启 Windows。' -ForegroundColor Yellow
   }
+  $clientProbe = Join-Path $installRoot 'Get-GYLoadedClientState.ps1'
+  if (Test-Path -LiteralPath $clientProbe -PathType Leaf) {
+    try {
+      $probeJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clientProbe -Version $coreVersion -Json 2>$null | Out-String
+      $probe = $probeJson | ConvertFrom-Json
+      $loadedClients = @($probe.clients)
+      $oldClients = @($loadedClients | Where-Object {
+          -not [string]::IsNullOrWhiteSpace([string]$_.version) -and
+          -not [string]::Equals([string]$_.version, $coreVersion, [StringComparison]::Ordinal)
+        })
+      if ($oldClients.Count -gt 0) {
+        $details = @($oldClients | Group-Object version | Sort-Object Name | ForEach-Object {
+            $names = @($_.Group | ForEach-Object { "$($_.processName) (PID $($_.processId))" } | Sort-Object -Unique) -join '、'
+            "v$($_.Name): $names"
+          }) -join '；'
+        Write-Host "[提示] 已打开程序仍加载旧版 TSF DLL：$details。系统激活版本正常；请保存工作后关闭并重新打开这些程序。" -ForegroundColor Yellow
+      } else {
+        Write-Host '[通过] 当前可访问进程未加载旧版 GY TSF DLL；新程序会使用当前版本。' -ForegroundColor Green
+      }
+      if ([int]$probe.inaccessibleProcessCount -gt 0) {
+        Write-Host "[提示] 有 $($probe.inaccessibleProcessCount) 个进程无法读取模块列表，状态未知；这不是安装失败。" -ForegroundColor Yellow
+      }
+    } catch {
+      Write-Host "[提示] 无法完成已打开程序 DLL 检测：$($_.Exception.Message)；不影响注册和安装状态验证。" -ForegroundColor Yellow
+    }
+  }
   Check (-not [string]::IsNullOrWhiteSpace($coreVersion)) "当前核心版本：$coreVersion" '没有找到当前核心版本状态。'
   Check ($hostVersion -eq $coreVersion) "Host / 核心版本一致：$hostVersion" "Host / 核心版本不一致：Host=$hostVersion，Core=$coreVersion。请重新安装同一版本。"
   Check (-not [string]::IsNullOrWhiteSpace($hostVersion)) "当前 Host 版本：$hostVersion" '没有找到当前 Host 版本注册。'
@@ -64,8 +90,10 @@ try {
   Check ($registeredCoreVersion -eq $coreVersion) "注册表 TSF 版本与状态一致：$registeredCoreVersion" "注册表 TSF 版本不一致：TSF=$registeredCoreVersion，State=$coreVersion。"
   $hostLogo = Join-Path (Split-Path -Parent $hostPath) 'gy.ico'
   $tsfLogo = Join-Path (Split-Path -Parent $server) 'gy.ico'
+  $sharedLogo = Join-Path $installRoot 'gy.ico'
   Check (Test-Path -LiteralPath $hostLogo -PathType Leaf) "Host Logo 存在：$hostLogo" 'Host Logo 缺失。'
   Check (Test-Path -LiteralPath $tsfLogo -PathType Leaf) "TSF Logo 存在：$tsfLogo" 'TSF Logo 缺失。'
+  Check (Test-Path -LiteralPath $sharedLogo -PathType Leaf) "共享输入法 Logo 存在：$sharedLogo" '共享输入法 Logo 缺失；升级后输入法栏可能显示“简体”。'
 } catch {
   Check $false '' 'TSF DLL 注册缺失。'
 }

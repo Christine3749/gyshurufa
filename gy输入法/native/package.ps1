@@ -34,6 +34,7 @@ Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime.dll') -Destination (Join-Pat
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime-data') -Destination (Join-Path $payloadRoot 'rime-data') -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Install-GYInput.ps1') -Destination (Join-Path $packageRoot 'Install-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1') -Destination (Join-Path $packageRoot 'Validate-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Get-GYLoadedClientState.ps1') -Destination (Join-Path $packageRoot 'Get-GYLoadedClientState.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Repair-GYInput.ps1') -Destination (Join-Path $packageRoot 'Repair-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientReload.ps1') -Destination (Join-Path $packageRoot 'Finalize-GYClientReload.ps1')

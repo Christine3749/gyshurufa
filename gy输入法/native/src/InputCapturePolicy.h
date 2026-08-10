@@ -15,8 +15,13 @@ constexpr bool ShouldCapture(bool english_mode,
                              bool composition_active,
                              unsigned current_page_candidate_count,
                              unsigned total_candidate_count,
-                             WPARAM key) {
+                             WPARAM key,
+                             bool use_english_punctuation) {
   if (english_mode || has_shortcut_modifier) return false;
+  // Tab is form navigation owned by the focused application. It must remain
+  // pass-through even while a composition or candidate page is visible.
+  if (key == VK_TAB) return false;
+  if (use_english_punctuation && gy::punctuation::IsPunctuationKey(key, shift_down)) return false;
   if (gy::keys::ShouldCaptureChinesePunctuation(key, shift_down)) return true;
   if (shift_down) return false;
   if (key >= 'A' && key <= 'Z') return true;
@@ -39,6 +44,20 @@ constexpr bool ShouldCapture(bool english_mode,
   return false;
 }
 
+// Compatibility overload for callers that provide both candidate counts but
+// do not need the automatic English-punctuation decision.
+constexpr bool ShouldCapture(bool english_mode,
+                             bool has_shortcut_modifier,
+                             bool shift_down,
+                             bool composition_active,
+                             unsigned current_page_candidate_count,
+                             unsigned total_candidate_count,
+                             WPARAM key) {
+  return ShouldCapture(english_mode, has_shortcut_modifier, shift_down,
+                       composition_active, current_page_candidate_count,
+                       total_candidate_count, key, false);
+}
+
 // Compatibility overload for callers that only have the visible page count.
 constexpr bool ShouldCapture(bool english_mode,
                              bool has_shortcut_modifier,
@@ -48,7 +67,7 @@ constexpr bool ShouldCapture(bool english_mode,
                              WPARAM key) {
   return ShouldCapture(english_mode, has_shortcut_modifier, shift_down,
                        composition_active, current_page_candidate_count,
-                       current_page_candidate_count, key);
+                       current_page_candidate_count, key, false);
 }
 
 }  // namespace gy::input_capture

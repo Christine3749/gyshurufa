@@ -1,0 +1,16 @@
+# GY 输入法 Android 版 · 身份契约锁（唯一真相）
+#
+# 身份字段是升级 ABI：改动任何一项 = 显式迁移（含数据迁移与真机验证），
+# 不是普通原地升级。纪律对齐 macos/scripts/verify-input-source-contract.sh。
+# 本文件由 android/scripts/verify_identity.py 强制校验，CI 门禁，人工改动必须先更新本文件。
+#
+# 命名家族（与 Mac 端 wang.shurufa.inputmethod.GYInput 同族）：
+#   Mac:     wang.shurufa.inputmethod.GYInput
+#   Android: wang.shurufa.inputmethod.GYInputAndroid
+#   iOS:     （预留）wang.shurufa.inputmethod.GYInputIOS
+
+applicationId=wang.shurufa.inputmethod.GYInputAndroid
+namespace=wang.shurufa.inputmethod.android
+imeServiceClass=wang.shurufa.inputmethod.android.GyInputMethodService
+providerAuthoritiesPrefix=wang.shurufa.inputmethod.GYInputAndroid.
+brandDisplayName=输入法.网

@@ -1,5 +1,6 @@
 #include <windows.h>
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 
@@ -190,12 +191,36 @@ int main() {
   }
   const std::wstring learned_candidate = L"你好";
   engine.Learn(L"nihao", learned_candidate);
-  const auto learned_candidates = engine.Lookup(L"nihao");
-  if (learned_candidates.empty() || learned_candidates.front() != learned_candidate) {
-    std::wcerr << L"Local learning did not promote the selected candidate.\n";
+  const auto one_time = engine.GetLearningSummary(L"nihao", learned_candidate);
+  if (one_time.count != 1 || one_time.tier != PinyinEngine::LearningTier::Once) {
+    std::wcerr << L"A one-time selection did not stay in the weak learning tier.\n";
     return 6;
+  }
+  const auto weak_candidates = engine.Lookup(L"nihao");
+  if (std::find(weak_candidates.begin(), weak_candidates.end(), learned_candidate) == weak_candidates.end()) {
+    std::wcerr << L"A one-time learned candidate was not retained in the candidate pool.\n";
+    return 15;
+  }
+  engine.Learn(L"nihao", learned_candidate);
+  const auto repeated = engine.GetLearningSummary(L"nihao", learned_candidate);
+  const auto learned_candidates = engine.Lookup(L"nihao");
+  if (repeated.count != 2 || repeated.tier != PinyinEngine::LearningTier::Memory ||
+      learned_candidates.empty() || learned_candidates.front() != learned_candidate) {
+    std::wcerr << L"Repeated local learning did not promote the selected candidate.\n";
+    return 6;
+  }
+  if (!engine.SetLearningPinned(L"nihao", learned_candidate, true) ||
+      engine.GetLearningSummary(L"nihao", learned_candidate).tier != PinyinEngine::LearningTier::Fixed) {
+    std::wcerr << L"Pinned learning did not become a fixed entry.\n";
+    return 16;
+  }
+  const std::wstring learned_sentence = L"今晚打老虎";
+  engine.Learn(L"jinwandalaohu", learned_sentence);
+  const auto learned_sentence_candidates = engine.Lookup(L"jinwandalaohu");
+  if (std::find(learned_sentence_candidates.begin(), learned_sentence_candidates.end(), learned_sentence) ==
+      learned_sentence_candidates.end()) {
+    std::wcerr << L"Sentence learning did not retain the selected full phrase.\n";
+    return 14;
   }
   return 0;
 }
-
-

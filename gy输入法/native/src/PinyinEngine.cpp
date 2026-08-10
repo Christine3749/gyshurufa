@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <ctime>
 #include <mutex>
 #include <string_view>
 #include <utility>
@@ -87,6 +88,108 @@ std::wstring NormalizeCode(std::wstring value) {
   return value;
 }
 
+constexpr std::uint64_t kSecondsPerDay = 24ull * 60ull * 60ull;
+constexpr std::uint64_t kRecent7DayWindow = 7;
+constexpr std::uint64_t kRecent30DayWindow = 30;
+
+std::uint64_t TodayUtcDay() {
+  const std::time_t now = std::time(nullptr);
+  return now > 0 ? static_cast<std::uint64_t>(now) / kSecondsPerDay : 0;
+}
+
+struct LearningStat {
+  unsigned count = 0;
+  std::uint64_t first_day = 0;
+  std::uint64_t last_day = 0;
+  unsigned active_days = 0;
+  unsigned recent_7_days = 0;
+  std::uint64_t recent_7_start_day = 0;
+  unsigned recent_30_days = 0;
+  std::uint64_t recent_30_start_day = 0;
+  bool pinned = false;
+};
+
+std::vector<std::wstring> SplitFields(const std::wstring& value) {
+  std::vector<std::wstring> fields;
+  size_t begin = 0;
+  while (begin <= value.size()) {
+    const size_t end = value.find(L'|', begin);
+    fields.push_back(value.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin));
+    if (end == std::wstring::npos) break;
+    begin = end + 1;
+  }
+  return fields;
+}
+
+unsigned ParseUnsigned(const std::wstring& value) {
+  try {
+    return std::min<unsigned>(static_cast<unsigned>(std::stoul(value)), 100000u);
+  } catch (...) {
+    return 0;
+  }
+}
+
+std::uint64_t ParseDay(const std::wstring& value) {
+  try {
+    return static_cast<std::uint64_t>(std::stoull(value));
+  } catch (...) {
+    return 0;
+  }
+}
+
+LearningStat ParseLearningStat(const std::wstring& value) {
+  const auto fields = SplitFields(value);
+  LearningStat stat{};
+  if (fields.size() < 9) return stat;
+  stat.count = ParseUnsigned(fields[0]);
+  stat.first_day = ParseDay(fields[1]);
+  stat.last_day = ParseDay(fields[2]);
+  stat.active_days = ParseUnsigned(fields[3]);
+  stat.recent_7_days = ParseUnsigned(fields[4]);
+  stat.recent_7_start_day = ParseDay(fields[5]);
+  stat.recent_30_days = ParseUnsigned(fields[6]);
+  stat.recent_30_start_day = ParseDay(fields[7]);
+  stat.pinned = fields[8] == L"1";
+  return stat;
+}
+
+std::wstring SerializeLearningStat(const LearningStat& stat) {
+  return std::to_wstring(stat.count) + L"|" +
+         std::to_wstring(stat.first_day) + L"|" +
+         std::to_wstring(stat.last_day) + L"|" +
+         std::to_wstring(stat.active_days) + L"|" +
+         std::to_wstring(stat.recent_7_days) + L"|" +
+         std::to_wstring(stat.recent_7_start_day) + L"|" +
+         std::to_wstring(stat.recent_30_days) + L"|" +
+         std::to_wstring(stat.recent_30_start_day) + L"|" +
+         (stat.pinned ? L"1" : L"0");
+}
+
+PinyinEngine::LearningTier LearningTierFor(const LearningStat& stat) {
+  if (stat.pinned) return PinyinEngine::LearningTier::Fixed;
+  if (stat.recent_7_days >= 5 || stat.recent_30_days >= 10) return PinyinEngine::LearningTier::High;
+  if (stat.count >= 2) return PinyinEngine::LearningTier::Memory;
+  if (stat.count == 1) return PinyinEngine::LearningTier::Once;
+  return PinyinEngine::LearningTier::None;
+}
+
+int LearningRankScore(const LearningStat& stat) {
+  switch (LearningTierFor(stat)) {
+    case PinyinEngine::LearningTier::Fixed:
+      return 1000000;
+    case PinyinEngine::LearningTier::High:
+      return 10000 + static_cast<int>(stat.recent_30_days * 10u + stat.recent_7_days);
+    case PinyinEngine::LearningTier::Memory:
+      return 1000 + static_cast<int>(stat.count);
+    case PinyinEngine::LearningTier::Once:
+    case PinyinEngine::LearningTier::None:
+      // A one-time selection is retained as a weak candidate but must not
+      // displace the normal dictionary ranking.
+      return 0;
+  }
+  return 0;
+}
+
 std::vector<std::wstring> ReadIniSection(const std::wstring& path, const wchar_t* section) {
   std::vector<wchar_t> buffer(32768, L'\0');
   GetPrivateProfileSectionW(section, buffer.data(), static_cast<DWORD>(buffer.size()), path.c_str());
@@ -145,6 +248,7 @@ struct LocalSettingsCache {
   bool loaded = false;
   std::unordered_map<std::wstring, std::vector<std::wstring>> phrases;
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, unsigned>> learning;
+  std::unordered_map<std::wstring, std::unordered_map<std::wstring, LearningStat>> learning_stats;
 
   int input_mode = 0;
   // Learn() runs on the host/UI path while TSF lookups read this cache from
@@ -169,6 +273,7 @@ struct LocalSettingsCache {
     last_write = current_write;
     phrases.clear();
     learning.clear();
+    learning_stats.clear();
     input_mode = 0;
     if (path.empty()) return;
     input_mode = shared_input_mode;
@@ -200,6 +305,23 @@ struct LocalSettingsCache {
         learning[code][candidate] = std::min<unsigned>(static_cast<unsigned>(std::stoul(line.substr(equals + 1))), 100000u);
       } catch (...) {}
     }
+    for (const std::wstring& line : ReadIniSection(path, L"LearningStats")) {
+      const size_t equals = line.find(L'=');
+      const size_t separator = line.find(L'\x2192');
+      if (equals == std::wstring::npos || separator == std::wstring::npos || separator >= equals) continue;
+      const std::wstring code = NormalizeCode(line.substr(0, separator));
+      const std::wstring candidate = line.substr(separator + 1, equals - separator - 1);
+      if (code.empty() || candidate.empty()) continue;
+      learning_stats[code][candidate] = ParseLearningStat(line.substr(equals + 1));
+    }
+    // Older releases only wrote [Learning]. Keep those records usable and
+    // gradually enrich them with the new time-window fields on the next use.
+    for (const auto& [code, entries] : learning) {
+      for (const auto& [candidate, count] : entries) {
+        auto& stat = learning_stats[code][candidate];
+        stat.count = std::max(stat.count, count);
+      }
+    }
   }
 
   void Invalidate() { std::scoped_lock lock(mutex); loaded = false; }
@@ -210,12 +332,12 @@ LocalSettingsCache& SettingsCache() {
   return cache;
 }
 
-std::unordered_map<std::wstring, unsigned> LearningScores(const std::wstring& code) {
+std::unordered_map<std::wstring, LearningStat> LearningStatistics(const std::wstring& code) {
   auto& cache = SettingsCache();
   cache.Refresh();
   std::scoped_lock lock(cache.mutex);
-  const auto found = cache.learning.find(NormalizeCode(code));
-  return found == cache.learning.end() ? std::unordered_map<std::wstring, unsigned>{} : found->second;
+  const auto found = cache.learning_stats.find(NormalizeCode(code));
+  return found == cache.learning_stats.end() ? std::unordered_map<std::wstring, LearningStat>{} : found->second;
 }
 
 std::vector<std::wstring> LocalPhrases(const std::wstring& code) {
@@ -337,7 +459,7 @@ std::wstring PinyinEngine::Diagnostic() const {
   return impl_ ? impl_->diagnostic : L"engine implementation is unavailable";
 }
 
-std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const {
+std::vector<std::wstring> PinyinEngine::LookupExact(const std::wstring& pinyin) const {
   if (!IsReady() || pinyin.empty()) return {};
   auto& runtime = GetRuntime();
   auto& settings = SettingsCache();
@@ -374,23 +496,31 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
 
   std::vector<std::wstring> candidates = query_rime(pinyin);
   if (candidates.empty()) return {};
-  const auto scores = LearningScores(pinyin);
-  // Learning must surface words, not merely reorder the 75-pool: a candidate
-  // the user picked before may sit beyond the Rime scan window (rank > 96)
-  // and would otherwise never reappear. Inject the missing learned entries;
-  // the sort below ranks them by score, and the quality/script gates and the
-  // pool cap still apply.
-  for (const auto& entry : scores) {
+  const auto statistics = LearningStatistics(pinyin);
+  std::vector<std::wstring> weak_learned;
+  // Learning must surface words, not merely reorder the 96-entry pool: a
+  // repeatedly selected candidate may sit beyond Rime's scan window. A
+  // one-time selection is intentionally weaker: retain it near the end of
+  // the first page without displacing the normal dictionary ranking. Memory,
+  // high-frequency and fixed entries are injected and ranked immediately.
+  for (const auto& entry : statistics) {
     const std::wstring learned = NormalizeOutputScript(entry.first, input_mode);
     if (!IsCandidateAcceptable(learned)) continue;
     if (std::find(candidates.begin(), candidates.end(), learned) != candidates.end()) continue;
+    if (LearningTierFor(entry.second) == PinyinEngine::LearningTier::Once) {
+      weak_learned.push_back(learned);
+      continue;
+    }
     candidates.push_back(learned);
   }
-  std::stable_sort(candidates.begin(), candidates.end(), [&scores](const std::wstring& left, const std::wstring& right) {
-    const auto left_score = scores.contains(left) ? scores.at(left) : 0u;
-    const auto right_score = scores.contains(right) ? scores.at(right) : 0u;
+  std::stable_sort(candidates.begin(), candidates.end(), [&statistics](const std::wstring& left, const std::wstring& right) {
+    const auto left_score = statistics.contains(left) ? LearningRankScore(statistics.at(left)) : 0;
+    const auto right_score = statistics.contains(right) ? LearningRankScore(statistics.at(right)) : 0;
     return left_score > right_score;
   });
+  const size_t weak_insert_position = std::min<size_t>(5, candidates.size());
+  candidates.insert(candidates.begin() + static_cast<std::ptrdiff_t>(weak_insert_position),
+                    weak_learned.begin(), weak_learned.end());
   const auto phrases = LocalPhrases(pinyin);
   for (auto it = phrases.rbegin(); it != phrases.rend(); ++it) {
     const std::wstring phrase = NormalizeOutputScript(*it, input_mode);
@@ -399,6 +529,13 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
     candidates.insert(candidates.begin(), phrase);
   }
   candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+  return candidates;
+}
+
+std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const {
+  std::vector<std::wstring> candidates = LookupExact(pinyin);
+  if (candidates.empty()) return {};
 
   // Exact input always owns the front of the list. Only when it cannot fill
   // the 5 × 5 first page do we add shorter, valid pinyin prefixes behind it:
@@ -411,7 +548,7 @@ std::vector<std::wstring> PinyinEngine::Lookup(const std::wstring& pinyin) const
     fallback.pop_back();
     while (!fallback.empty() && fallback.back() == L'\'') fallback.pop_back();
     if (fallback.size() < 2) break;
-    const auto fallback_candidates = query_rime(fallback);
+    const auto fallback_candidates = LookupExact(fallback);
     for (const std::wstring& candidate : fallback_candidates) {
       if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end()) continue;
       candidates.push_back(candidate);
@@ -426,17 +563,118 @@ void PinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candida
   if (pinyin.empty() || candidate.empty()) return;
   const std::wstring path = SettingsPath();
   if (!EnsureUnicodeSettingsFile(path)) return;
-  const std::wstring key = pinyin + L"→" + candidate;
-  const unsigned previous = GetPrivateProfileIntW(L"Learning", key.c_str(), 0, path.c_str());
-  const unsigned next = std::min<unsigned>(previous + 1, 100000u);
-  WritePrivateProfileStringW(L"Learning", key.c_str(), std::to_wstring(next).c_str(), path.c_str());
+  const std::wstring code = NormalizeCode(pinyin);
+  const std::wstring key = code + L"→" + candidate;
+  LearningStat stat{};
+  {
+    auto& cache = SettingsCache();
+    cache.Refresh();
+    std::scoped_lock lock(cache.mutex);
+    const auto code_stats = cache.learning_stats.find(code);
+    if (code_stats != cache.learning_stats.end()) {
+      const auto entry = code_stats->second.find(candidate);
+      if (entry != code_stats->second.end()) stat = entry->second;
+    }
+    const auto code_learning = cache.learning.find(code);
+    if (code_learning != cache.learning.end()) {
+      const auto entry = code_learning->second.find(candidate);
+      if (entry != code_learning->second.end()) stat.count = std::max(stat.count, entry->second);
+    }
+  }
+
+  const std::uint64_t today = TodayUtcDay();
+  stat.count = std::min<unsigned>(stat.count + 1, 100000u);
+  if (stat.first_day == 0) stat.first_day = today;
+  if (stat.last_day != today) stat.active_days = std::min<unsigned>(stat.active_days + 1, 100000u);
+  stat.last_day = today;
+  if (stat.recent_7_start_day == 0 || today < stat.recent_7_start_day ||
+      today - stat.recent_7_start_day >= kRecent7DayWindow) {
+    stat.recent_7_start_day = today;
+    stat.recent_7_days = 1;
+  } else {
+    stat.recent_7_days = std::min<unsigned>(stat.recent_7_days + 1, 100000u);
+  }
+  if (stat.recent_30_start_day == 0 || today < stat.recent_30_start_day ||
+      today - stat.recent_30_start_day >= kRecent30DayWindow) {
+    stat.recent_30_start_day = today;
+    stat.recent_30_days = 1;
+  } else {
+    stat.recent_30_days = std::min<unsigned>(stat.recent_30_days + 1, 100000u);
+  }
+
+  const bool legacy_ok = WritePrivateProfileStringW(L"Learning", key.c_str(),
+                                                      std::to_wstring(stat.count).c_str(), path.c_str()) != FALSE;
+  const bool stats_ok = WritePrivateProfileStringW(L"LearningStats", key.c_str(),
+                                                     SerializeLearningStat(stat).c_str(), path.c_str()) != FALSE;
   SettingsCache().Invalidate();
+  (void)legacy_ok;
+  (void)stats_ok;
 }
 
+bool PinyinEngine::SetLearningPinned(const std::wstring& pinyin, const std::wstring& candidate, bool pinned) const {
+  if (pinyin.empty() || candidate.empty()) return false;
+  const std::wstring path = SettingsPath();
+  if (!EnsureUnicodeSettingsFile(path)) return false;
+  const std::wstring code = NormalizeCode(pinyin);
+  const std::wstring key = code + L"→" + candidate;
+  LearningStat stat{};
+  {
+    auto& cache = SettingsCache();
+    cache.Refresh();
+    std::scoped_lock lock(cache.mutex);
+    const auto code_stats = cache.learning_stats.find(code);
+    if (code_stats != cache.learning_stats.end()) {
+      const auto entry = code_stats->second.find(candidate);
+      if (entry != code_stats->second.end()) stat = entry->second;
+    }
+    const auto code_learning = cache.learning.find(code);
+    if (code_learning != cache.learning.end()) {
+      const auto entry = code_learning->second.find(candidate);
+      if (entry != code_learning->second.end()) stat.count = std::max(stat.count, entry->second);
+    }
+  }
+  stat.pinned = pinned;
+  const bool ok = WritePrivateProfileStringW(L"LearningStats", key.c_str(),
+                                              SerializeLearningStat(stat).c_str(), path.c_str()) != FALSE;
+  SettingsCache().Invalidate();
+  return ok;
+}
 
-
-
-
+PinyinEngine::LearningSummary PinyinEngine::GetLearningSummary(const std::wstring& pinyin,
+                                                               const std::wstring& candidate) const {
+  LearningSummary summary{};
+  if (pinyin.empty() || candidate.empty()) return summary;
+  auto& cache = SettingsCache();
+  cache.Refresh();
+  std::scoped_lock lock(cache.mutex);
+  const std::wstring code = NormalizeCode(pinyin);
+  LearningStat stat{};
+  bool found = false;
+  const auto code_stats = cache.learning_stats.find(code);
+  if (code_stats != cache.learning_stats.end()) {
+    const auto entry = code_stats->second.find(candidate);
+    if (entry != code_stats->second.end()) {
+      stat = entry->second;
+      found = true;
+    }
+  }
+  const auto code_learning = cache.learning.find(code);
+  if (code_learning != cache.learning.end()) {
+    const auto entry = code_learning->second.find(candidate);
+    if (entry != code_learning->second.end()) {
+      stat.count = std::max(stat.count, entry->second);
+      found = true;
+    }
+  }
+  if (!found) return summary;
+  summary.count = stat.count;
+  summary.recent_7_days = stat.recent_7_days;
+  summary.recent_30_days = stat.recent_30_days;
+  summary.active_days = stat.active_days;
+  summary.pinned = stat.pinned;
+  summary.tier = LearningTierFor(stat);
+  return summary;
+}
 
 
 

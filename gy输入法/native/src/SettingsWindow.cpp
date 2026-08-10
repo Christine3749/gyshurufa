@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <inputscope.h>
 #include <objbase.h>
 #include <objidl.h>
 #include <gdiplus.h>
@@ -193,6 +194,15 @@ WrappedCard WrapCardText(HDC dc, const std::wstring& value, HFONT font, int max_
 int ClipboardCardHeight(UINT dpi, int lines) {
   return Scale(dpi, 8) + lines * Scale(dpi, 18) + (lines - 1) * Scale(dpi, 7) +
          Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
+}
+
+void SetFieldInputScope(HWND hwnd, InputScope scope) {
+  if (!hwnd) return;
+  static HMODULE msctf = LoadLibraryW(L"msctf.dll");
+  if (!msctf) return;
+  using SetInputScopeFn = HRESULT(WINAPI*)(HWND, InputScope);
+  const auto set_input_scope = reinterpret_cast<SetInputScopeFn>(GetProcAddress(msctf, "SetInputScope"));
+  if (set_input_scope) set_input_scope(hwnd, scope);
 }
 
 void PostUpdateMaintenanceCompletion(HWND hwnd, std::uint64_t window_instance_id, DWORD exit_code, bool rollback) {
@@ -575,8 +585,6 @@ void SettingsWindow::ApplyThemeBrush() {
 
 void SettingsWindow::CreateControls() {
   ApplyThemeBrush();
-  account_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP,
-      0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   account_email_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | WS_TABSTOP,
       0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   account_password_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP,
@@ -584,14 +592,15 @@ void SettingsWindow::CreateControls() {
   phrases_edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
       0, 0, 0, 0, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   const HFONT font = Font(dpi_, 12, FW_NORMAL);
-  SendMessageW(account_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   SendMessageW(account_email_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   SendMessageW(account_password_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
   SendMessageW(phrases_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-  // Placeholder so the borderless account field explains itself before typing.
-  SendMessageW(account_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"输入邮箱，例如 name@example.com"));
   SendMessageW(account_email_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"电子邮箱"));
   SendMessageW(account_password_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"密码"));
+  // Advertise semantic field types to TSF. The input processor uses this
+  // metadata to enter direct ASCII mode without reading the field contents.
+  SetFieldInputScope(account_email_edit_, IS_EMAIL_SMTPEMAILADDRESS);
+  SetFieldInputScope(account_password_edit_, IS_PASSWORD);
   // The edit controls retain their UI font for the lifetime of this Host.
 }
 
@@ -605,7 +614,7 @@ void SettingsWindow::Layout() {
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
   for (int i = 0; i < 6; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
-  account_rect_ = {}; account_email_rect_ = {}; account_password_rect_ = {}; account_action_rect_ = {}; account_logout_rect_ = {};
+  account_email_rect_ = {}; account_password_rect_ = {}; account_action_rect_ = {}; account_logout_rect_ = {};
   phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
@@ -651,26 +660,27 @@ void SettingsWindow::Layout() {
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = ai_preview_rect_.bottom + Scale(dpi_, 20);
   } else if (page_ == Page::Account) {
-    account_rect_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 52)};
-    MoveWindow(account_edit_, account_rect_.left + Scale(dpi_, 126), account_rect_.top + Scale(dpi_, 13), std::max(Scale(dpi_, 120), card_width - Scale(dpi_, 152)), Scale(dpi_, 26), TRUE);
     const bool show_account_form = account_state_ == AccountState::LoggedOut ||
         account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Failed;
-    phrases_rect_ = {content_left, account_rect_.bottom + Scale(dpi_, 18), content_left + card_width,
-                     account_rect_.bottom + (show_account_form ? Scale(dpi_, 208) : Scale(dpi_, 82))};
+    // One account card only: GY account is the identity used for login and
+    // sync. The former editable local identifier was never consumed by the
+    // sync/auth flow and only made users think two accounts were required.
+    phrases_rect_ = {content_left, base_y, content_left + card_width,
+                     base_y + (show_account_form ? Scale(dpi_, 250) : Scale(dpi_, 106))};
     if (show_account_form) {
-      account_email_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50),
-                             phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 80)};
-      account_password_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 88),
-                                phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 118)};
-      account_action_rect_ = {phrases_rect_.right - Scale(dpi_, 126), phrases_rect_.top + Scale(dpi_, 130),
-                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 166)};
+      account_email_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 78),
+                             phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 110)};
+      account_password_rect_ = {phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 132),
+                                phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 164)};
+      account_action_rect_ = {phrases_rect_.right - Scale(dpi_, 126), phrases_rect_.top + Scale(dpi_, 181),
+                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 217)};
       MoveWindow(account_email_edit_, account_email_rect_.left + Scale(dpi_, 11), account_email_rect_.top + Scale(dpi_, 3),
                  account_email_rect_.right - account_email_rect_.left - Scale(dpi_, 22), Scale(dpi_, 24), TRUE);
       MoveWindow(account_password_edit_, account_password_rect_.left + Scale(dpi_, 11), account_password_rect_.top + Scale(dpi_, 3),
                  account_password_rect_.right - account_password_rect_.left - Scale(dpi_, 22), Scale(dpi_, 24), TRUE);
     } else if (account_state_ == AccountState::LoggedIn) {
-      account_logout_rect_ = {phrases_rect_.right - Scale(dpi_, 102), phrases_rect_.top + Scale(dpi_, 25),
-                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 55)};
+      account_logout_rect_ = {phrases_rect_.right - Scale(dpi_, 102), phrases_rect_.top + Scale(dpi_, 26),
+                              phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 58)};
     }
     // 从“通用”页展开短语后切过来，编辑器不能残留在本页。
     ShowWindow(phrases_edit_, SW_HIDE);
@@ -704,7 +714,6 @@ void SettingsWindow::Layout() {
   const bool account_page = page_ == Page::Account;
   const bool account_form = account_state_ == AccountState::LoggedOut ||
       account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Failed;
-  ShowWindow(account_edit_, account_page ? SW_SHOW : SW_HIDE);
   ShowWindow(account_email_edit_, account_page && account_form ? SW_SHOW : SW_HIDE);
   ShowWindow(account_password_edit_, account_page && account_form ? SW_SHOW : SW_HIDE);
   EnableWindow(account_email_edit_, account_state_ != AccountState::LoggingIn);
@@ -856,7 +865,7 @@ void SettingsWindow::Paint(HDC dc) {
 
   const int content_left = Scale(dpi_, 112), content_right = width_ - Scale(dpi_, 24);
   const wchar_t* page_titles[] = {L"通用", L"输入", L"外观", L"账户", L"剪贴板", L"版本与更新"};
-  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"本机标识与 GY 账户", L"跨设备复制粘贴与本机历史", L"已激活版本与本次更新内容"};
+  const wchar_t* page_subtitles[] = {L"学习、短语与本机备份", L"切换正在使用的输入语言", L"主题、字号与 AI 预览助手", L"一个 GY 账户，跨设备同步", L"跨设备复制粘贴与本机历史", L"已激活版本与本次更新内容"};
   // 剪贴板页无页头：卡片列表直接占满内容区。
   if (page_ != Page::Clipboard) {
     Text(dc, page_titles[static_cast<int>(page_)], RECT{content_left, Scale(dpi_, 98), content_right, Scale(dpi_, 122)}, pal.text, DT_LEFT, medium);
@@ -887,7 +896,8 @@ void SettingsWindow::Paint(HDC dc) {
     DrawSegmentedChoices(dc, input_mode_rects_, input_modes, input_mode_, pal, dpi_, medium);
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"切换规则", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 9), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
-    Text(dc, L"Shift 快速切换 EN；EN 模式下字母、标点、Enter 与快捷键原样直出。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"Shift 快速切换 EN；密码、邮箱、网址等输入框自动临时使用英文。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"离开后恢复原状态；只读取输入框类型，不读取或保存输入内容。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
     // Warm start card: the toggle is honest about the low-spec trade-off, so
     // the annotation must stay in sync with PerformanceSettings.h consumers.
     Rounded(dc, warm_rect_, pal.surface, pal.border, Scale(dpi_, 9));
@@ -920,13 +930,6 @@ void SettingsWindow::Paint(HDC dc) {
     Text(dc, L"例如：更安静一点，字稍微大一点", RECT{preview_input.left + Scale(dpi_, 12), preview_input.top, preview_input.right - Scale(dpi_, 12), preview_input.bottom}, pal.muted, DT_LEFT, tiny);
     Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 110), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 10)}, pal.muted, DT_LEFT, tiny);
   } else if (page_ == Page::Account) {
-    Rounded(dc, account_rect_, pal.surface, pal.border, Scale(dpi_, 9));
-    Text(dc, L"账号", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 5), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom - Scale(dpi_, 8)}, pal.text, DT_LEFT, medium);
-    Text(dc, L"本地标识", RECT{account_rect_.left + Scale(dpi_, 16), account_rect_.top + Scale(dpi_, 25), account_rect_.left + Scale(dpi_, 112), account_rect_.bottom}, pal.muted, DT_LEFT, tiny);
-    // The account edit is a borderless EDIT child; without a visible frame it
-    // blends into the card and users cannot discover where to type.
-    const RECT account_input{account_rect_.left + Scale(dpi_, 116), account_rect_.top + Scale(dpi_, 10), account_rect_.right - Scale(dpi_, 16), account_rect_.bottom - Scale(dpi_, 10)};
-    Rounded(dc, account_input, pal.ink, pal.border, Scale(dpi_, 7));
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
     if (account_state_ == AccountState::LoggedIn) {
@@ -943,14 +946,16 @@ void SettingsWindow::Paint(HDC dc) {
       }
     } else {
       Text(dc, L"登录后开启同步、跨设备词库和 AI 权益。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 48)}, pal.muted, DT_LEFT, tiny);
+      Text(dc, L"邮箱", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 58), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 75)}, pal.muted, DT_LEFT, tiny);
       Rounded(dc, account_email_rect_, pal.ink, pal.border, Scale(dpi_, 7));
+      Text(dc, L"密码", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 112), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 129)}, pal.muted, DT_LEFT, tiny);
       Rounded(dc, account_password_rect_, pal.ink, pal.border, Scale(dpi_, 7));
       const bool logging_in = account_state_ == AccountState::LoggingIn;
       Rounded(dc, account_action_rect_, logging_in ? pal.surface_hover : kBlue, logging_in ? pal.border : kBlue, Scale(dpi_, 7));
       Text(dc, logging_in ? L"登录中…" : L"登录", account_action_rect_, logging_in ? pal.muted : kOnAccent, DT_CENTER, medium);
       const COLORREF status_color = account_state_ == AccountState::Failed ? RGB(210, 80, 80) : pal.muted;
       const std::wstring status = account_status_.empty() ? L"密码仅用于本次登录，不写入本机设置。" : account_status_;
-      Text(dc, status, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 174), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, status_color, DT_LEFT, tiny);
+      Text(dc, status, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 222), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, status_color, DT_LEFT, tiny);
     }
   } else if (page_ == Page::Clipboard) {
     // Page::Clipboard：纯历史卡片流（无页头/无标题行），右上角仅保留“清空”。
@@ -1083,8 +1088,6 @@ void SettingsWindow::Load() {
   }
   input_mode_ = gy::input_mode::Read();
   const std::wstring path = SettingsPath(); if (path.empty()) return;
-  wchar_t account[128]{}; GetPrivateProfileStringW(L"Account", L"Name", L"", account, static_cast<DWORD>(std::size(account)), path.c_str());
-  SetWindowTextW(account_edit_, account);
   theme_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"Theme", 0, path.c_str())), 0, 2);
   const int points = GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str());
   size_index_ = points <= 13 ? 0 : points >= 17 ? 2 : 1;
@@ -1102,9 +1105,10 @@ void SettingsWindow::Load() {
 }
 void SettingsWindow::Save() {
   const std::wstring path = SettingsPath(); if (path.empty() || !EnsureUnicodeSettingsFile(path)) return;
-  wchar_t account[128]{}; GetWindowTextW(account_edit_, account, static_cast<int>(std::size(account)));
   const int points[] = {13, 15, 17};
-  WritePrivateProfileStringW(L"Account", L"Name", account, path.c_str());
+  // Remove the obsolete second/local account field. Authentication uses the
+  // single DPAPI-protected GY account session managed by AccountAuth.
+  WritePrivateProfileStringW(L"Account", L"Name", nullptr, path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"Theme", std::to_wstring(theme_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"CandidateSize", std::to_wstring(points[size_index_]).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Performance", L"WarmStart", warm_start_ ? L"1" : L"0", path.c_str());

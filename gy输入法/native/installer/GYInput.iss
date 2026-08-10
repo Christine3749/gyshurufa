@@ -82,11 +82,15 @@ Source: "{#MyPayloadDir}\GyImeHealth-{#MyAppVersion}.exe"; DestDir: "{#MyVersion
 
 Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyTsfRoot}"; Flags: onlyifdoesntexist
 Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
+; Keep the TSF profile icon at a stable path so Windows' language-bar cache
+; never points at a removed version directory after an upgrade.
+Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{app}"; DestName: "gy.ico"; Flags: ignoreversion uninsneveruninstall onlyifdoesntexist; Check: ShouldInstallSharedHelpers
 Source: "{#MyPayloadDir}\release-notes.txt"; DestDir: "{#MyVersionRoot}"; DestName: "RELEASE-NOTES.txt"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime.dll"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime-data\*"; DestDir: "{#MyVersionRoot}\rime-data"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: "{#SourcePath}\Set-GYKeyboard.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Validate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Get-GYLoadedClientState.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Rollback-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Repair-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
@@ -624,6 +628,27 @@ begin
              (ResultCode = 0);
 end;
 
+function RunPendingFinalizerNow(): Boolean;
+var
+  ResultCode: Integer;
+  Args: String;
+begin
+  // The installer owns Global\GYInputFinalizePending at this point. Run the
+  // same finalizer immediately while retaining ONSTART/ONLOGON as a durable
+  // fallback for locked clients, Fast Startup, or a transient failure.
+  Result := True;
+  if not FileExists(PendingActivationPath()) then Exit;
+  if not FileExists(CommonFinalizerPath()) then begin
+    Result := False;
+    Exit;
+  end;
+  Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+          CommonFinalizerPath() + '" -LockAlreadyHeld';
+  Result := Exec(GYWindowsPowerShellPath(), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+            (ResultCode = 0) and
+            (not FileExists(PendingActivationPath()));
+end;
+
 procedure RestoreCapturedPreviousGyState();
 var
   ResultCode: Integer;
@@ -729,6 +754,14 @@ begin
       KeyboardAdded := UpdateKeyboardList(True);
       if not KeyboardAdded then
         MsgBox('GY 输入法新版已暂存，但未能自动更新当前账户的键盘列表。重启后请在 Windows 输入法设置中重新选择 GY 输入法。', mbInformation, MB_OK);
+      if RunPendingFinalizerNow() then begin
+        ActivationPending := False;
+        if not RunPostInstallValidation() then
+          MsgBox('安装后自动校验未通过。请使用“验证 GY 输入法安装”快捷方式查看具体项。', mbError, MB_OK);
+      end else begin
+        ActivationPending := True;
+        MsgBox('新版核心已暂存。安装器已自动安排开机/登录重试；请重启或重新登录完成激活，无需手动运行 PowerShell。', mbInformation, MB_OK);
+      end;
       Exit;
     end;
     if not RegisterGyTextService() then Abort;

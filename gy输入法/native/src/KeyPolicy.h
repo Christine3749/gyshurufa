@@ -19,6 +19,14 @@ constexpr bool ShouldToggleMode(bool shift_down, bool shift_used, bool has_short
   return shift_down && !shift_used && !has_shortcut_modifier;
 }
 
+// Switching from Chinese composition to EN must preserve the literal ASCII
+// text already being edited. The TSF implementation uses this policy before
+// scheduling the raw-text commit, so a mode transition can never silently
+// erase an unfinished word such as "biru".
+constexpr bool ShouldCommitRawBeforeModeSwitch(bool has_composition, bool next_english) {
+  return has_composition && next_english;
+}
+
 // TSF may not call OnKeyDown for a key that we deliberately pass to the app.
 // Mark the pending Shift as used during the Test phase, so Shift+Tab,
 // Shift+letter and Shift+Ctrl cannot become a mode toggle when Shift is released.

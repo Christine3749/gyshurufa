@@ -45,7 +45,6 @@ private:
   HWND hwnd_ = nullptr;
   int width_ = 520;
   int height_ = 680;
-  HWND account_edit_ = nullptr;
   HWND account_email_edit_ = nullptr;
   HWND account_password_edit_ = nullptr;
   HWND phrases_edit_ = nullptr;
@@ -63,7 +62,6 @@ private:
   // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
   // 输入 page card toggles it and annotates the low-spec recommendation.
   bool warm_start_ = true;
-  RECT account_rect_{};
   RECT account_email_rect_{};
   RECT account_password_rect_{};
   RECT account_action_rect_{};

@@ -1,5 +1,7 @@
 # GY Link：Android 与 iOS 接入边界
 
+> **规范优先：** [IOS-PLATFORM-STANDARDS.md](IOS-PLATFORM-STANDARDS.md) 为 iOS 的技术、审核、隐私与无障碍硬标准；本文若有冲突，以该文件为准。
+
 ## 统一目标
 
 GY Link 的设备组覆盖 Windows、macOS、Android、iOS。所有设备用同一 GSYEN 账号、同一端到端加密设备组、同一份可撤销设备列表与同一剪贴板历史协议。

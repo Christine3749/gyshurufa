@@ -89,15 +89,19 @@ CloseHandle(process.hThread);
   const bool status_ok = Send(gy::host::MessageType::Status, L"", &status);
   const bool lookup_ok = Send(gy::host::MessageType::Lookup, L"nihao", &candidates);
   const std::wstring learned = candidates.empty() ? L"" : candidates.back();
-  const bool learn_ok = !learned.empty() && Send(gy::host::MessageType::LearnCandidate,
-      gy::host::EncodeLearningEvent(L"nihao", learned), nullptr);
+  const std::wstring learning_event = gy::host::EncodeLearningEvent(L"nihao", learned);
+  const bool learn_ok = !learned.empty() && Send(gy::host::MessageType::LearnCandidate, learning_event, nullptr);
+  // A single confirmation is intentionally retained as a weak candidate. A
+  // repeated confirmation is the point at which personal learning may outrank
+  // the bundled dictionary.
+  const bool repeated_learn_ok = learn_ok && Send(gy::host::MessageType::LearnCandidate, learning_event, nullptr);
   std::vector<std::wstring> learned_candidates;
   const bool learned_lookup_ok = Send(gy::host::MessageType::Lookup, L"nihao", &learned_candidates);
   if (status_ok && !status.empty()) std::wcerr << L"Host status: " << status.front() << L"\n";
   Send(gy::host::MessageType::Shutdown, L"", nullptr);
   WaitForSingleObject(process.hProcess, 5000);
   CloseHandle(process.hProcess);
-  if (!lookup_ok || !learn_ok || !learned_lookup_ok || candidates.empty() || learned_candidates.empty() ||
+  if (!lookup_ok || !repeated_learn_ok || !learned_lookup_ok || candidates.empty() || learned_candidates.empty() ||
       learned_candidates.front() != learned) {
     std::wcerr << L"Host learning integration failed. lookup=" << lookup_ok << L" learn=" << learn_ok << L" learnedLookup=" << learned_lookup_ok << L" initialCount=" << candidates.size() << L" learnedCount=" << learned_candidates.size() << L" expectedLength=" << learned.size() << L" firstLength=" << (learned_candidates.empty() ? 0 : learned_candidates.front().size()) << L"\n";
     return 2;

@@ -2,6 +2,7 @@
 #include "InputMode.h"
 #include "InputCapturePolicy.h"
 #include "PunctuationPolicy.h"
+#include "InputScopePolicy.h"
 
 #include <iostream>
 
@@ -13,6 +14,16 @@ int wmain() {
   if (gy::keys::ShouldToggleMode(true, true, false) ||
       gy::keys::ShouldToggleMode(true, false, true) ||
       gy::keys::ShouldToggleMode(false, false, false)) return 4;
+  if (!gy::keys::ShouldCommitRawBeforeModeSwitch(true, true) ||
+      gy::keys::ShouldCommitRawBeforeModeSwitch(false, true) ||
+      gy::keys::ShouldCommitRawBeforeModeSwitch(true, false)) return 17;
+  if (!gy::punctuation::IsPunctuationKey(VK_OEM_COMMA, false) ||
+      !gy::punctuation::IsPunctuationKey(VK_OEM_7, false) ||
+      gy::punctuation::IsPunctuationKey('1', false) ||
+      !gy::punctuation::IsPunctuationKey('1', true) ||
+      !gy::punctuation::ShouldUseEnglishPunctuation(false, false, true) ||
+      gy::punctuation::ShouldUseEnglishPunctuation(false, true, true) ||
+      !gy::punctuation::ShouldUseEnglishPunctuation(true, true, false)) return 18;
   if (gy::punctuation::ChineseCharacter(VK_OEM_COMMA, false) != L'，' ||
       gy::punctuation::ChineseCharacter(VK_OEM_PERIOD, false) != L'。' ||
       gy::punctuation::ChineseCharacter(VK_OEM_2, true) != L'？' ||
@@ -71,6 +82,30 @@ int wmain() {
   // Regression: candidates may remain visible while TSF composition is empty.
   if (!gy::input_capture::ShouldCapture(false, false, false, false, 0, 5, VK_DOWN) ||
       !gy::input_capture::ShouldCapture(false, false, false, false, 0, 5, VK_UP)) return 14;
+
+  if (gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_OEM_COMMA, true) ||
+      gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_OEM_7, true) ||
+      !gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_OEM_COMMA, false)) return 19;
+
+  // Tab navigation belongs to the focused application in every GY state,
+  // including an active composition and the expanded candidate grid.
+  if (gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_TAB) ||
+      gy::input_capture::ShouldCapture(false, false, false, true, 5, 5, VK_TAB) ||
+      gy::input_capture::ShouldCapture(false, false, true, true, 5, 5, VK_TAB) ||
+      gy::input_capture::ShouldCapture(false, false, false, true, 5, 5, VK_TAB)) return 15;
+
+  // Password, PIN and login-oriented fields are direct-input contexts;
+  // chat/search fields remain ordinary Chinese-capable contexts.
+  if (!gy::input_scope::IsDirectInput(IS_PASSWORD) ||
+      !gy::input_scope::IsDirectInput(IS_NUMERIC_PASSWORD) ||
+      !gy::input_scope::IsDirectInput(IS_LOGINNAME) ||
+      !gy::input_scope::IsDirectInput(IS_EMAIL_SMTPEMAILADDRESS) ||
+      !gy::input_scope::IsDirectInput(IS_URL) ||
+      !gy::input_scope::IsPasswordContext(IS_PASSWORD) ||
+      !gy::input_scope::IsPasswordContext(IS_ALPHANUMERIC_PIN) ||
+      gy::input_scope::IsPasswordContext(IS_EMAIL_SMTPEMAILADDRESS) ||
+      gy::input_scope::IsDirectInput(IS_CHAT) ||
+      gy::input_scope::IsDirectInput(IS_SEARCH)) return 16;
 
   return 0;
 }

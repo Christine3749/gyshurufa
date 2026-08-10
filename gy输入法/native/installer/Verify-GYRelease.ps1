@@ -65,6 +65,7 @@ $sourceInstallerRoot = $PSScriptRoot
 $sourceScripts = @(
   'Install-GYInput.ps1',
   'Validate-GYInput.ps1',
+  'Get-GYLoadedClientState.ps1',
   'Rollback-GYInput.ps1',
   'Repair-GYInput.ps1',
   'Finalize-GYClientReload.ps1',

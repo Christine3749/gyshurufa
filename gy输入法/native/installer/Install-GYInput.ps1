@@ -22,6 +22,7 @@ $installedHost = Join-Path $versionRoot ("GyImeHost-$version.exe")
 $installedHealth = Join-Path $versionRoot ("GyImeHealth-$version.exe")
 $installedIcon = Join-Path $tsfRoot 'gy.ico'
 $installedHostIcon = Join-Path $versionRoot 'gy.ico'
+$installedSharedIcon = Join-Path $installRoot 'gy.ico'
 $installedNotes = Join-Path $versionRoot 'RELEASE-NOTES.txt'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $statePath = Join-Path $installRoot 'install-state.json'
@@ -169,6 +170,25 @@ function Repair-PendingActivation {
     throw 'Existing pending activation could not be completed; the current installation was not changed.'
   }
 }
+
+function Try-FinalizePendingActivation {
+  if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { return $true }
+  if (-not (Test-Path -LiteralPath $finalizerSource -PathType Leaf)) {
+    Write-Warning 'GY Finalizer is unavailable; the registered startup/logon fallback will complete activation.'
+    return $false
+  }
+  # The installer already owns the shared transaction mutex. Passing
+  # -LockAlreadyHeld prevents a second process from racing this transaction.
+  $finalizer = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $finalizerSource, '-LockAlreadyHeld'
+  ) -Wait -PassThru -WindowStyle Hidden
+  if ($finalizer.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
+    return $true
+  }
+  Write-Warning 'GY activation could not finish in the installer; the registered startup/logon fallback will retry automatically.'
+  return $false
+}
 function Test-SameFile([string]$Source, [string]$Destination) {
   if (-not (Test-Path -LiteralPath $Source) -or -not (Test-Path -LiteralPath $Destination)) { return $false }
   $sourceItem = Get-Item -LiteralPath $Source
@@ -225,6 +245,32 @@ function Update-CurrentUserKeyboardList {
     # and active. Set-WinDefaultInputMethodOverride is the documented API for
     # the same setting Windows Settings > Language > 选项 > 默认输入法 controls.
     try { Set-WinDefaultInputMethodOverride -InputTip $tipId } catch {}
+  }
+
+  # Keep the current language-bar session in sync with the refreshed TSF
+  # profile. This script reaches this function from the original interactive
+  # user process after any administrator work has completed.
+  try {
+    if ([Environment]::UserInteractive) {
+      $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+      if ($sessionId -ne 0) {
+        $ctfmon = @(Get-Process -Name 'ctfmon' -ErrorAction SilentlyContinue |
+          Where-Object { $_.SessionId -eq $sessionId })
+        foreach ($process in $ctfmon) {
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+        if ($ctfmon.Count -gt 0) {
+          Start-Sleep -Milliseconds 250
+          $ctfmonPath = Join-Path $env:WINDIR 'System32\ctfmon.exe'
+          if (Test-Path -LiteralPath $ctfmonPath -PathType Leaf) {
+            Start-Process -FilePath $ctfmonPath -WindowStyle Hidden | Out-Null
+          }
+        }
+      }
+    }
+  } catch {
+    # Input-indicator refresh is best effort; it must not invalidate a
+    # verified installation or rollback.
   }
 }
 
@@ -505,6 +551,7 @@ if (-not (Test-Path -LiteralPath $installedDll)) { Copy-Item -LiteralPath $paylo
 if (-not (Test-SameFile $payloadHost $installedHost)) { Copy-Item -LiteralPath $payloadHost -Destination $installedHost -Force }
 if (-not (Test-SameFile $payloadHealth $installedHealth)) { Copy-Item -LiteralPath $payloadHealth -Destination $installedHealth -Force }
 if (-not (Test-Path -LiteralPath $installedIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedIcon -Force }
+if (-not (Test-SameFile $payloadIcon $installedSharedIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedSharedIcon -Force }
 if (-not (Test-Path -LiteralPath $installedNotes)) { Copy-Item -LiteralPath $payloadNotes -Destination $installedNotes -Force }
 if (-not (Test-SameFile $payloadIcon $installedHostIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedHostIcon -Force }
 if (-not (Test-SameFile $payloadRime (Join-Path $versionRoot 'rime.dll'))) { Copy-Item -LiteralPath $payloadRime -Destination (Join-Path $versionRoot 'rime.dll') -Force }
@@ -533,6 +580,7 @@ if ($coreActivationPending) {
     Save-PendingActivation $previousState
     Schedule-PendingActivation
     Write-GyActivationState 'pending' $previousCoreVersion
+    [void](Try-FinalizePendingActivation)
     return
   } catch {
     Cancel-PendingActivation

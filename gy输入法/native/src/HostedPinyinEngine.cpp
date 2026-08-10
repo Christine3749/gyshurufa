@@ -5,6 +5,9 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <cwchar>
+#include <cwctype>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,6 +31,71 @@ std::wstring JoinPath(const std::wstring& root, const wchar_t* child) {
 bool FileExists(const std::wstring& path) {
   const DWORD attributes = GetFileAttributesW(path.c_str());
   return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool IsKnownPinyinSyllable(const std::wstring& value) {
+  // Rime accepts incomplete/fuzzy prefixes such as "ho" and may return a
+  // one-character result for a longer query. RemainingPinyin is a parser, so
+  // it needs the Mandarin syllable alphabet rather than a last-letter guess.
+  // v is the conventional keyboard spelling of ü (lv, lve, nv, ...).
+  static constexpr wchar_t kSyllables[] =
+      L"|a|ai|an|ang|ao|ba|bai|ban|bang|bao|bei|ben|beng|bi|bian|biao|bie|bin|bing|bo|bu|"
+      L"ca|cai|can|cang|cao|ce|cei|cen|ceng|cha|chai|chan|chang|chao|che|chen|cheng|chi|"
+      L"chong|chou|chu|chua|chuai|chuan|chuang|chui|chun|chuo|ci|cong|cou|cu|cua|cuai|"
+      L"cuan|cui|cun|cuo|da|dai|dan|dang|dao|de|dei|den|deng|di|dia|dian|diao|die|ding|"
+      L"diu|dong|dou|du|dua|duan|dui|dun|duo|e|ei|en|eng|er|fa|fan|fang|fei|fen|feng|"
+      L"fo|fou|fu|ga|gai|gan|gang|gao|ge|gei|gen|geng|gong|gou|gu|gua|guai|guan|gui|"
+      L"gun|guo|ha|hai|han|hang|hao|he|hei|hen|heng|hong|hou|hu|hua|huai|huan|hui|hun|"
+      L"huo|ji|jia|jian|jiang|jiao|jie|jin|jing|jiong|jiu|ju|juan|jue|jun|ka|kai|kan|"
+      L"kang|kao|ke|kei|ken|keng|kong|kou|ku|kua|kuai|kuan|kui|kun|kuo|la|lai|lan|lang|"
+      L"lao|le|lei|leng|li|lia|lian|liang|liao|lie|lin|ling|liu|long|lou|lu|lua|luan|lue|"
+      L"lui|lun|luo|lv|lvan|lve|ma|mai|man|mang|mao|me|mei|men|meng|mi|mian|miao|mie|min|"
+      L"ming|miu|mo|mou|mu|na|nai|nan|nang|nao|ne|nei|nen|neng|ni|nian|niang|niao|nie|"
+      L"nin|ning|niu|nong|nou|nu|nuan|nuo|nv|nve|o|ou|pa|pai|pan|pang|pao|pei|pen|peng|"
+      L"pi|pian|piao|pie|pin|ping|po|pou|pu|qi|qia|qian|qiang|qiao|qie|qin|qing|qiong|"
+      L"qiu|qu|quan|que|qun|ran|rang|rao|re|ren|reng|ri|rong|rou|ru|rua|ruan|rui|run|"
+      L"ruo|sa|sai|san|sang|sao|se|sei|sen|seng|sha|shai|shan|shang|shao|she|shei|shen|"
+      L"sheng|shi|shou|shu|shua|shuai|shuan|shui|shun|shuo|si|song|sou|su|suan|sui|sun|"
+      L"suo|ta|tai|tan|tang|tao|te|teng|ti|tian|tiao|tie|ting|tong|tou|tu|tuan|tui|tun|"
+      L"tuo|wa|wai|wan|wang|wei|wen|weng|wo|wu|xi|xia|xian|xiang|xiao|xie|xin|xing|"
+      L"xiong|xiu|xu|xuan|xue|xun|ya|yan|yang|yao|ye|yi|yin|ying|yo|yong|you|yu|yuan|"
+      L"yue|yun|za|zai|zan|zang|zao|ze|zei|zen|zeng|zha|zhai|zhan|zhang|zhao|zhe|zhei|"
+      L"zhen|zheng|zhi|zhong|zhou|zhu|zhua|zhuai|zhuan|zhui|zhun|zhuo|zi|zong|zou|zu|"
+      L"zuan|zui|zun|zuo|";
+  std::wstring normalized = value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(towlower(ch));
+  });
+  const std::wstring needle = L"|" + normalized + L"|";
+  return wcsstr(kSyllables, needle.c_str()) != nullptr;
+}
+
+bool CanParsePinyinPrefix(const std::wstring& value, size_t syllable_count) {
+  if (value.empty() || syllable_count == 0) return false;
+  std::wstring normalized;
+  normalized.reserve(value.size());
+  for (const wchar_t character : value) {
+    if (character == L'\'') continue;
+    normalized.push_back(static_cast<wchar_t>(towlower(character)));
+  }
+  if (normalized.empty()) return false;
+
+  // Dynamic programming handles ambiguous spellings such as xian (xian or
+  // xi-an) and selects the interpretation matching the selected Han text.
+  std::vector<std::vector<bool>> reachable(
+      normalized.size() + 1, std::vector<bool>(syllable_count + 1, false));
+  reachable[0][0] = true;
+  for (size_t offset = 0; offset < normalized.size(); ++offset) {
+    for (size_t count = 0; count < syllable_count; ++count) {
+      if (!reachable[offset][count]) continue;
+      for (size_t length = 1; length <= 6 && offset + length <= normalized.size(); ++length) {
+        if (IsKnownPinyinSyllable(normalized.substr(offset, length))) {
+          reachable[offset + length][count + 1] = true;
+        }
+      }
+    }
+  }
+  return reachable[normalized.size()][syllable_count];
 }
 
 std::wstring ReadMachineValue(const wchar_t* name) {
@@ -227,6 +295,48 @@ std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin)
   impl_->diagnostic = L"GY Host unavailable";
   return {};
 }
+std::vector<std::wstring> HostedPinyinEngine::LookupExact(const std::wstring& pinyin) {
+  if (!impl_ || pinyin.empty()) return {};
+  std::scoped_lock lock(impl_->mutex);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    if (!impl_->EnsureHost()) break;
+    std::wstring encoded;
+    if (SendRequest(gy::host::MessageType::LookupExact, pinyin, &encoded)) {
+      impl_->last_verified_tick = GetTickCount64();
+      impl_->diagnostic = L"using versioned GY Host";
+      return gy::host::DecodeCandidates(encoded);
+    }
+    impl_->last_verified_tick = 0;
+  }
+  impl_->diagnostic = L"GY Host unavailable";
+  return {};
+}
+std::wstring HostedPinyinEngine::RemainingPinyin(const std::wstring& pinyin,
+                                                 const std::wstring& candidate) {
+  if (!impl_ || pinyin.empty() || candidate.empty()) return {};
+  // Query complete prefixes from longest to shortest. Rime accepts some
+  // incomplete syllables (for example "ho" as a usable prefix for 厚), so a
+  // shortest-first search would consume too little and turn houyi into uyi.
+  // The longest exact match preserves the whole syllable whenever Rime can
+  // resolve it. Apostrophes are separators, not part of the suffix presented
+  // to the next composition.
+  for (size_t prefix_end = pinyin.size() - 1; prefix_end > 0; --prefix_end) {
+    if (pinyin[prefix_end - 1] == L'\'') continue;
+    if (!CanParsePinyinPrefix(pinyin.substr(0, prefix_end), candidate.size())) continue;
+    const size_t remainder_start =
+        prefix_end < pinyin.size() && pinyin[prefix_end] == L'\'' ? prefix_end + 1 : prefix_end;
+    if (remainder_start >= pinyin.size()) continue;
+    // Lookup() intentionally appends shorter-prefix fallback candidates to
+    // fill the 5x5 panel. That is useful for UI density but unsafe here: a
+    // fallback candidate must not make us consume an incomplete syllable such
+    // as "ho" from "houyi". Use the exact Host query for segmentation.
+    const auto prefix_candidates = LookupExact(pinyin.substr(0, prefix_end));
+    if (std::find(prefix_candidates.begin(), prefix_candidates.end(), candidate) != prefix_candidates.end()) {
+      return pinyin.substr(remainder_start);
+    }
+  }
+  return {};
+}
 void HostedPinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candidate) {
   if (!impl_ || pinyin.empty() || candidate.empty()) return;
   std::scoped_lock lock(impl_->mutex);
@@ -287,4 +397,3 @@ void HostedPinyinEngine::ShowMode(const RECT& caret, int input_mode) {
     impl_->diagnostic = L"GY Host mode UI is unavailable";
   }
 }
-

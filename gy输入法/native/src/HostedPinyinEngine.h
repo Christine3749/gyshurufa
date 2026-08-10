@@ -14,6 +14,11 @@ public:
   HostedPinyinEngine& operator=(const HostedPinyinEngine&) = delete;
 
   [[nodiscard]] std::vector<std::wstring> Lookup(const std::wstring& pinyin);
+  // If a selected candidate consumes only a prefix of a sentence-level
+  // pinyin string, return the unconsumed suffix so TSF can start the next
+  // composition instead of silently discarding it.
+  [[nodiscard]] std::wstring RemainingPinyin(const std::wstring& pinyin,
+                                              const std::wstring& candidate);
   [[nodiscard]] std::wstring Diagnostic() const;
   // Start the Host when GY activates so the first candidate does not wait for
   // process creation and local Rime initialization.
@@ -27,6 +32,7 @@ public:
   void ShowMode(const RECT& caret, int input_mode);
 
 private:
+  [[nodiscard]] std::vector<std::wstring> LookupExact(const std::wstring& pinyin);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

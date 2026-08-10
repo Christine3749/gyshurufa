@@ -72,7 +72,7 @@ if(MSVC)
   target_compile_options(GyIme PRIVATE /utf-8)
 endif()
 target_include_directories(GyIme PRIVATE src)
-target_link_libraries(GyIme PRIVATE ole32 advapi32)
+target_link_libraries(GyIme PRIVATE ole32 advapi32 uiautomationcore)
 # Field diagnosis: configure with -DGY_IME_TRACE=ON to log TSF focus/key/edit
 # events to %TEMP%/GyIme.trace.log without touching source. Stays off for
 # release and installer builds.

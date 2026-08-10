@@ -38,3 +38,31 @@ if ($Remove) {
     if ($current -match '5F689D3D-73E3-4C2B-979A-2DD86E438D6F') { Set-WinDefaultInputMethodOverride }
   } catch {}
 }
+
+function Refresh-GYInputIndicator {
+  # The TSF registry/profile update is visible immediately to new clients,
+  # but the existing Windows language bar keeps its old CTF profile cache.
+  # Refresh only an interactive user-session ctfmon; the SYSTEM startup
+  # finalizer must never launch a text-service process in Session 0.
+  try {
+    if (-not [Environment]::UserInteractive) { return }
+    $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($sessionId -eq 0) { return }
+    $processes = @(Get-Process -Name 'ctfmon' -ErrorAction SilentlyContinue |
+      Where-Object { $_.SessionId -eq $sessionId })
+    if (-not $processes) { return }
+    foreach ($process in $processes) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 250
+    $ctfmonPath = Join-Path $env:WINDIR 'System32\ctfmon.exe'
+    if (Test-Path -LiteralPath $ctfmonPath -PathType Leaf) {
+      Start-Process -FilePath $ctfmonPath -WindowStyle Hidden | Out-Null
+    }
+  } catch {
+    # Logo refresh is best effort. It must never turn a verified installation
+    # into a failed transaction; Windows will refresh it at the next logon.
+  }
+}
+
+Refresh-GYInputIndicator

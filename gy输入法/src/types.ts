@@ -3,6 +3,48 @@ export type InputMode = 'zh' | 'en';
 export type PinyinType = 'quanpin' | 'shuangpin';
 export type AiTriggerMode = 'off' | 'manual' | 'on';
 export type AppView = 'desktop' | 'settings' | 'onboarding';
+export type LearningTier = 'none' | 'once' | 'memory' | 'high' | 'fixed';
+
+/**
+ * A privacy-safe projection of local IME learning. It contains aggregate
+ * counters only; raw keystrokes and unfinished compositions are never part of
+ * this contract.
+ */
+export interface ImeLearningProjection {
+  schema: 'gy.ime_learning.v1';
+  pinyin: string;
+  candidate: string;
+  count: number;
+  recent7Days: number;
+  recent30Days: number;
+  activeDays: number;
+  pinned: boolean;
+  tier: LearningTier;
+  updatedAt: string;
+}
+
+export type MemoryCardKind = 'word_origin' | 'example' | 'related_words' | 'correction' | 'preference';
+
+/** A user-approved long-term learning card stored independently from Keep clipboard events. */
+export interface MemoryCard {
+  schema: 'gy.memory_card.v1';
+  id: string;
+  kind: MemoryCardKind;
+  surface: string;
+  pinyin?: string;
+  meaning?: string;
+  origin?: string;
+  relatedWords?: string[];
+  examples?: string[];
+  mnemonic?: string;
+  source: 'user' | 'local-learning' | 'ai' | 'keep';
+  confidence?: number;
+  approved: boolean;
+  privacy: 'local-only' | 'account';
+  createdAt: string;
+  updatedAt: string;
+  nextReviewAt?: string;
+}
 
 export interface CandidateItem {
   id: number;

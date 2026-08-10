@@ -41,6 +41,7 @@ enum class MessageType : std::uint16_t {
   ShowMode = 6,
   SelectCandidate = 7,
   LearnCandidate = 8,
+  LookupExact = 9,
 };
 
 #pragma pack(push, 1)
@@ -310,6 +311,5 @@ inline bool DecodeCandidateUi(const std::wstring& encoded, CandidateUiState* sta
   return !state->candidates.empty();
 }
 }  // namespace gy::host
-
 
 

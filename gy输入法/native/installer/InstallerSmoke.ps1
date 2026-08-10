@@ -25,6 +25,7 @@ $releaseState = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYReleaseState
 $transaction = Assert-ScriptParses (Join-Path $PSScriptRoot 'GYInputTransaction.ps1')
 $taskRegistrar = Assert-ScriptParses (Join-Path $PSScriptRoot 'Register-GYInputActivationTasks.ps1')
 $validator = Assert-ScriptParses (Join-Path $PSScriptRoot 'Validate-GYInput.ps1')
+$clientProbe = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYLoadedClientState.ps1')
 $keyboard = Assert-ScriptParses (Join-Path $PSScriptRoot 'Set-GYKeyboard.ps1')
 $e2e = Assert-ScriptParses (Join-Path $PSScriptRoot 'Test-GYInputUpgradeRollback.ps1')
 $settingsSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\SettingsWindow.cpp') -Raw
@@ -77,6 +78,9 @@ Assert-Contains $installer 'Save-PreviousGyState' 'ZIP installer does not preser
 Assert-Contains $installer 'activationState = $activationState' 'ZIP installer does not record core activation state.'
 Assert-Contains $installer "activationState = 'pending'" 'ZIP installer does not record explicit pending state.'
 Assert-Contains $installer "Write-GyActivationState 'staged'" 'ZIP installer does not record staged state before pending.'
+Assert-Contains $installer 'Try-FinalizePendingActivation' 'ZIP installer does not attempt immediate pending activation after staging.'
+Assert-Contains $installer 'startup/logon fallback will retry automatically' 'ZIP installer does not retain an automatic activation fallback after an immediate failure.'
+Assert-Contains $installer '-LockAlreadyHeld' 'ZIP installer does not invoke the Finalizer under its owning transaction lock.'
 Assert-Contains $validator 'Get-GyCoreVersionFromPath' 'Post-install validation does not derive the registered TSF version.'
 Assert-Contains $validator 'Host Logo 存在' 'Post-install validation does not verify the Host Logo.'
 Assert-Contains $validator 'TSF Logo 存在' 'Post-install validation does not verify the TSF Logo.'
@@ -101,6 +105,13 @@ Assert-Contains $installer 'Set-WinDefaultInputMethodOverride' 'ZIP installer do
 Assert-Contains $installer '.InputMethodTips.Insert(0,' 'ZIP installer appends to the language list instead of claiming the preferred (first) position.'
 Assert-Contains $keyboard 'Set-WinDefaultInputMethodOverride' 'Standalone keyboard helper does not contest a competing IME for the default zh-Hans-CN input method.'
 Assert-Contains $keyboard '.InputMethodTips.Insert(0,' 'Standalone keyboard helper appends to the language list instead of claiming the preferred (first) position.'
+Assert-Contains $keyboard 'Refresh-GYInputIndicator' 'Standalone keyboard helper does not refresh the current Windows language-bar session after an install.'
+Assert-Contains $keyboard 'ctfmon.exe' 'Standalone keyboard helper does not restart ctfmon to refresh the registered GY icon.'
+Assert-Contains $installer '$installedSharedIcon' 'ZIP installer does not install the stable shared GY input-method icon.'
+Assert-Contains $validator '共享输入法 Logo 存在' 'Post-install validation does not verify the stable shared input-method icon.'
+Assert-Contains $validator 'Get-GYLoadedClientState.ps1' 'Post-install validation does not inspect already-open clients holding an old TSF DLL.'
+Assert-Contains $clientProbe 'inaccessibleProcessCount' 'Client reload probe does not distinguish inaccessible processes from a clean scan.'
+Assert-Contains $clientProbe 'modulePath' 'Client reload probe does not report the loaded GY TSF module path.'
 Assert-Contains $rollback 'Test-ManagedGyPath' 'Standalone rollback does not protect its managed recovery paths.'
 Assert-Contains $rollback '回退目标离线引擎自检失败' 'Standalone rollback does not health-check its target.'
 Assert-Contains $rollback 'ActivatePendingLogon' 'Standalone rollback does not remove the redundant ONLOGON activation task.'
@@ -140,6 +151,11 @@ Assert-Contains $inno 'RepairPendingActivation' 'EXE installer does not self-hea
 Assert-Contains $inno 'registryVerified' 'EXE installer does not persist registry verification state.'
 Assert-Contains $inno 'RELEASE-NOTES.txt' 'EXE installer does not ship version-specific release notes.'
 Assert-Contains $inno 'RunPostInstallValidation' 'EXE installer does not run post-install validation.'
+Assert-Contains $inno 'RunPendingFinalizerNow' 'EXE installer does not attempt immediate pending activation after staging.'
+Assert-Contains $inno 'stable path' 'EXE installer does not document the stable shared input-method icon path.'
+Assert-Contains $inno 'DestName: "gy.ico"' 'EXE installer does not install the stable shared input-method icon.'
+Assert-Contains $inno '-NonInteractive -ExecutionPolicy Bypass -File "' 'EXE installer does not invoke the Finalizer non-interactively.'
+Assert-Contains $inno '-LockAlreadyHeld' 'EXE installer does not invoke the Finalizer under its owning transaction lock.'
 Assert-Contains $inno 'Register-GYInputActivationTasks.ps1' 'EXE installer does not delegate task registration to the shared PowerShell registrar.'
 Assert-Contains $inno '" -LockAlreadyHeld' 'EXE installer does not register pending activation tasks inside its owning transaction.'
 Assert-Contains $inno 'VerifyCapturedPreviousGyState' 'EXE installer does not health-check the rollback snapshot before staging an upgrade.'

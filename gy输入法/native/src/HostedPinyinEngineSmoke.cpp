@@ -98,6 +98,19 @@ int wmain() {
                << expanded.size() << L" qualified candidates.\n";
     return 5;
   }
+  const auto remaining = engine.RemainingPinyin(L"lihouyi", L"李");
+  if (remaining != L"houyi") {
+    std::wcerr << L"Prefix candidate resolution swallowed or mis-sized the remaining pinyin: " << remaining << L"\n";
+    Send(gy::host::MessageType::Shutdown);
+    return 6;
+  }
+  const auto chained_remaining = engine.RemainingPinyin(L"houyi", L"厚");
+  if (chained_remaining != L"yi") {
+    std::wcerr << L"Chained prefix candidate resolution swallowed or mis-sized the remaining pinyin: "
+               << chained_remaining << L"\n";
+    Send(gy::host::MessageType::Shutdown);
+    return 7;
+  }
   if (!Send(gy::host::MessageType::Shutdown)) {
     std::wcerr << L"Cannot request a private Host shutdown.\n";
     return 3;

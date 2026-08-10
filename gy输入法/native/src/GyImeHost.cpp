@@ -225,6 +225,8 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
   std::wstring response = L"ok";
   if (type == gy::host::MessageType::Lookup) {
     response = gy::host::EncodeCandidates(engine->Lookup(request));
+  } else if (type == gy::host::MessageType::LookupExact) {
+    response = gy::host::EncodeCandidates(engine->LookupExact(request));
   } else if (type == gy::host::MessageType::Status) {
     response = GY_WIDEN(GY_HOST_VERSION);
   } else if (type == gy::host::MessageType::ShowCandidates) {
