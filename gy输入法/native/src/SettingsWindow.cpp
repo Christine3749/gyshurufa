@@ -33,6 +33,7 @@ constexpr UINT kUpdateMaintenanceComplete = WM_APP + 0x2A2;
 constexpr UINT kAutomaticUpdateComplete = WM_APP + 0x2A3;
 constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 constexpr UINT_PTR kUpdateStatusTimer = 0x475A;
+constexpr UINT_PTR kAccountEditSubclassId = 0x475B;
 
 struct AccountRequestCompletion {
   std::uint64_t window_instance_id = 0;
@@ -615,7 +616,97 @@ void SettingsWindow::CreateControls() {
   // metadata to enter direct ASCII mode without reading the field contents.
   SetFieldInputScope(account_email_edit_, IS_EMAIL_SMTPEMAILADDRESS);
   SetFieldInputScope(account_password_edit_, IS_PASSWORD);
+  SetWindowSubclass(account_email_edit_, AccountEditSubclassProc, kAccountEditSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(account_password_edit_, AccountEditSubclassProc, kAccountEditSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this));
   // The edit controls retain their UI font for the lifetime of this Host.
+}
+
+LRESULT CALLBACK SettingsWindow::AccountEditSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
+                                                          LPARAM lparam, UINT_PTR subclass_id,
+                                                          DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<SettingsWindow*>(reference_data);
+  if (self && message == WM_SETFOCUS) {
+    self->account_focus_ = AccountFocus::None;
+    InvalidateRect(self->hwnd_, nullptr, FALSE);
+  }
+  if (self && message == WM_KEYDOWN) {
+    if (wparam == VK_TAB) {
+      self->AdvanceAccountFocus((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+      return 0;
+    }
+    if (wparam == VK_RETURN) {
+      if (hwnd == self->account_email_edit_) {
+        self->FocusAccountEdit(self->account_password_edit_);
+      } else if (hwnd == self->account_password_edit_) {
+        self->FocusAccountTarget(static_cast<int>(AccountFocus::Login));
+        self->ActivateAccountTarget();
+      }
+      return 0;
+    }
+  }
+  if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(hwnd, AccountEditSubclassProc, subclass_id);
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
+void SettingsWindow::FocusAccountEdit(HWND edit) {
+  if (!edit || !IsWindowVisible(edit) || !IsWindowEnabled(edit)) return;
+  account_focus_ = AccountFocus::None;
+  SetFocus(edit);
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void SettingsWindow::FocusAccountTarget(int target) {
+  account_focus_ = static_cast<AccountFocus>(target);
+  SetFocus(hwnd_);
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void SettingsWindow::AdvanceAccountFocus(bool reverse) {
+  if (page_ != Page::Account) return;
+
+  const bool show_account_form = account_state_ == AccountState::LoggedOut ||
+      account_state_ == AccountState::LoggingIn || account_state_ == AccountState::Failed;
+  const HWND focused = GetFocus();
+  if (show_account_form) {
+    if (reverse) {
+      if (focused == account_email_edit_) { FocusAccountTarget(static_cast<int>(AccountFocus::Done)); return; }
+      if (focused == account_password_edit_) { FocusAccountEdit(account_email_edit_); return; }
+      if (account_focus_ == AccountFocus::Login) { FocusAccountEdit(account_password_edit_); return; }
+      FocusAccountTarget(static_cast<int>(AccountFocus::Login));
+      return;
+    }
+    if (focused == account_email_edit_) { FocusAccountEdit(account_password_edit_); return; }
+    if (focused == account_password_edit_) { FocusAccountTarget(static_cast<int>(AccountFocus::Login)); return; }
+    if (account_focus_ == AccountFocus::Login) { FocusAccountTarget(static_cast<int>(AccountFocus::Done)); return; }
+    FocusAccountEdit(account_email_edit_);
+    return;
+  }
+
+  if (account_state_ == AccountState::LoggedIn) {
+    FocusAccountTarget(static_cast<int>(reverse || account_focus_ == AccountFocus::Logout
+        ? AccountFocus::Done : AccountFocus::Logout));
+  }
+}
+
+void SettingsWindow::ActivateAccountTarget() {
+  switch (account_focus_) {
+    case AccountFocus::Login:
+      if (account_state_ != AccountState::LoggingIn) BeginAccountLogin();
+      return;
+    case AccountFocus::Done:
+      Save();
+      DestroyWindow(hwnd_);
+      return;
+    case AccountFocus::Logout:
+      BeginAccountLogout();
+      return;
+    case AccountFocus::None:
+      return;
+  }
 }
 
 void SettingsWindow::Layout() {
@@ -994,6 +1085,17 @@ void SettingsWindow::Paint(HDC dc) {
            account_status_.empty() ? kBlue : pal.muted, DT_LEFT, tiny);
       Rounded(dc, account_logout_rect_, pal.surface_hover, pal.border, Scale(dpi_, 7));
       Text(dc, L"退出登录", account_logout_rect_, pal.text, DT_CENTER, tiny);
+      if (account_focus_ == AccountFocus::Logout) {
+        RECT focus = account_logout_rect_;
+        InflateRect(&focus, Scale(dpi_, 2), Scale(dpi_, 2));
+        const HPEN pen = CreatePen(PS_SOLID, Scale(dpi_, 1), kBlue);
+        const HGDIOBJ old_pen = SelectObject(dc, pen);
+        const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        RoundRect(dc, focus.left, focus.top, focus.right, focus.bottom, Scale(dpi_, 9), Scale(dpi_, 9));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+      }
     } else if (account_state_ == AccountState::Restoring) {
       Text(dc, L"正在恢复已保存的登录状态…", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 52)}, pal.muted, DT_LEFT, normal);
       if (!account_email_.empty()) {
@@ -1008,6 +1110,17 @@ void SettingsWindow::Paint(HDC dc) {
       const bool logging_in = account_state_ == AccountState::LoggingIn;
       Rounded(dc, account_action_rect_, logging_in ? pal.surface_hover : kBlue, logging_in ? pal.border : kBlue, Scale(dpi_, 7));
       Text(dc, logging_in ? L"登录中…" : L"登录", account_action_rect_, logging_in ? pal.muted : kOnAccent, DT_CENTER, medium);
+      if (account_focus_ == AccountFocus::Login) {
+        RECT focus = account_action_rect_;
+        InflateRect(&focus, Scale(dpi_, 2), Scale(dpi_, 2));
+        const HPEN pen = CreatePen(PS_SOLID, Scale(dpi_, 1), kOnAccent);
+        const HGDIOBJ old_pen = SelectObject(dc, pen);
+        const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        RoundRect(dc, focus.left, focus.top, focus.right, focus.bottom, Scale(dpi_, 9), Scale(dpi_, 9));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+      }
       const COLORREF status_color = account_state_ == AccountState::Failed ? RGB(210, 80, 80) : pal.muted;
       const std::wstring status = account_status_.empty() ? L"密码仅用于本次登录，不写入本机设置。" : account_status_;
       Text(dc, status, RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 222), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 8)}, status_color, DT_LEFT, tiny);
@@ -1131,6 +1244,17 @@ void SettingsWindow::Paint(HDC dc) {
   }
 
   Rounded(dc, done_rect_, kBlue, kBlue, Scale(dpi_, 8));
+  if (account_focus_ == AccountFocus::Done) {
+    RECT focus = done_rect_;
+    InflateRect(&focus, Scale(dpi_, 2), Scale(dpi_, 2));
+    const HPEN pen = CreatePen(PS_SOLID, Scale(dpi_, 1), kOnAccent);
+    const HGDIOBJ old_pen = SelectObject(dc, pen);
+    const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    RoundRect(dc, focus.left, focus.top, focus.right, focus.bottom, Scale(dpi_, 10), Scale(dpi_, 10));
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+  }
   Text(dc, L"完成", done_rect_, kOnAccent, DT_CENTER, medium);
   Text(dc, page_ == Page::Account ? L"登录会话仅保存在当前 Windows 用户的加密存储内" : L"所有基础输入设置仅保存在本机", RECT{content_left, done_rect_.top, done_rect_.left - Scale(dpi_, 16), done_rect_.bottom}, pal.muted, DT_LEFT, tiny);
   DeleteObject(title); DeleteObject(medium); DeleteObject(tiny); DeleteObject(normal); DeleteObject(large);
@@ -1513,6 +1637,7 @@ void SettingsWindow::BeginAccountLogout() {
   SecureErase(&account_access_token_);
   account_token_expiry_ = 0;
   account_email_.clear();
+  account_focus_ = AccountFocus::None;
   account_state_ = cleared ? AccountState::LoggedOut : AccountState::Failed;
   account_status_ = cleared ? L"已退出 GY 账户。" : L"无法移除本机登录信息。";
   SetWindowTextW(account_email_edit_, L"");
@@ -1540,6 +1665,7 @@ void SettingsWindow::FinishAccountRequest(std::uint64_t request_id, gy::account_
   }
 
   const bool restoring = account_state_ == AccountState::Restoring;
+  account_focus_ = AccountFocus::None;
   if (result->status == gy::account_auth::Status::Success) {
     gy::account_auth::StoredSession stored{result->session.email, result->session.refresh_token};
     const bool persisted = gy::account_auth::SaveStoredSession(stored);
@@ -1600,6 +1726,12 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       SetBkColor(reinterpret_cast<HDC>(wparam), account_auth_edit ? pal.ink : pal.surface);
       return reinterpret_cast<LRESULT>(account_auth_edit ? self->account_input_brush_ : self->edit_brush_);
     }
+    case WM_KEYDOWN:
+      if (self->page_ == Page::Account) {
+        if (wparam == VK_TAB) { self->AdvanceAccountFocus((GetKeyState(VK_SHIFT) & 0x8000) != 0); return 0; }
+        if (wparam == VK_RETURN || wparam == VK_SPACE) { self->ActivateAccountTarget(); return 0; }
+      }
+      break;
     case WM_MOUSEMOVE: {
       POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
@@ -1633,8 +1765,8 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (self->page_ == Page::Account && self->Hit(self->account_action_rect_, point)) { self->BeginAccountLogin(); return 0; }
-      if (self->page_ == Page::Account && self->Hit(self->account_logout_rect_, point)) { self->BeginAccountLogout(); return 0; }
+      if (self->page_ == Page::Account && self->Hit(self->account_action_rect_, point)) { self->FocusAccountTarget(static_cast<int>(AccountFocus::Login)); self->ActivateAccountTarget(); return 0; }
+      if (self->page_ == Page::Account && self->Hit(self->account_logout_rect_, point)) { self->FocusAccountTarget(static_cast<int>(AccountFocus::Logout)); self->ActivateAccountTarget(); return 0; }
       // 剪贴板开关在通用页：拨动即写入（不等“完成”）；剪贴板页只剩清空。
       if (self->page_ == Page::General && self->Hit(self->clip_sync_switch_, point)) { self->clip_enabled_ = !self->clip_enabled_; gy::keep_sync::SetEnabled(self->clip_enabled_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
@@ -1647,7 +1779,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General && self->Hit(self->clear_rect_, point)) { self->ClearLearning(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->export_rect_, point)) { self->Save(); self->ExportBackup(); return 0; }
       if (self->page_ == Page::General && self->Hit(self->import_rect_, point)) { self->ImportBackup(); return 0; }
-      if (self->Hit(self->done_rect_, point)) { self->Save(); DestroyWindow(hwnd); return 0; }
+      if (self->Hit(self->done_rect_, point)) { self->FocusAccountTarget(static_cast<int>(AccountFocus::Done)); self->ActivateAccountTarget(); return 0; }
       if (self->Hit(self->close_rect_, point)) { DestroyWindow(hwnd); return 0; }
       return 0;
     }

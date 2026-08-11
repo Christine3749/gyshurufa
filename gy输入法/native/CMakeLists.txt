@@ -110,7 +110,7 @@ add_executable(GyImeHost WIN32
 target_compile_features(GyImeHost PRIVATE cxx_std_20)
 target_compile_definitions(GyImeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX RIME_IMPORTS GY_HOST_VERSION=\"${GY_VERSION}\" GY_RELEASE_VERSION=\"${GY_VERSION}\")
 target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include" "${GY_CPPWINRT_INCLUDE}")
-target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 advapi32 ole32 runtimeobject winhttp crypt32 gdiplus "${GY_RIME_ROOT}/lib/rime.lib")
+target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 comctl32 advapi32 ole32 runtimeobject winhttp crypt32 gdiplus "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
   target_compile_options(GyImeHost PRIVATE /utf-8)
 endif()

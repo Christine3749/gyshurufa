@@ -41,10 +41,18 @@ private:
   void BeginAccountRestore();
   void BeginAccountLogout();
   void FinishAccountRequest(std::uint64_t request_id, gy::account_auth::Result* result);
+  void AdvanceAccountFocus(bool reverse);
+  void FocusAccountEdit(HWND edit);
+  void FocusAccountTarget(int target);
+  void ActivateAccountTarget();
   bool Hit(const RECT& rect, POINT point) const;
+  static LRESULT CALLBACK AccountEditSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
+                                                  LPARAM lparam, UINT_PTR subclass_id,
+                                                  DWORD_PTR reference_data);
 
   enum class Page { General, Input, Appearance, Account, Clipboard, Updates };
   enum class AccountState { LoggedOut, Restoring, LoggingIn, LoggedIn, Failed };
+  enum class AccountFocus { None, Login, Done, Logout };
 
   HWND hwnd_ = nullptr;
   int width_ = 520;
@@ -137,6 +145,7 @@ private:
   // token is DPAPI-protected in a separate file; the access token lives only
   // while GyImeHost is running.
   AccountState account_state_ = AccountState::LoggedOut;
+  AccountFocus account_focus_ = AccountFocus::None;
   std::wstring account_email_;
   std::wstring account_access_token_;
   std::int64_t account_token_expiry_ = 0;
