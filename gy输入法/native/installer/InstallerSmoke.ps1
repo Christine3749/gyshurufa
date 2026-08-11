@@ -204,6 +204,9 @@ Assert-Contains $manifestModule 'PENDING-PACKAGE-VERIFICATION' 'Release manifest
 $publish = Assert-ScriptParses (Join-Path $PSScriptRoot '..\Publish-GYRelease.ps1')
 Assert-Contains $publish 'Atomically advance verified cross-platform latest pointer' 'Publish workflow does not atomically switch the R2 latest pointer last.'
 Assert-Contains $publish '-RequireSignature:$requireSignature' 'Publish workflow does not require signatures for stable releases.'
+Assert-Contains $publish 'CandidateOnly' 'Publish workflow cannot isolate a candidate from the shared latest pointer.'
+Assert-Contains $publish 'candidates/windows/$Version/release.json' 'Candidate manifest is not stored outside the shared latest path.'
+Assert-Contains $publish 'releases/latest.json was not changed' 'Candidate publication does not explicitly preserve the shared latest pointer.'
 Assert-Contains $publish 'Get-R2ObjectWithRetry' 'Publish workflow does not retry R2 eventual consistency readbacks.'
 Assert-Contains $publish '[switch]$Resume' 'Publish workflow cannot resume a partially uploaded immutable release.'
 Assert-Contains $publish 'Existing immutable R2 object differs from the local verified artifact' 'Publish workflow does not compare resumed immutable objects before advancing latest.'

@@ -5,7 +5,8 @@
   "compatibility_date": "2026-08-02",
   "workers_dev": true,
   "vars": {
-    "RELEASE_STATUS": "candidate"
+    "RELEASE_STATUS": "candidate",
+    "RELEASE_MANIFEST_KEY": "candidates/windows/0.10.90/release.json"
   },
   "r2_buckets": [
     {

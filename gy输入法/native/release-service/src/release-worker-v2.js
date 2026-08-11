@@ -71,7 +71,7 @@ function validateRelease(rawRelease) {
   const macos = validateAsset(release, "macos", false);
   return { ...release, windows, macos };
 }
-async function loadLatest(env) { const obj = await env.RELEASES.get(LATEST_KEY); if (!obj) throw new Error("latest.json is missing from R2"); return validateRelease(await obj.json()); }
+async function loadLatest(env) { const key = env.RELEASE_MANIFEST_KEY || LATEST_KEY; const obj = await env.RELEASES.get(key); if (!obj) throw new Error("release manifest is missing from R2"); return validateRelease(await obj.json()); }
 function validateBetaMac(raw) {
   if (!raw || typeof raw !== "object" || raw.schemaVersion !== 1 || raw.channel !== "beta") throw new Error("beta macOS manifest is invalid");
   if (!VERSION.test(raw.version || "") || !Number.isSafeInteger(raw.build) || raw.build <= 0) throw new Error("beta macOS version/build is invalid");

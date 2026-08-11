@@ -1,22 +1,22 @@
-﻿{
-    "schemaVersion":  2,
-    "releaseId":  "gy-2026.08.10-windows-0.10.89",
-    "channel":  "candidate",
-    "windows":  {
-                    "version":  "0.10.89",
-                    "coreVersion":  "0.10.89",
-                    "hostVersion":  "0.10.89",
-                    "architecture":  "x64",
-                    "setupFile":  "GYInputSetup-0.10.89.exe",
-                    "zipFile":  "GYInput-0.10.89.zip",
-                    "sha256":  "A945DEBD5B4EF0F6496A4DA5A961D40E937677DC3A6CAC2A1131DDC5D8D52BFF",
-                    "bytes":  10164864,
-                    "state":  "candidate"
-                },
-    "macos":  {
-                  "version":  "2.0.0",
-                  "architecture":  "arm64",
-                  "state":  "verification-required"
-              },
-    "publishedAtUtc":  "2026-08-10T03:06:12.3275654Z"
+{
+  "schemaVersion": 2,
+  "releaseId": "gy-2026.08.11-windows-0.10.90",
+  "channel": "candidate",
+  "windows": {
+    "version": "0.10.90",
+    "coreVersion": "0.10.90",
+    "hostVersion": "0.10.90",
+    "architecture": "x64",
+    "setupFile": "GYInputSetup-0.10.90.exe",
+    "zipFile": "GYInput-0.10.90.zip",
+    "sha256": "36263100645596837834FFB3763CB21B1C3A0345E71A38EFF1B47F9E566564FB",
+    "bytes": 10171118,
+    "state": "candidate"
+  },
+  "macos": {
+    "version": "2.0.0",
+    "architecture": "arm64",
+    "state": "verification-required"
+  },
+  "publishedAtUtc": "2026-08-11T03:38:59.3476938Z"
 }

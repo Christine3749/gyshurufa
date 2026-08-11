@@ -4,6 +4,7 @@ param(
   [string]$ReleaseRoot = '',
   [string]$BucketName = 'gy-shurufa-releases',
   [switch]$AllowUnsignedCandidate,
+  [switch]$CandidateOnly,
   [switch]$Resume
 )
 
@@ -28,6 +29,9 @@ if ([string]$manifest.windows.state -eq 'draft') { throw 'Draft Windows releases
 $requireSignature = [string]$manifest.channel -eq 'stable'
 if (-not $requireSignature -and -not $AllowUnsignedCandidate) {
   throw 'This pipeline requires Authenticode for all published builds by default; use -AllowUnsignedCandidate only for temporary internal candidate publishing.'
+}
+if ($CandidateOnly -and [string]$manifest.channel -eq 'stable') {
+  throw 'CandidateOnly cannot publish a stable release. Use the normal signed publication path instead.'
 }
 
 & (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature:$requireSignature
@@ -97,7 +101,8 @@ try {
   Put-Immutable $setup "$prefix/$($manifest.windows.setupFile)" 'application/vnd.microsoft.portable-executable'
   Put-Immutable $zip "$prefix/$($manifest.windows.zipFile)" 'application/zip'
   Put-Immutable $setupHash "$prefix/$($manifest.windows.setupFile).sha256" 'text/plain; charset=utf-8'
-  Put-Immutable $packageManifest "releases/$Version/release.json" 'application/json; charset=utf-8'
+  $manifestObjectKey = if ($CandidateOnly) { "candidates/windows/$Version/release.json" } else { "releases/$Version/release.json" }
+  Put-Immutable $packageManifest $manifestObjectKey 'application/json; charset=utf-8'
   if ($PSCmdlet.ShouldProcess("$BucketName/$prefix/$($manifest.windows.setupFile)", 'Download and hash-verify uploaded Windows release')) {
     $remoteWindows = Join-Path $tempRoot $manifest.windows.setupFile
     if (-not (Get-R2ObjectWithRetry "$prefix/$($manifest.windows.setupFile)" $remoteWindows 8)) {
@@ -108,6 +113,10 @@ try {
       throw 'R2 Windows package hash/size does not match canonical release.json; latest remains unchanged.'
     }
   }
+  if ($CandidateOnly) {
+    Write-Host "Published isolated candidate Windows release $Version. releases/latest.json was not changed." -ForegroundColor Green
+    return
+  }
   if ($PSCmdlet.ShouldProcess("$BucketName/releases/latest.json", 'Atomically advance verified cross-platform latest pointer')) {
     Invoke-ReleaseNative { & npx wrangler r2 object put "$BucketName/releases/latest.json" --file "$manifestPath" --content-type 'application/json; charset=utf-8' --remote }
     if ($LASTEXITCODE -ne 0) { throw 'Unable to advance releases/latest.json.' }
@@ -117,6 +126,5 @@ try {
 finally {
   Remove-Item -LiteralPath $tempRoot -Force -Recurse -ErrorAction SilentlyContinue
 }
-
 
 
