@@ -9,8 +9,8 @@ param(
 )
 
 # GY 自动升级入口：
-# 1. Check 只读取官方发布 API，并把结果写入当前用户的本地状态文件；
-# 2. Install 先下载、校验版本/字节数/SHA-256/Authenticode 签名，再启动标准 EXE；
+# 1. Check 会在确认可用时预下载并校验安装器（不执行安装）；
+# 2. Install 优先复用已缓存安装器，只在需要时补下载，再启动标准 EXE；
 # 3. 安装器自身负责管理员 UAC、事务锁、pending 和 Finalizer 激活。
 # 输入过程中绝不调用此脚本，也不上传输入内容。
 
@@ -45,6 +45,56 @@ function Get-StatePath {
   $base = Join-Path $env:LOCALAPPDATA 'GYInput'
   New-Item -ItemType Directory -Path $base -Force | Out-Null
   return Join-Path $base 'update-state.ini'
+}
+
+function Get-UpdateCacheRoot {
+  $root = Join-Path $env:LOCALAPPDATA 'GYInput\updates'
+  New-Item -ItemType Directory -Path $root -Force | Out-Null
+  return $root
+}
+
+function Get-UpdatePackagePath([pscustomobject]$Release) {
+  return Join-Path (Join-Path (Get-UpdateCacheRoot) $Release.VersionText) $Release.Filename
+}
+
+function Test-UpdatePackage([pscustomobject]$Release, [string]$Path) {
+  $path = $Path
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  $actualBytes = (Get-Item -LiteralPath $path).Length
+  if ($actualBytes -ne $Release.Bytes) { return $null }
+  $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+  if ($actualHash -ne $Release.Sha256) { return $null }
+  $signature = Get-AuthenticodeSignature -LiteralPath $path
+  if ($signature.Status -ne 'Valid') { return $null }
+  return $path
+}
+
+function Get-UpdatePackage([pscustomobject]$Release) {
+  return Test-UpdatePackage $Release (Get-UpdatePackagePath $Release)
+}
+
+function Ensure-UpdatePackage {
+  param([pscustomobject]$Release)
+  $path = Get-UpdatePackagePath $Release
+  $parent = Split-Path -Path $path -Parent
+  New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  $cached = Get-UpdatePackage $Release
+  if ($cached) { return $cached }
+  # Do not expose a partly-downloaded EXE as the reusable cache entry. The
+  # versioned cache path only appears after byte size, SHA-256 and signature
+  # validation all pass.
+  $temporary = "$path.$([guid]::NewGuid().ToString('N')).download"
+  try {
+    Invoke-WebRequest -Uri $Release.DownloadUri.AbsoluteUri -OutFile $temporary -UseBasicParsing -TimeoutSec 300
+    $prepared = Test-UpdatePackage $Release $temporary
+    if (-not $prepared) { throw '安装包下载后校验失败。' }
+    Move-Item -LiteralPath $temporary -Destination $path -Force
+    $cached = Get-UpdatePackage $Release
+    if (-not $cached) { throw '安装包缓存提交后校验失败。' }
+    return $cached
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Write-State([hashtable]$Values) {
@@ -116,7 +166,7 @@ function Invoke-Check {
   $now = [DateTime]::UtcNow.ToString('o')
   $current = Get-InstalledVersion
   $snoozeUntil = $null
-  if ([DateTime]::TryParse((Get-StateValue 'snoozeUntilUtc'), [Globalization.DateTimeStyles]::RoundtripKind, [ref]$snoozeUntil) -and
+  if (-not $Force -and [DateTime]::TryParse((Get-StateValue 'snoozeUntilUtc'), [Globalization.DateTimeStyles]::RoundtripKind, [ref]$snoozeUntil) -and
       $snoozeUntil.ToUniversalTime() -gt [DateTime]::UtcNow) {
     return 0
   }
@@ -134,7 +184,25 @@ function Invoke-Check {
     }
     $release = Get-ReleaseInfo
     $available = $release.Version -gt $current
-    $status = if ($available) { 'update-available' } else { 'up-to-date' }
+    if ($available) {
+      $installer = Ensure-UpdatePackage $release
+      if (-not (Test-Path -LiteralPath $installer)) { throw '安装包未完成准备。' }
+      Write-State @{
+        schemaVersion = 1
+        checkedAtUtc = $now
+        currentVersion = $current.ToString(3)
+        available = 1
+        version = $release.VersionText
+        status = 'ready-to-install'
+        downloadUrl = $release.DownloadUri.AbsoluteUri
+        sha256 = $release.Sha256
+        bytes = $release.Bytes
+        snoozeUntilUtc = ''
+        error = ''
+      }
+      return 0
+    }
+    $status = 'up-to-date'
     Write-State @{ schemaVersion = 1; checkedAtUtc = $now; currentVersion = $current.ToString(3); available = [int]$available; version = $release.VersionText; status = $status; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
     return 0
   } catch {
@@ -154,17 +222,9 @@ function Invoke-Install {
       return 0
     }
     if ($ExpectedVersion -and $release.VersionText -ne (Get-VersionText $ExpectedVersion)) { throw '线上版本已变化，请重新检查后再安装。' }
-    $downloadRoot = Join-Path $env:LOCALAPPDATA "GYInput\updates\$($release.VersionText)"
-    New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
-    $installer = Join-Path $downloadRoot $release.Filename
-    Invoke-WebRequest -Uri $release.DownloadUri.AbsoluteUri -OutFile $installer -UseBasicParsing -TimeoutSec 300
-    $actualBytes = (Get-Item -LiteralPath $installer).Length
-    if ($actualBytes -ne $release.Bytes) { throw "安装器字节数校验失败：$actualBytes / $($release.Bytes)。" }
-    $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToUpperInvariant()
-    if ($actualHash -ne $release.Sha256) { throw '安装器 SHA-256 校验失败，已删除不可信文件。' }
-    $signature = Get-AuthenticodeSignature -LiteralPath $installer
-    if ($signature.Status -ne 'Valid') { throw "安装器签名校验失败：$($signature.Status)。未启动安装。" }
+    $installer = Ensure-UpdatePackage $release
     Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'ready-to-install'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
+    $downloadRoot = Split-Path -Parent $installer
     Start-Process -FilePath $installer -Verb RunAs -WorkingDirectory $downloadRoot | Out-Null
     Write-State @{ schemaVersion = 1; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); currentVersion = $current.ToString(3); available = 1; version = $release.VersionText; status = 'installer-launched'; downloadUrl = $release.DownloadUri.AbsoluteUri; sha256 = $release.Sha256; bytes = $release.Bytes; snoozeUntilUtc = ''; error = '' }
     return 0

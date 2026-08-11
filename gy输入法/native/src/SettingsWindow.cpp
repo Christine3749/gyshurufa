@@ -1221,11 +1221,13 @@ void SettingsWindow::Paint(HDC dc) {
         ? L"整备会核验当前安装，并清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
         : L"检测到激活版本不一致；可整备当前安装并安全清理旧版本残留。";
     if (update_check_in_progress_) {
-      default_repair_status = L"正在检查官方更新信息；此步骤不会下载或修改系统。";
+      default_repair_status = L"正在检查更新并准备可安装包；此步骤不会更改系统。";
     } else if (!update_check_status_.empty()) {
       default_repair_status = update_check_status_;
     }
-    if (update_available_) {
+    if (update_available_ && update_ready_to_install_) {
+      default_repair_status = L"已准备好 v" + update_version_ + L"，点击“立即安装”即可启动系统安装。";
+    } else if (update_available_) {
       default_repair_status = L"发现 v" + update_version_ + L"。安装前会校验官方版本、SHA-256 和签名，然后由 Windows 请求管理员确认。";
     }
     if (update_rollback_rect_.right > update_rollback_rect_.left) {
@@ -1254,7 +1256,8 @@ void SettingsWindow::Paint(HDC dc) {
     }
     if (update_install_rect_.right > update_install_rect_.left) {
       Rounded(dc, update_install_rect_, kBlue, kBlue, Scale(dpi_, 6));
-      Text(dc, update_install_in_progress_ ? L"处理中…" : L"安装更新", update_install_rect_,
+      const std::wstring install_label = update_ready_to_install_ ? L"立即安装" : L"下载并安装";
+      Text(dc, update_install_in_progress_ ? L"处理中…" : install_label, update_install_rect_,
            update_install_in_progress_ ? pal.muted : kOnAccent, DT_CENTER, tiny);
     }
   }
@@ -1316,6 +1319,7 @@ void SettingsWindow::Load() {
 
 void SettingsWindow::LoadUpdateState() {
   update_available_ = false;
+  update_ready_to_install_ = false;
   update_version_.clear();
   const std::wstring status = ReadUpdateStateValue(L"status");
   const std::wstring candidate = ReadUpdateStateValue(L"version");
@@ -1323,8 +1327,14 @@ void SettingsWindow::LoadUpdateState() {
   const std::wstring error = ReadUpdateStateValue(L"error");
   if (status == L"up-to-date") {
     update_check_status_ = update_checked_at_.empty() ? L"已是最新版本。" : L"已检查更新：当前已是最新版本。";
+  } else if (status == L"update-available") {
+    update_check_status_ = L"发现可更新版本（已触发缓存流程）。";
   } else if (status == L"check-failed") {
     update_check_status_ = error.empty() ? L"检查更新失败；当前输入法未受影响。" : L"检查更新失败：" + error;
+  } else if (status == L"ready-to-install") {
+    update_check_status_ = L"已准备好可立即安装的新版本。";
+    update_install_status_.clear();
+    update_install_failed_ = false;
   } else if (status == L"snoozed") {
     update_check_status_ = L"已暂缓此版本的提醒；可随时点击“检查”重新确认。";
   } else if (status == L"not-installed") {
@@ -1336,6 +1346,7 @@ void SettingsWindow::LoadUpdateState() {
       !candidate.empty() && candidate != release_version_) {
     update_available_ = true;
     update_version_ = candidate;
+    update_ready_to_install_ = status == L"ready-to-install";
   }
 }
 void SettingsWindow::Save() {
@@ -1508,13 +1519,15 @@ void SettingsWindow::BeginAutomaticUpdate() {
   execute.nShow = SW_HIDE;
   if (!ShellExecuteExW(&execute) || !execute.hProcess) {
     update_install_failed_ = true;
-    update_install_status_ = L"无法启动自动升级检查；未修改任何内容。";
+    update_install_status_ = L"无法启动安装流程；未修改任何内容。";
     InvalidateRect(hwnd_, nullptr, FALSE);
     return;
   }
   update_install_in_progress_ = true;
   update_install_failed_ = false;
-  update_install_status_ = L"正在下载并校验新版本；通过后会弹出 Windows 管理员确认。";
+  update_install_status_ = update_ready_to_install_
+      ? L"已触发安装；请确认 Windows UAC 并完成安装。"
+      : L"正在补齐安装包并准备启动；校验通过后会弹出 Windows 管理员确认。";
   Layout();
   InvalidateRect(hwnd_, nullptr, FALSE);
   const HWND target = hwnd_;
@@ -1655,7 +1668,9 @@ void SettingsWindow::FinishUpdateCheck(std::uint64_t window_instance_id, DWORD e
   update_check_in_progress_ = false;
   LoadUpdateState();
   if (exit_code == 0 && update_check_status_.empty()) {
-    update_check_status_ = update_available_ ? L"发现可验证的新版本。" : L"已完成更新检查。";
+    update_check_status_ = update_available_
+        ? (update_ready_to_install_ ? L"发现可验证的新版本，已准备好可直接安装。" : L"发现可验证的新版本。")
+        : L"已完成更新检查。";
   } else if (exit_code != 0 && update_check_status_.empty()) {
     update_check_status_ = L"检查更新失败；当前输入法未受影响。";
   }

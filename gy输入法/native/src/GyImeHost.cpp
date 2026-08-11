@@ -207,7 +207,7 @@ void RegisterGyInputProtocol(const std::wstring& powershell, const std::wstring&
 void MaybeShowUpdateNotification() {
   const std::wstring status = ReadUpdateStateValue(L"status");
   const std::wstring version = ReadUpdateStateValue(L"version");
-  if (status != L"update-available" || version.empty() || UpdateNotificationAlreadyShown(version)) return;
+  if ((status != L"update-available" && status != L"ready-to-install") || version.empty() || UpdateNotificationAlreadyShown(version)) return;
   if (ShowGyUpdateNotification(version)) MarkUpdateNotificationShown(version);
 }
 

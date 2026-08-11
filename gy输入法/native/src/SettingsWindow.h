@@ -142,6 +142,7 @@ private:
   bool update_check_in_progress_ = false;
   bool update_install_in_progress_ = false;
   bool update_install_failed_ = false;
+  bool update_ready_to_install_ = false;
   std::wstring update_version_;
   std::wstring update_install_status_;
   std::wstring update_check_status_;
