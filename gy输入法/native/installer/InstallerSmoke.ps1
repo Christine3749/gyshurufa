@@ -105,6 +105,9 @@ Assert-Contains $settingsSource 'Rollback-GYInput.ps1' 'Settings rollback action
 Assert-Contains $settingsSource 'InstalledRollbackVersion' 'Settings update page cannot display a rollback target.'
 Assert-Contains $settingsSource 'BeginAutomaticUpdate' 'Settings update page does not expose the automatic update trigger.'
 Assert-Contains $settingsSource 'kAutomaticUpdateComplete' 'Settings page cannot receive the automatic updater completion result.'
+Assert-Contains $settingsSource 'BeginUpdateCheck' 'Settings update page does not let the user force a safe update check.'
+Assert-Contains $settingsSource 'kAutomaticUpdateCheckComplete' 'Settings page cannot receive the update-check completion result.'
+Assert-Contains $settingsSource '-Action Check -Force' 'Settings page does not perform an explicit non-installing update check.'
 Assert-Contains $settingsSource 'update-state.ini' 'Settings page does not display the local automatic update state.'
 Assert-Contains $installer 'Test-ThisReleaseActive' 'ZIP installer does not verify that registry activation matches the staged release.'
 Assert-Contains $installer 'Write-GyStateAtomically' 'ZIP installer does not atomically persist activation state.'
@@ -230,6 +233,9 @@ $candidateWindow = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\Can
 $capturePolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\InputCapturePolicy.h') -Raw
 Assert-Contains $capturePolicy 'total_candidate_count' 'Candidate capture policy does not use the complete candidate pool.'
 $ime = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\GyIme.cpp') -Raw
+Assert-Contains $ime 'IsAutomationEnglishControlFocused' 'TSF does not classify browser/Electron input metadata when InputScope is absent.'
+Assert-Contains $ime 'input_scope_manual_override_' 'TSF cannot preserve an explicit per-field user mode choice.'
+Assert-Contains $ime 'UIA_HelpTextPropertyId' 'Browser/Electron fallback does not read safe accessibility metadata.'
 Assert-Contains $ime 'static_cast<unsigned>(candidates_.size())' 'TSF capture does not pass the complete candidate pool.'
 Assert-Contains $candidateWindow 'Do not clamp a normal four-character candidate back into an ellipsis.' 'Candidate renderer must preserve complete four-character words.'
 Assert-Contains $candidateWindow 'candidate_font, false' 'Candidate renderer must not ellipsize candidate text.'

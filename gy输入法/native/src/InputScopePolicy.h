@@ -1,6 +1,7 @@
 #pragma once
 
 #include <inputscope.h>
+#include <string_view>
 
 namespace gy::input_scope {
 
@@ -48,6 +49,40 @@ constexpr bool IsPasswordContext(InputScope scope) noexcept {
   return scope == IS_PASSWORD || scope == IS_NUMERIC_PASSWORD ||
          scope == IS_NUMERIC_PIN || scope == IS_ALPHANUMERIC_PIN ||
          scope == IS_ALPHANUMERIC_PIN_SET;
+}
+
+// Browsers and Electron controls do not always publish a TSF InputScope.  In
+// that case GY may use *accessibility metadata only* (label, automation ID or
+// help text) to recognise the small set of fields that require literal input.
+// It never reads a field's value, selection, clipboard or surrounding text.
+// Keep the list deliberately narrow: a generic search/chat editor must remain
+// Chinese-capable even when its window happens to contain English UI text.
+inline bool IsEnglishAutomationHint(std::wstring_view hint) noexcept {
+  auto contains_ascii = [hint](std::wstring_view token) {
+    if (token.empty() || token.size() > hint.size()) return false;
+    for (size_t start = 0; start + token.size() <= hint.size(); ++start) {
+      bool match = true;
+      for (size_t index = 0; index < token.size(); ++index) {
+        wchar_t value = hint[start + index];
+        if (value >= L'A' && value <= L'Z') value = static_cast<wchar_t>(value - L'A' + L'a');
+        if (value != token[index]) { match = false; break; }
+      }
+      if (match) return true;
+    }
+    return false;
+  };
+  for (const std::wstring_view token : {
+           L"email", L"e-mail", L"url", L"uri", L"website", L"password", L"passwd", L"pwd",
+           L"pin", L"otp", L"one-time", L"verification", L"security code", L"username", L"login",
+           L"account", L"telephone", L"phone"}) {
+    if (contains_ascii(token)) return true;
+  }
+  for (const std::wstring_view token : {
+           L"邮箱", L"邮件", L"网址", L"链接", L"密码", L"验证码", L"校验码", L"动态码",
+           L"一次性", L"手机", L"电话", L"用户名", L"登录名", L"账号"}) {
+    if (hint.find(token) != std::wstring_view::npos) return true;
+  }
+  return false;
 }
 
 }  // namespace gy::input_scope

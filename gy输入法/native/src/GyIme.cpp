@@ -215,6 +215,7 @@ public:
       CancelComposition();
       input_scope_known_ = false;
       input_scope_direct_ = false;
+      input_scope_manual_override_ = false;
     } else {
       RequestInputScopeRefresh();
       ResetEnglishOnFocusIn();
@@ -226,7 +227,7 @@ public:
     ReconcileModifierState();
     if (!eaten) return E_INVALIDARG;
     RefreshInputScopeForKey(context);
-    if (input_scope_direct_) { *eaten = FALSE; return S_OK; }
+    if (EffectiveInputScopeDirect()) { *eaten = FALSE; return S_OK; }
     if (gy::keys::ShouldMarkShiftUsed(shift_down_, key)) shift_used_ = true;
     SynchronizeInputMode(false);
     *eaten = IsShiftKey(key) ? gy::keys::ShouldCaptureShift(HasShortcutModifier()) : ShouldEat(key);
@@ -236,7 +237,7 @@ public:
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
     RefreshInputScopeForKey(context);
-    if (input_scope_direct_) { *eaten = FALSE; return S_OK; }
+    if (EffectiveInputScopeDirect()) { *eaten = FALSE; return S_OK; }
     // A focus switch can leave a cached Ctrl/Alt/Win state behind. Reconcile
     // before deciding whether a plain Shift release is the GY mode toggle.
     ReconcileModifierState();
@@ -247,7 +248,7 @@ public:
     if (!eaten) return E_INVALIDARG;
     *eaten = FALSE;
     RefreshInputScopeForKey(context);
-    if (input_scope_direct_) return S_OK;
+    if (EffectiveInputScopeDirect()) return S_OK;
     if (IsShiftKey(key)) { shift_down_ = true; shift_used_ = HasShortcutModifier(); return S_OK; }
     if (shift_down_) shift_used_ = true;
     UpdateModifierState(key, true);
@@ -353,7 +354,7 @@ public:
   HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
     *eaten = FALSE;
-    if (input_scope_direct_) return S_OK;
+    if (EffectiveInputScopeDirect()) return S_OK;
     // Use real keyboard state so a return from another app cannot suppress a
     // bare-Shift Chinese/English toggle.
     ReconcileModifierState();
@@ -508,6 +509,10 @@ private:
     selected_ = page_start_;
   }
   void ToggleEnglishMode() {
+    // A user may explicitly choose Chinese even in a recognised account or
+    // password field. That decision lasts for this focus only; moving away
+    // restores the normal automatic policy and never changes the saved mode.
+    if (input_scope_direct_) input_scope_manual_override_ = true;
     const int next_mode = gy::input_mode::IsEnglish(input_mode_) ? chinese_mode_ : gy::input_mode::kEnglish;
     const bool next_english = gy::input_mode::IsEnglish(next_mode);
     if (gy::keys::ShouldCommitRawBeforeModeSwitch(
@@ -544,7 +549,7 @@ private:
     if (announce) engine_.ShowMode(last_caret_, input_mode_);
   }
   void SynchronizeInputMode(bool announce) {
-    if (input_scope_direct_) {
+    if (EffectiveInputScopeDirect()) {
       ApplyInputMode(gy::input_mode::kEnglish, false);
       return;
     }
@@ -561,11 +566,10 @@ private:
     if (!edit_control) return false;
     return (GetWindowLongPtrW(focused, GWL_STYLE) & ES_PASSWORD) != 0;
   }
-  static bool IsAutomationPasswordControlFocused() {
-    // Chromium/Electron password inputs are often not Win32 EDIT controls.
-    // UI Automation exposes the semantic password flag without exposing the
-    // field value. This is a narrow fallback used only when the TSF scope is
-    // unavailable; it is never used for text extraction or logging.
+  static bool IsAutomationEnglishControlFocused() {
+    // Chromium/Electron controls commonly omit TSF InputScope. UI Automation
+    // provides semantic metadata without exposing the field value. This is a
+    // narrow, no-content fallback used only when TSF scope is unavailable.
     IUIAutomation* automation = nullptr;
     if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&automation)))) {
@@ -573,19 +577,30 @@ private:
     }
     IUIAutomationElement* element = nullptr;
     const HRESULT focus_hr = automation->GetFocusedElement(&element);
-    bool password = false;
+    bool direct = false;
     if (SUCCEEDED(focus_hr) && element) {
       VARIANT value;
       VariantInit(&value);
       if (SUCCEEDED(element->GetCurrentPropertyValue(UIA_IsPasswordPropertyId, &value)) &&
           value.vt == VT_BOOL && value.boolVal == VARIANT_TRUE) {
-        password = true;
+        direct = true;
       }
       VariantClear(&value);
+      for (const PROPERTYID property : {UIA_NamePropertyId, UIA_AutomationIdPropertyId,
+                                        UIA_HelpTextPropertyId}) {
+        VariantInit(&value);
+        if (SUCCEEDED(element->GetCurrentPropertyValue(property, &value)) &&
+            value.vt == VT_BSTR && value.bstrVal &&
+            gy::input_scope::IsEnglishAutomationHint(value.bstrVal)) {
+          direct = true;
+        }
+        VariantClear(&value);
+        if (direct) break;
+      }
       element->Release();
     }
     automation->Release();
-    return password;
+    return direct;
   }
 
   struct InputScopeResult {
@@ -645,7 +660,7 @@ private:
     if (!changed) return;
     Trace(L"input-scope.direct", S_OK, direct ? 1 : 0);
     Trace(L"input-scope.known", S_OK, known ? 1 : 0);
-    if (direct) {
+    if (EffectiveInputScopeDirect()) {
       if (!composition_text_.empty()) CancelComposition();
       ApplyInputMode(gy::input_mode::kEnglish, false);
       engine_.HideCandidates();
@@ -657,15 +672,18 @@ private:
     if (!context || context != context_) return;
     const HWND focused = GetFocus();
     const bool focus_changed = input_scope_hwnd_ != focused;
-    if (focus_changed) input_scope_probe_count_ = 0;
+    if (focus_changed) {
+      input_scope_probe_count_ = 0;
+      input_scope_manual_override_ = false;
+    }
 
     const InputScopeResult scope = ReadInputScope(context, cookie);
-    const bool password_fallback = IsNativePasswordControlFocused() ||
-                                   (!scope.available && IsAutomationPasswordControlFocused());
+    const bool direct_fallback = IsNativePasswordControlFocused() ||
+                                 (!scope.available && IsAutomationEnglishControlFocused());
     input_scope_hwnd_ = focused;
-    if (scope.available || password_fallback) {
+    if (scope.available || direct_fallback) {
       input_scope_probe_count_ = 0;
-      ApplyInputScope(scope.english || password_fallback, true);
+      ApplyInputScope(scope.english || direct_fallback, true);
       return;
     }
 
@@ -756,6 +774,7 @@ private:
     UnadviseContextEditSink();
     input_scope_known_ = false;
     input_scope_direct_ = false;
+    input_scope_manual_override_ = false;
     input_scope_hwnd_ = nullptr;
     input_scope_probe_count_ = 0;
     last_commit_was_ascii_ = false;
@@ -1045,7 +1064,10 @@ private:
     engine_.ShowCandidates(caret, candidates_, selected_, page_start_, input_mode_, expanded_candidates_, selection_callback_.Endpoint());
   }
   bool Select(unsigned index) { if (index >= candidates_.size()) return false; return SUCCEEDED(RequestEdit({EditActionKind::CommitCandidate, 0, index})); }
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  bool EffectiveInputScopeDirect() const noexcept {
+    return input_scope_direct_ && !input_scope_manual_override_;
+  }
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool expanded_candidates_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; bool input_scope_manual_override_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; unsigned long long mode_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 

@@ -31,6 +31,7 @@ constexpr wchar_t kClassName[] = L"GyImeSettingsWindow";
 constexpr UINT kAccountRequestComplete = WM_APP + 0x2A1;
 constexpr UINT kUpdateMaintenanceComplete = WM_APP + 0x2A2;
 constexpr UINT kAutomaticUpdateComplete = WM_APP + 0x2A3;
+constexpr UINT kAutomaticUpdateCheckComplete = WM_APP + 0x2A4;
 constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 constexpr UINT_PTR kUpdateStatusTimer = 0x475A;
 constexpr UINT_PTR kAccountEditSubclassId = 0x475B;
@@ -204,9 +205,10 @@ int ClipboardCardHeight(UINT dpi, int lines) {
          Scale(dpi, 8) + Scale(dpi, 15) + Scale(dpi, 7);
 }
 
-void PostAutomaticUpdateCompletion(HWND hwnd, std::uint64_t window_instance_id, DWORD exit_code) {
+void PostAutomaticUpdateCompletion(HWND hwnd, std::uint64_t window_instance_id, DWORD exit_code, bool install) {
   auto* completion = new AutomaticUpdateCompletion{window_instance_id, exit_code};
-  if (!PostMessageW(hwnd, kAutomaticUpdateComplete, 0, reinterpret_cast<LPARAM>(completion))) {
+  const UINT message = install ? kAutomaticUpdateComplete : kAutomaticUpdateCheckComplete;
+  if (!PostMessageW(hwnd, message, 0, reinterpret_cast<LPARAM>(completion))) {
     delete completion;
   }
 }
@@ -723,7 +725,7 @@ void SettingsWindow::Layout() {
   phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {}; clip_skip_card_ = {}; clip_skip_action_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
-  version_card_ = {}; update_card_ = {}; update_install_rect_ = {}; update_repair_rect_ = {}; update_rollback_rect_ = {}; update_status_rect_ = {};
+  version_card_ = {}; update_card_ = {}; update_check_rect_ = {}; update_install_rect_ = {}; update_repair_rect_ = {}; update_rollback_rect_ = {}; update_status_rect_ = {};
 
   const int base_y = Scale(dpi_, 150);
   int done_y = base_y;
@@ -808,9 +810,13 @@ void SettingsWindow::Layout() {
   } else if (page_ == Page::Updates) {
     version_card_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 106)};
     update_card_ = {content_left, version_card_.bottom + Scale(dpi_, 14), content_left + card_width, version_card_.bottom + Scale(dpi_, 314)};
+    if (!update_check_in_progress_ && !update_install_in_progress_) {
+      update_check_rect_ = {update_card_.right - Scale(dpi_, 218), update_card_.top + Scale(dpi_, 8),
+                            update_card_.right - Scale(dpi_, 166), update_card_.top + Scale(dpi_, 36)};
+    }
     if (update_available_ && !update_install_in_progress_) {
-      update_install_rect_ = {update_card_.right - Scale(dpi_, 154), update_card_.top + Scale(dpi_, 8),
-                              update_card_.right - Scale(dpi_, 72), update_card_.top + Scale(dpi_, 36)};
+      update_install_rect_ = {update_card_.right - Scale(dpi_, 158), update_card_.top + Scale(dpi_, 8),
+                              update_card_.right - Scale(dpi_, 76), update_card_.top + Scale(dpi_, 36)};
     }
     // “整备”与“回退”是轻量恢复动作，不与底部的“完成”争夺主操作。
     update_repair_rect_ = {update_card_.right - Scale(dpi_, 64), update_card_.top + Scale(dpi_, 8),
@@ -1195,9 +1201,11 @@ void SettingsWindow::Paint(HDC dc) {
         : L"注册表 Host v" + registered_version_ + L" · TSF / DLL v" + registered_core_version_;
     Text(dc, tsf_detail, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 80), version_card_.right - Scale(dpi_, 16), version_card_.bottom - Scale(dpi_, 8)}, versions_consistent_ ? pal.muted : RGB(210, 80, 80), DT_LEFT, tiny);
     Rounded(dc, update_card_, pal.surface, pal.border, Scale(dpi_, 9));
-    const int update_actions_left = update_rollback_rect_.right > update_rollback_rect_.left
-        ? update_rollback_rect_.left
-        : (update_install_rect_.right > update_install_rect_.left ? update_install_rect_.left : update_repair_rect_.left);
+    const int update_actions_left = update_check_rect_.right > update_check_rect_.left
+        ? update_check_rect_.left
+        : (update_rollback_rect_.right > update_rollback_rect_.left
+           ? update_rollback_rect_.left
+           : (update_install_rect_.right > update_install_rect_.left ? update_install_rect_.left : update_repair_rect_.left));
     Text(dc, L"本次更新", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 12), update_actions_left - Scale(dpi_, 12), update_card_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
     if (release_notes_.empty()) {
       Text(dc, L"此版本没有附带更新说明。", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 52), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 78)}, pal.muted, DT_LEFT, tiny);
@@ -1212,6 +1220,11 @@ void SettingsWindow::Paint(HDC dc) {
     std::wstring default_repair_status = versions_consistent_
         ? L"整备会核验当前安装，并清理旧版本与失效安装临时文件；不会影响输入设置、剪贴板或登录信息。"
         : L"检测到激活版本不一致；可整备当前安装并安全清理旧版本残留。";
+    if (update_check_in_progress_) {
+      default_repair_status = L"正在检查官方更新信息；此步骤不会下载或修改系统。";
+    } else if (!update_check_status_.empty()) {
+      default_repair_status = update_check_status_;
+    }
     if (update_available_) {
       default_repair_status = L"发现 v" + update_version_ + L"。安装前会校验官方版本、SHA-256 和签名，然后由 Windows 请求管理员确认。";
     }
@@ -1236,6 +1249,9 @@ void SettingsWindow::Paint(HDC dc) {
     }
     Text(dc, update_repair_in_progress_ ? L"处理中…" : L"整备", update_repair_rect_,
          update_repair_in_progress_ ? pal.muted : kBlue, DT_RIGHT, medium);
+    if (update_check_rect_.right > update_check_rect_.left) {
+      Text(dc, L"检查", update_check_rect_, kBlue, DT_CENTER, tiny);
+    }
     if (update_install_rect_.right > update_install_rect_.left) {
       Rounded(dc, update_install_rect_, kBlue, kBlue, Scale(dpi_, 6));
       Text(dc, update_install_in_progress_ ? L"处理中…" : L"安装更新", update_install_rect_,
@@ -1303,6 +1319,19 @@ void SettingsWindow::LoadUpdateState() {
   update_version_.clear();
   const std::wstring status = ReadUpdateStateValue(L"status");
   const std::wstring candidate = ReadUpdateStateValue(L"version");
+  update_checked_at_ = ReadUpdateStateValue(L"checkedAtUtc");
+  const std::wstring error = ReadUpdateStateValue(L"error");
+  if (status == L"up-to-date") {
+    update_check_status_ = update_checked_at_.empty() ? L"已是最新版本。" : L"已检查更新：当前已是最新版本。";
+  } else if (status == L"check-failed") {
+    update_check_status_ = error.empty() ? L"检查更新失败；当前输入法未受影响。" : L"检查更新失败：" + error;
+  } else if (status == L"snoozed") {
+    update_check_status_ = L"已暂缓此版本的提醒；可随时点击“检查”重新确认。";
+  } else if (status == L"not-installed") {
+    update_check_status_ = L"未识别到当前安装状态；不会下载或修改系统。";
+  } else {
+    update_check_status_.clear();
+  }
   if ((status == L"update-available" || status == L"ready-to-install") &&
       !candidate.empty() && candidate != release_version_) {
     update_available_ = true;
@@ -1386,6 +1415,59 @@ void SettingsWindow::BeginUpdateRollback() {
   BeginUpdateMaintenance(true);
 }
 
+void SettingsWindow::BeginUpdateCheck() {
+  if (!hwnd_ || update_check_in_progress_ || update_install_in_progress_ || update_repair_in_progress_) return;
+  const std::wstring script = InstalledMaintenanceScriptPath(L"AutoUpdate-GYInput.ps1");
+  if (script.empty() || GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    update_check_status_ = L"当前安装缺少自动升级组件；请先安装包含该组件的新版本。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  wchar_t windows_directory[MAX_PATH]{};
+  const UINT windows_length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
+  if (windows_length == 0 || windows_length >= std::size(windows_directory)) {
+    update_check_status_ = L"无法定位 Windows PowerShell；未启动检查。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  const std::wstring powershell_path = std::wstring(windows_directory, windows_length) +
+      L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const std::wstring parameters = L"-NoProfile -ExecutionPolicy Bypass -File \"" + script + L"\" -Action Check -Force";
+  SHELLEXECUTEINFOW execute{};
+  execute.cbSize = sizeof(execute);
+  execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+  execute.hwnd = hwnd_;
+  execute.lpVerb = L"open";
+  execute.lpFile = powershell_path.c_str();
+  execute.lpParameters = parameters.c_str();
+  execute.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&execute) || !execute.hProcess) {
+    update_check_status_ = L"无法启动更新检查；未修改任何内容。";
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  update_check_in_progress_ = true;
+  update_check_status_.clear();
+  Layout();
+  const HWND target = hwnd_;
+  const std::uint64_t instance = window_instance_id_;
+  const HANDLE process = execute.hProcess;
+  try {
+    std::thread([target, instance, process]() {
+      WaitForSingleObject(process, INFINITE);
+      DWORD exit_code = ERROR_GEN_FAILURE;
+      GetExitCodeProcess(process, &exit_code);
+      CloseHandle(process);
+      PostAutomaticUpdateCompletion(target, instance, exit_code, false);
+    }).detach();
+  } catch (...) {
+    CloseHandle(process);
+    update_check_in_progress_ = false;
+    update_check_status_ = L"无法监控更新检查；未修改任何内容。";
+    Layout();
+  }
+}
+
 void SettingsWindow::BeginAutomaticUpdate() {
   if (!hwnd_ || update_install_in_progress_ || update_repair_in_progress_ || !update_available_) return;
   if (update_version_.empty() || std::any_of(update_version_.begin(), update_version_.end(), [](wchar_t c) {
@@ -1444,7 +1526,7 @@ void SettingsWindow::BeginAutomaticUpdate() {
       DWORD exit_code = ERROR_GEN_FAILURE;
       GetExitCodeProcess(process, &exit_code);
       CloseHandle(process);
-      PostAutomaticUpdateCompletion(target, instance, exit_code);
+      PostAutomaticUpdateCompletion(target, instance, exit_code, true);
     }).detach();
   } catch (...) {
     CloseHandle(process);
@@ -1566,6 +1648,18 @@ void SettingsWindow::FinishAutomaticUpdate(std::uint64_t window_instance_id, DWO
   }
   Layout();
   InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void SettingsWindow::FinishUpdateCheck(std::uint64_t window_instance_id, DWORD exit_code) {
+  if (window_instance_id != window_instance_id_) return;
+  update_check_in_progress_ = false;
+  LoadUpdateState();
+  if (exit_code == 0 && update_check_status_.empty()) {
+    update_check_status_ = update_available_ ? L"发现可验证的新版本。" : L"已完成更新检查。";
+  } else if (exit_code != 0 && update_check_status_.empty()) {
+    update_check_status_ = L"检查更新失败；当前输入法未受影响。";
+  }
+  Layout();
 }
 
 void SettingsWindow::BeginAccountLogin() {
@@ -1742,7 +1836,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_) {
-        hand = hand || self->Hit(self->update_install_rect_, point) || self->Hit(self->update_repair_rect_, point) || self->Hit(self->update_rollback_rect_, point);
+        hand = hand || self->Hit(self->update_check_rect_, point) || self->Hit(self->update_install_rect_, point) || self->Hit(self->update_repair_rect_, point) || self->Hit(self->update_rollback_rect_, point);
       }
       SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW)); return 0;
     }
@@ -1755,7 +1849,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
-      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_install_rect_, point) || self->Hit(self->update_repair_rect_, point);
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_check_rect_, point) || self->Hit(self->update_install_rect_, point) || self->Hit(self->update_repair_rect_, point);
       if (hand) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; } break;
     }
     case WM_LBUTTONUP: {
@@ -1772,6 +1866,7 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       if (self->page_ == Page::General && self->Hit(self->clip_instant_switch_, point)) { self->clip_instant_ = !self->clip_instant_; gy::keep_sync::SetInstantPasteEnabled(self->clip_instant_); self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::General && self->Hit(self->clip_skip_action_, point)) { self->SkipPendingClipboardUploads(); return 0; }
       if (self->page_ == Page::Clipboard && self->Hit(self->clip_history_clear_, point)) { self->ClearHistory(); return 0; }
+      if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && !self->update_install_in_progress_ && self->Hit(self->update_check_rect_, point)) { self->BeginUpdateCheck(); return 0; }
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && !self->update_install_in_progress_ && self->Hit(self->update_install_rect_, point)) { self->BeginAutomaticUpdate(); return 0; }
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_rollback_rect_, point)) { self->BeginUpdateRollback(); return 0; }
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_ && self->Hit(self->update_repair_rect_, point)) { self->BeginUpdateRepair(); return 0; }
@@ -1805,6 +1900,13 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       auto* completion = reinterpret_cast<AutomaticUpdateCompletion*>(lparam);
       if (!completion) return 0;
       self->FinishAutomaticUpdate(completion->window_instance_id, completion->exit_code);
+      delete completion;
+      return 0;
+    }
+    case kAutomaticUpdateCheckComplete: {
+      auto* completion = reinterpret_cast<AutomaticUpdateCompletion*>(lparam);
+      if (!completion) return 0;
+      self->FinishUpdateCheck(completion->window_instance_id, completion->exit_code);
       delete completion;
       return 0;
     }

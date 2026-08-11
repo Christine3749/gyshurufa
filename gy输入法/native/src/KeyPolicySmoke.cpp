@@ -107,5 +107,14 @@ int wmain() {
       gy::input_scope::IsDirectInput(IS_CHAT) ||
       gy::input_scope::IsDirectInput(IS_SEARCH)) return 16;
 
+  // Browser/Electron fallback: only accessibility labels are classified. The
+  // actual text typed into a control is never inspected by this policy.
+  if (!gy::input_scope::IsEnglishAutomationHint(L"Email address") ||
+      !gy::input_scope::IsEnglishAutomationHint(L"请输入密码") ||
+      !gy::input_scope::IsEnglishAutomationHint(L"One-time verification code") ||
+      !gy::input_scope::IsEnglishAutomationHint(L"账号") ||
+      gy::input_scope::IsEnglishAutomationHint(L"搜索全部笔记") ||
+      gy::input_scope::IsEnglishAutomationHint(L"聊天消息")) return 20;
+
   return 0;
 }
