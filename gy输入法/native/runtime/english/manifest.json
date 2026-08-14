@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "gy-ime-english-mixed",
+  "format": "gy-ime-english-v1",
+  "version": "2026.08.13.1",
+  "sha256": "D6B44B2320C8E20019F256F441DA9A855D276078CFAECB28177E3435C66AA86A",
+  "bytes": 175017,
+  "entryCount": 20000,
+  "downloadUrl": "/api/ciku/ime/lexicon/2026.08.13.1"
+}

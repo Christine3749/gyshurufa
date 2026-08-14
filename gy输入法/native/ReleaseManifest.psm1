@@ -64,7 +64,112 @@ function Assert-GYReleaseVersion {
   param($Manifest, [string]$RequestedVersion)
   $version = [string]$Manifest.windows.version
   if ($RequestedVersion -and $RequestedVersion -ne $version) { throw "Requested Windows version $RequestedVersion does not match canonical Windows version $version." }
+  if ($version -in @('0.10.96', '0.10.97')) { throw "Withdrawn GY version $version can never be packaged, signed, or published." }
   return $version
 }
 
-Export-ModuleMember -Function Get-GYReleaseManifestPath, Get-GYReleaseManifest, Assert-GYReleaseVersion
+function Get-GYReleaseApprovalPath {
+  param(
+    [Parameter(Mandatory)][string]$Version,
+    [string]$ManifestPath = (Get-GYReleaseManifestPath)
+  )
+  $releaseRoot = Split-Path -Parent $ManifestPath
+  return Join-Path (Join-Path $releaseRoot 'approvals') "$Version.json"
+}
+
+function Assert-GYReleaseApproval {
+  param(
+    [Parameter(Mandatory)]$Manifest,
+    [Parameter(Mandatory)][string]$Version,
+    [string]$ApprovalPath = (Get-GYReleaseApprovalPath -Version $Version)
+  )
+
+  if (-not (Test-Path -LiteralPath $ApprovalPath -PathType Leaf)) {
+    throw "Release approval is missing: $ApprovalPath. A draft may be built and tested, but packaging, signing, finalization, and publishing require an explicit recorded approval."
+  }
+  try {
+    $approval = Get-Content -LiteralPath $ApprovalPath -Raw | ConvertFrom-Json
+  } catch {
+    throw "Release approval cannot be parsed: $ApprovalPath. $($_.Exception.Message)"
+  }
+  foreach ($property in 'schemaVersion', 'releaseId', 'version', 'channel', 'state', 'approvedBy', 'approvedAtUtc', 'gates') {
+    if (-not $approval.PSObject.Properties.Name.Contains($property)) { throw "Release approval field is missing: $property" }
+  }
+  if ([int]$approval.schemaVersion -ne 1) { throw "Unsupported release approval schema: $($approval.schemaVersion). Expected 1." }
+  if ([string]$approval.releaseId -ne [string]$Manifest.releaseId) { throw 'Release approval does not match the canonical releaseId.' }
+  if ([string]$approval.version -ne $Version) { throw 'Release approval version does not match the canonical Windows version.' }
+  if ([string]$approval.channel -ne [string]$Manifest.channel) { throw 'Release approval channel does not match the canonical release channel.' }
+  if ([string]$approval.state -ne 'approved') { throw 'Release approval state must be approved.' }
+  if ([string]::IsNullOrWhiteSpace([string]$approval.approvedBy)) { throw 'Release approval must record who approved it.' }
+  [DateTime]$approvedAt = [DateTime]::MinValue
+  if (-not [DateTime]::TryParse([string]$approval.approvedAtUtc, [Globalization.CultureInfo]::InvariantCulture,
+                                 [Globalization.DateTimeStyles]::RoundtripKind, [ref]$approvedAt)) {
+    throw 'Release approval must record an ISO-8601 approval time.'
+  }
+  foreach ($gate in 'sourceAudit', 'rollback', 'realApplications', 'privacyBoundary') {
+    if (-not $approval.gates.PSObject.Properties.Name.Contains($gate) -or [string]$approval.gates.$gate -ne 'passed') {
+      throw "Release approval gate '$gate' is not recorded as passed."
+    }
+  }
+  return $approval
+}
+
+function Assert-GYCandidateDistributionApproval {
+  param(
+    [Parameter(Mandatory)]$Manifest,
+    [Parameter(Mandatory)][string]$Version,
+    [string]$ApprovalPath = (Get-GYReleaseApprovalPath -Version $Version)
+  )
+
+  if ([string]$Manifest.channel -ne 'candidate' -or [string]$Manifest.windows.state -ne 'candidate') {
+    throw 'Target-test distribution approval is valid only for a finalized Windows candidate.'
+  }
+  if (-not (Test-Path -LiteralPath $ApprovalPath -PathType Leaf)) {
+    throw "Candidate distribution approval is missing: $ApprovalPath."
+  }
+  try {
+    $approval = Get-Content -LiteralPath $ApprovalPath -Raw | ConvertFrom-Json
+  } catch {
+    throw "Candidate distribution approval cannot be parsed: $ApprovalPath. $($_.Exception.Message)"
+  }
+  foreach ($property in 'schemaVersion', 'releaseId', 'version', 'channel', 'state', 'approvalKind',
+                        'approvedBy', 'approvedAtUtc', 'audience', 'gates') {
+    if (-not $approval.PSObject.Properties.Name.Contains($property)) {
+      throw "Candidate distribution approval field is missing: $property"
+    }
+  }
+  if ([int]$approval.schemaVersion -ne 1 -or [string]$approval.approvalKind -ne 'target-test-distribution') {
+    throw 'Candidate distribution approval must be schema 1 and target-test-distribution.'
+  }
+  if ([string]$approval.releaseId -ne [string]$Manifest.releaseId -or
+      [string]$approval.version -ne $Version -or
+      [string]$approval.channel -ne 'candidate' -or
+      [string]$approval.state -ne 'approved') {
+    throw 'Candidate distribution approval identity does not match the canonical candidate.'
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$approval.approvedBy) -or
+      [string]::IsNullOrWhiteSpace([string]$approval.audience)) {
+    throw 'Candidate distribution approval must name the approver and target audience.'
+  }
+  [DateTime]$approvedAt = [DateTime]::MinValue
+  if (-not [DateTime]::TryParse([string]$approval.approvedAtUtc, [Globalization.CultureInfo]::InvariantCulture,
+                                 [Globalization.DateTimeStyles]::RoundtripKind, [ref]$approvedAt)) {
+    throw 'Candidate distribution approval must record an ISO-8601 approval time.'
+  }
+  foreach ($gate in 'sourceAudit', 'packageVerification', 'privacyBoundary') {
+    if (-not $approval.gates.PSObject.Properties.Name.Contains($gate) -or [string]$approval.gates.$gate -ne 'passed') {
+      throw "Candidate distribution approval gate '$gate' is not recorded as passed."
+    }
+  }
+  if (-not $approval.gates.PSObject.Properties.Name.Contains('targetAcceptance') -or
+      [string]$approval.gates.targetAcceptance -notin @('pending-on-target', 'passed')) {
+    throw 'Candidate distribution approval must explicitly record targetAcceptance as pending-on-target or passed.'
+  }
+  if (-not $approval.PSObject.Properties.Name.Contains('unsignedCandidateAcknowledged') -or
+      $approval.unsignedCandidateAcknowledged -ne $true) {
+    throw 'Candidate distribution approval must acknowledge the unsigned Windows candidate.'
+  }
+  return $approval
+}
+
+Export-ModuleMember -Function Get-GYReleaseManifestPath, Get-GYReleaseManifest, Assert-GYReleaseVersion, Get-GYReleaseApprovalPath, Assert-GYReleaseApproval, Assert-GYCandidateDistributionApproval

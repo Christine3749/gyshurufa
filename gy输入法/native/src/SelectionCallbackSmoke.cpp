@@ -19,8 +19,10 @@ bool SendSelection(const std::wstring& endpoint, unsigned index) {
   const bool ok = gy::host::WriteMessage(pipe, gy::host::MessageType::SelectCandidate,
                                          std::to_wstring(index)) &&
                   gy::host::ReadMessage(pipe, &response_type, &response);
+  const bool acknowledged = ok && response_type == gy::host::MessageType::SelectCandidate && response == L"ok" &&
+      gy::host::WriteMessage(pipe, gy::host::MessageType::AcknowledgeCandidateSelection, L"received");
   CloseHandle(pipe);
-  return ok && response_type == gy::host::MessageType::SelectCandidate && response == L"ok";
+  return acknowledged;
 }
 }
 

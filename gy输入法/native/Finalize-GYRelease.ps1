@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
   [string]$Version,
-  [string]$ReleaseRoot = ''
+  [string]$ReleaseRoot = '',
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,8 @@ Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $manifest = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
+if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+else { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version }
 
 $packageRoot = Join-Path $ReleaseRoot "GYInput-$Version"
 $packageManifest = Join-Path $packageRoot 'release.json'
@@ -42,5 +45,5 @@ Compress-Archive -LiteralPath $packageRoot -DestinationPath $zip -CompressionLev
 $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
 Set-Content -LiteralPath "$setup.sha256" -Value "$setupHash  $(Split-Path -Leaf $setup)" -NoNewline -Encoding ascii
 
-& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot
+& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -ApprovalPath $ApprovalPath
 Write-Host "Release metadata finalized for $Version. It is not published until Publish-GYRelease.ps1 completes." -ForegroundColor Green

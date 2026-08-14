@@ -1,4 +1,4 @@
-const DEFAULT_MANIFEST_KEY = "candidates/windows/0.10.90/release.json";
+const DEFAULT_MANIFEST_KEY = "candidates/windows/0.10.91/release.json";
 const VERSION = /^\d+\.\d+\.\d+$/;
 const SHA256 = /^[A-Fa-f0-9]{64}$/;
 const CONTENT_TYPE = "application/vnd.microsoft.portable-executable";

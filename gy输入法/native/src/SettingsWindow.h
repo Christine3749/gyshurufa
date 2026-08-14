@@ -69,6 +69,9 @@ private:
   UINT dpi_ = 96;
   int theme_ = 0;
   int size_index_ = 1;
+  int candidate_scale_preference_ = 0;
+  int resolved_candidate_scale_percent_ = 100;
+  HMONITOR display_monitor_ = nullptr;
   Page page_ = Page::General;
   RECT input_mode_rects_[3]{};
   RECT nav_rects_[6]{};
@@ -76,18 +79,21 @@ private:
   // Performance\WarmStart: keep-alive between DLL and Host. Default on; the
   // 输入 page card toggles it and annotates the low-spec recommendation.
   bool warm_start_ = true;
+  bool mixed_input_ = false;
   RECT account_email_rect_{};
   RECT account_password_rect_{};
   RECT account_action_rect_{};
   RECT account_logout_rect_{};
   RECT theme_rects_[3]{};
   RECT size_rects_[3]{};
+  RECT compact_scale_rect_{};
   RECT phrases_rect_{};
   RECT clear_rect_{};
   RECT export_rect_{};
   RECT import_rect_{};
   RECT ai_preview_rect_{};
   RECT warm_rect_{};
+  RECT mixed_input_rect_{};
   RECT done_rect_{};
   RECT close_rect_{};
 

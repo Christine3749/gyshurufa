@@ -80,6 +80,24 @@ function Test-VerifiedGyState([object]$State) {
          (Test-Path -LiteralPath $health -PathType Leaf)
 }
 
+function Test-RollbackTargetState([object]$State) {
+  if (Test-VerifiedGyState $State) { return $true }
+  # Builds released before the snapshot-contract repair labelled this same
+  # installer-captured record differently and omitted registryVerified.  It is
+  # still safe to recover only when every managed file and version check below
+  # succeeds; the target is health-checked before registration is changed.
+  $dll = Get-StateString $State 'dll'
+  $hostPath = Get-StateString $State 'host'
+  $health = Get-StateString $State 'health'
+  $version = Get-StateString $State 'version'
+  return (Get-StateString $State 'activationState') -eq 'captured-active-registry' -and
+         $version -match '^\d+\.\d+\.\d+$' -and
+         (Test-ManagedGyPath $dll) -and (Test-ManagedGyPath $hostPath) -and (Test-ManagedGyPath $health) -and
+         (Test-Path -LiteralPath $dll -PathType Leaf) -and
+         (Test-Path -LiteralPath $hostPath -PathType Leaf) -and
+         (Test-Path -LiteralPath $health -PathType Leaf)
+}
+
 function Assert-RegisteredGyState([string]$Dll, [string]$HostPath, [string]$Version) {
   $registeredDll = Read-RegisteredString 'Software\Classes\CLSID\{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}\InprocServer32' ''
   $registeredHost = Read-RegisteredString 'Software\GYInput' 'HostPath'
@@ -105,6 +123,12 @@ function Restart-ActiveGyHost([string]$HostPath) {
 }
 
 function Invoke-PostRecoveryCleanup([string]$ActiveVersion, [string]$RetainedVersion) {
+  # Cleanup only removes superseded, non-active version directories. It must
+  # never keep a completed rollback process open: a mapped DLL or an inherited
+  # file handle may delay that housekeeping indefinitely on some applications.
+  # Return false on timeout so the durable recovery report says that cleanup
+  # can be retried later, while the verified input method remains usable now.
+  $cleanupTimeoutMilliseconds = 8000
   if (-not (Test-Path -LiteralPath $prunePath -PathType Leaf)) { return $false }
   $keep = $ActiveVersion
   if ($RetainedVersion -match '^\d+\.\d+\.\d+$' -and $RetainedVersion -ne $ActiveVersion) {
@@ -113,7 +137,14 @@ function Invoke-PostRecoveryCleanup([string]$ActiveVersion, [string]$RetainedVer
   $result = Start-Process -FilePath $powershell -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $prunePath,
     '-InstallRoot', $installRoot, '-KeepVersions', $keep
-  ) -Wait -PassThru -WindowStyle Hidden
+  ) -PassThru -WindowStyle Hidden
+  if (-not $result.WaitForExit($cleanupTimeoutMilliseconds)) {
+    # This is the helper process we just created for non-critical pruning, not
+    # the Host or any user application. End it so a finished rollback cannot
+    # become an unbounded background operation.
+    try { Stop-Process -Id $result.Id -Force -ErrorAction Stop } catch {}
+    return $false
+  }
   return $result.ExitCode -eq 0
 }
 
@@ -156,7 +187,7 @@ try {
     }
 
     $previous = Get-Content -LiteralPath $previousPath -Raw | ConvertFrom-Json
-    if (-not (Test-VerifiedGyState $previous)) {
+    if (-not (Test-RollbackTargetState $previous)) {
       throw '回退快照不完整、文件缺失或不属于 GYInput 管理目录；未修改当前版本。'
     }
     $dll = Get-StateString $previous 'dll'

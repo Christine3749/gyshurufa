@@ -99,12 +99,23 @@ function Ensure-UpdatePackage {
 
 function Write-State([hashtable]$Values) {
   $path = Get-StatePath
-  $lines = foreach ($key in @('schemaVersion','checkedAtUtc','currentVersion','available','version','status','downloadUrl','sha256','bytes','snoozeUntilUtc','error')) {
+  $lexicon = Get-EnglishLexiconState
+  $lines = foreach ($key in @('schemaVersion','checkedAtUtc','currentVersion','available','version','status','downloadUrl','sha256','bytes','snoozeUntilUtc','lexiconStatus','lexiconVersion','lexiconSyncedAtUtc','lexiconError','error')) {
     if ($Values.ContainsKey($key)) {
       $value = [string]$Values[$key]
-      $value = $value.Replace("`r", ' ').Replace("`n", ' ')
-      "{0}={1}" -f $key, $value
+    } elseif ($key -eq 'lexiconStatus') {
+      $value = [string]$lexicon.Status
+    } elseif ($key -eq 'lexiconVersion') {
+      $value = [string]$lexicon.Version
+    } elseif ($key -eq 'lexiconSyncedAtUtc') {
+      $value = [string]$lexicon.SyncedAtUtc
+    } elseif ($key -eq 'lexiconError') {
+      $value = [string]$lexicon.Error
+    } else {
+      continue
     }
+    $value = $value.Replace("`r", ' ').Replace("`n", ' ')
+    "{0}={1}" -f $key, $value
   }
   $temporary = "$path.$([guid]::NewGuid().ToString('N')).tmp"
   Set-Content -LiteralPath $temporary -Value $lines -Encoding UTF8
@@ -117,6 +128,39 @@ function Get-StateValue([string]$Name) {
   $line = Get-Content -LiteralPath $path -ErrorAction SilentlyContinue | Where-Object { $_ -like "$Name=*" } | Select-Object -First 1
   if (-not $line) { return '' }
   return [string]$line.Substring($Name.Length + 1)
+}
+
+function Get-EnglishLexiconState {
+  $result = [ordered]@{ Status = 'not-installed'; Version = ''; SyncedAtUtc = ''; Error = '' }
+  $path = Join-Path $env:LOCALAPPDATA 'GYInput\lexicons\english-mixed\english-mixed-state.ini'
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]$result }
+  foreach ($line in Get-Content -LiteralPath $path -ErrorAction SilentlyContinue) {
+    $separator = $line.IndexOf('=')
+    if ($separator -le 0) { continue }
+    $key = $line.Substring(0, $separator)
+    $value = $line.Substring($separator + 1).Replace("`r", ' ').Replace("`n", ' ')
+    if ($key -eq 'status') { $result.Status = $value }
+    elseif ($key -eq 'activeVersion') { $result.Version = $value }
+    elseif ($key -eq 'syncedAtUtc') { $result.SyncedAtUtc = $value }
+    elseif ($key -eq 'error') { $result.Error = $value }
+  }
+  return [pscustomobject]$result
+}
+
+function Invoke-EnglishLexiconSync {
+  $script = Join-Path $PSScriptRoot 'Sync-GYEnglishLexicon.ps1'
+  if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return Get-EnglishLexiconState }
+  try {
+    $process = Start-Process -FilePath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+      '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script)
+    $state = Get-EnglishLexiconState
+    if ($process.ExitCode -ne 0 -and [string]::IsNullOrWhiteSpace($state.Error)) {
+      $state.Error = '英文词库同步未完成，继续使用上次本地词库。'
+    }
+    return $state
+  } catch {
+    return [pscustomobject]@{ Status = 'failed'; Version = ''; SyncedAtUtc = ''; Error = $_.Exception.Message }
+  }
 }
 
 function Get-VersionText($Value) {
@@ -183,6 +227,10 @@ function Invoke-Check {
       return 0
     }
     $release = Get-ReleaseInfo
+    # A successful update check is the only automatic refresh trigger. This is
+    # a separate, bounded child process; its failure never blocks an update nor
+    # affects the active offline candidate snapshot.
+    $null = Invoke-EnglishLexiconSync
     $available = $release.Version -gt $current
     if ($available) {
       $installer = Ensure-UpdatePackage $release

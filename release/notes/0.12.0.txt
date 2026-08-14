@@ -1,0 +1,24 @@
+0.12.0 — ThinkPad internal candidate
+
+This build is for Ethan's private ThinkPad acceptance only. It is unsigned,
+version-pinned, excluded from the stable download pointer, and must not be
+represented as a public release until the real-application checklist passes.
+
+Corrections under test:
+- EN requests carry an immutable input-mode and generation snapshot from the
+  TSF client to the Host; the Host routes by that request snapshot and echoes it.
+- Stale, mismatched, malformed, or legacy Host responses fail closed instead of
+  falling back to a different global mode.
+- Switching input mode writes both user stores and verifies readback; a failed
+  write does not leave the UI pretending that the switch succeeded.
+- Install and upgrade are stage-only. The new TSF DLL is activated only by a
+  boot task after Windows BootId proves a normal restart occurred.
+- First installation uses the same staged activation path as an upgrade.
+- Installer, keyboard maintenance, and one-click repair never terminate Office,
+  browsers, messaging applications, ctfmon, or other client processes.
+
+Acceptance focus:
+- Chrome/Edge, Office, WeChat, ChatGPT, Notepad, and password fields.
+- EN input must remain English when registry and settings defaults disagree.
+- Installation must request a restart, keep applications open, and expose the
+  keyboard entry only after the verified reboot activation.

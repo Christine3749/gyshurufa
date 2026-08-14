@@ -15,7 +15,12 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
   const [copiedHash, setCopiedHash] = useState(false);
   const { release, loading } = useReleaseStatus();
   const platform = useUserPlatform();
-  const windows = release?.platforms.windows;
+  const stableWindows = release?.platforms.windows;
+  const candidateWindows = release?.windowsCandidate;
+  // The latest public candidate is presented first without rewriting the
+  // separate stable latest pointer.
+  const windows = candidateWindows?.available ? candidateWindows : stableWindows;
+  const windowsIsCandidate = Boolean(candidateWindows?.available);
   const windowsReady = Boolean(windows?.available);
   const macos = release?.platforms.macos;
   const macosReady = Boolean(macos?.available);
@@ -40,7 +45,9 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
             {loading
               ? '正在读取官方发布状态。'
               : windows
-                ? `Windows ${windows.version} 已完成发布校验；macOS 仅在签名、公证与哈希都通过后开放下载。`
+                ? windowsIsCandidate
+                  ? `Windows ${windows.version} 公开公测中；稳定版 ${stableWindows?.version ?? '仍可用'} 保持独立，不会被候选版覆盖。`
+                  : `Windows ${windows.version} 已完成发布校验；macOS 仅在签名、公证与哈希都通过后开放下载。`
                 : '当前没有可验证的公开安装包；不会显示或提供未验证下载。'}
           </p>
         </div>
@@ -55,13 +62,13 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
                 {platform === 'windows' && (
                   <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">你的设备</span>
                 )}
-                <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 border border-blue-100">{windowsReady ? '现可下载' : loading ? '读取中' : '验证中'}</span>
+                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold border ${windowsIsCandidate ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-100'}`}>{windowsReady ? windowsIsCandidate ? '公测候选' : '现可下载' : loading ? '读取中' : '验证中'}</span>
               </div>
             </div>
             <div className="mt-7 space-y-2">
               <h3 className="text-2xl font-bold text-slate-900">GY输入法 for Windows</h3>
-              <p className="text-sm text-slate-500">Windows 10 / 11 · 64-bit · {windows ? `v${windows.version}` : '发布验证中'}</p>
-              <p className="text-sm text-slate-600 leading-relaxed">完整拼音输入、候选窗、简繁 EN 切换与本地学习，默认本地运行。</p>
+              <p className="text-sm text-slate-500">Windows 10 / 11 · 64-bit · {windows ? `v${windows.version}` : '发布验证中'}{windowsIsCandidate ? ' · 公测候选' : ''}</p>
+              <p className="text-sm text-slate-600 leading-relaxed">{windowsIsCandidate ? '测试中英混打、英文候选、纠错和候选窗新体验。稳定版仍可在下载弹窗中选择。' : '完整拼音输入、候选窗、简繁 EN 切换与本地学习，默认本地运行。'}</p>
             </div>
             <div className="mt-7 pt-6 border-t border-slate-100 grid grid-cols-3 gap-3 text-xs">
               <div><span className="block text-slate-400">安装包</span><span className="font-semibold text-slate-700">{formatReleaseBytes(windows?.bytes)}</span></div>
@@ -76,7 +83,7 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({
                 onClick={windowsReady ? onOpenDownloadModal : undefined}
                 className={`flex-1 inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition-all ${windowsReady ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg shadow-blue-600/20 active:scale-[.98]' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
               >
-                <Download className="w-4 h-4" /> {windowsReady ? '下载 Windows 版' : 'Windows 包验证中'}
+                <Download className="w-4 h-4" /> {windowsReady ? windowsIsCandidate ? '下载 Windows 内测版' : '下载 Windows 稳定版' : 'Windows 包验证中'}
               </button>
               <button
                 onClick={onOpenChangelogModal}

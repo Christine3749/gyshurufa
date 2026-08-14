@@ -26,8 +26,11 @@ function Update-CurrentUserKeyboardList {
   if (-not $chinese) { throw 'Simplified Chinese (China) is not installed. Add it in Windows Settings first.' }
 
   if ($Uninstall) {
-    foreach ($language in $languages) { [void]$language.InputMethodTips.Remove($tipId) }
-  } elseif ($chinese.InputMethodTips -notcontains $tipId) {
+    foreach ($language in $languages) {
+      while ($language.InputMethodTips.Remove($tipId)) {}
+    }
+  } else {
+    while ($chinese.InputMethodTips.Remove($tipId)) {}
     [void]$chinese.InputMethodTips.Add($tipId)
   }
   Set-WinUserLanguageList -LanguageList $languages -Force

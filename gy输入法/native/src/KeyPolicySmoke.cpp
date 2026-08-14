@@ -14,9 +14,9 @@ int wmain() {
   if (gy::keys::ShouldToggleMode(true, true, false) ||
       gy::keys::ShouldToggleMode(true, false, true) ||
       gy::keys::ShouldToggleMode(false, false, false)) return 4;
-  if (!gy::keys::ShouldCommitRawBeforeModeSwitch(true, true) ||
-      gy::keys::ShouldCommitRawBeforeModeSwitch(false, true) ||
-      gy::keys::ShouldCommitRawBeforeModeSwitch(true, false)) return 17;
+  if (!gy::keys::ShouldCancelCompositionBeforeModeSwitch(true, true) ||
+      gy::keys::ShouldCancelCompositionBeforeModeSwitch(false, true) ||
+      gy::keys::ShouldCancelCompositionBeforeModeSwitch(true, false)) return 17;
   if (!gy::punctuation::IsPunctuationKey(VK_OEM_COMMA, false) ||
       !gy::punctuation::IsPunctuationKey(VK_OEM_7, false) ||
       gy::punctuation::IsPunctuationKey('1', false) ||
@@ -50,22 +50,40 @@ int wmain() {
       !gy::keys::ShouldCommitSelectedCandidate(VK_SPACE, false) ||
       !gy::keys::ShouldCommitSelectedCandidate(VK_SPACE, true) ||
       gy::keys::ShouldCommitSelectedCandidate(VK_TAB, true)) return 13;
+  if (gy::keys::ShouldAcceptEnglishWithSpace(false) ||
+      !gy::keys::ShouldAcceptEnglishWithSpace(true)) return 23;
+  if (!gy::keys::ShouldCommitRawBeforeBoundary(true) ||
+      gy::keys::ShouldCommitRawBeforeBoundary(false)) return 24;
 
   if (gy::input_mode::Normalize(-1) != gy::input_mode::kSimplified ||
       gy::input_mode::Normalize(99) != gy::input_mode::kEnglish ||
       !gy::input_mode::IsEnglish(gy::input_mode::kEnglish) ||
-      gy::input_mode::IsEnglish(gy::input_mode::kSimplified)) return 9;
+      gy::input_mode::IsEnglish(gy::input_mode::kSimplified) ||
+      gy::input_mode::NormalizeChinese(gy::input_mode::kTraditional) != gy::input_mode::kTraditional ||
+      gy::input_mode::NormalizeChinese(gy::input_mode::kEnglish) != gy::input_mode::kSimplified ||
+      gy::input_mode::NormalizeChinese(-1) != gy::input_mode::kSimplified) return 9;
 
-  // EN Direct is non-negotiable: all ordinary editing/navigation keys pass
-  // through even if an older Chinese composition was still active.
-  constexpr WPARAM kEnglishDirectKeys[] = {
-      static_cast<WPARAM>('A'), VK_OEM_COMMA, VK_RETURN, VK_TAB,
-      VK_BACK, VK_DOWN, VK_PRIOR, static_cast<WPARAM>('1')};
-  for (const WPARAM key : kEnglishDirectKeys) {
-    if (gy::input_capture::ShouldCapture(true, false, false, true, 5, key)) {
+  // EN uses a lightweight suggestion strip. Tab is the conventional explicit
+  // accept action there; Chinese keeps Tab as application navigation.
+  constexpr WPARAM kEnglishCandidateKeys[] = {
+      static_cast<WPARAM>('A'), VK_RETURN, VK_SPACE, VK_BACK, VK_LEFT,
+      VK_RIGHT, static_cast<WPARAM>('1')};
+  for (const WPARAM key : kEnglishCandidateKeys) {
+    if (!gy::input_capture::ShouldCapture(true, false, false, true, 5, key)) {
       return 10;
     }
   }
+  if (!gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_TAB) ||
+      gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_OEM_COMMA, true)) return 10;
+  if (gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_UP) ||
+      !gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_DOWN) ||
+      gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_PRIOR) ||
+      gy::input_capture::ShouldCapture(true, false, false, true, 5, VK_NEXT)) return 22;
+  if (!gy::input_capture::ShouldCapture(true, false, false, true, 5, 8, VK_UP, false, true) ||
+      !gy::input_capture::ShouldCapture(true, false, true, true, 5, 8, 'T', false, false)) return 25;
+  // Pure EN digits are literal composition text, never 1-5 shortcuts.
+  if (!gy::input_capture::ShouldCapture(true, false, false, true, 5, 20, '1') ||
+      !gy::input_capture::ShouldCapture(true, false, false, true, 5, 20, '9')) return 21;
   // Command shortcuts are equally owned by the focused application.
   if (gy::input_capture::ShouldCapture(false, true, false, true, 5, 'V')) return 11;
 
@@ -87,8 +105,7 @@ int wmain() {
       gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_OEM_7, true) ||
       !gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_OEM_COMMA, false)) return 19;
 
-  // Tab navigation belongs to the focused application in every GY state,
-  // including an active composition and the expanded candidate grid.
+  // Chinese Tab navigation belongs to the focused application in every state.
   if (gy::input_capture::ShouldCapture(false, false, false, false, 0, 0, VK_TAB) ||
       gy::input_capture::ShouldCapture(false, false, false, true, 5, 5, VK_TAB) ||
       gy::input_capture::ShouldCapture(false, false, true, true, 5, 5, VK_TAB) ||
@@ -102,8 +119,17 @@ int wmain() {
       !gy::input_scope::IsDirectInput(IS_EMAIL_SMTPEMAILADDRESS) ||
       !gy::input_scope::IsDirectInput(IS_URL) ||
       !gy::input_scope::IsPasswordContext(IS_PASSWORD) ||
-      !gy::input_scope::IsPasswordContext(IS_ALPHANUMERIC_PIN) ||
-      gy::input_scope::IsPasswordContext(IS_EMAIL_SMTPEMAILADDRESS) ||
+       !gy::input_scope::IsPasswordContext(IS_ALPHANUMERIC_PIN) ||
+       !gy::input_scope::IsSensitiveDirectInput(IS_PASSWORD) ||
+       gy::input_scope::IsSensitiveDirectInput(IS_URL) ||
+       !gy::input_scope::AllowsManualChineseOverride(true, false) ||
+       gy::input_scope::AllowsManualChineseOverride(true, true) ||
+       gy::input_scope::AllowsManualChineseOverride(false, false) ||
+       gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, true, false) ||
+       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, true, true) ||
+       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, false, false) ||
+       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(false, false, false, true, false, false) ||
+       gy::input_scope::IsPasswordContext(IS_EMAIL_SMTPEMAILADDRESS) ||
       gy::input_scope::IsDirectInput(IS_CHAT) ||
       gy::input_scope::IsDirectInput(IS_SEARCH)) return 16;
 
@@ -112,7 +138,10 @@ int wmain() {
   if (!gy::input_scope::IsEnglishAutomationHint(L"Email address") ||
       !gy::input_scope::IsEnglishAutomationHint(L"请输入密码") ||
       !gy::input_scope::IsEnglishAutomationHint(L"One-time verification code") ||
-      !gy::input_scope::IsEnglishAutomationHint(L"账号") ||
+       gy::input_scope::IsEnglishAutomationHint(L"账号") ||
+      !gy::input_scope::IsSensitiveAutomationHint(L"请输入密码") ||
+      !gy::input_scope::IsSensitiveAutomationHint(L"One-time verification code") ||
+      gy::input_scope::IsSensitiveAutomationHint(L"Email address") ||
       gy::input_scope::IsEnglishAutomationHint(L"搜索全部笔记") ||
       gy::input_scope::IsEnglishAutomationHint(L"聊天消息")) return 20;
 

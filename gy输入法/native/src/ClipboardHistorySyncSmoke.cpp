@@ -125,6 +125,29 @@ int main() {
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after image test");
 
+  // The hidden Host listener and the Settings window can both receive the
+  // same clipboard notification.  A single image must create exactly one
+  // durable history/outbox record; a fresh notification with identical PNG
+  // bytes must not create another note either.
+  if (!gy::clipboard_history::testing::AppendPngForTesting(png, 700) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 700) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 701)) {
+    return Fail("one local image capture was accepted more than once");
+  }
+  const std::vector<Entry> deduped_images = gy::clipboard_history::ReadAll();
+  if (deduped_images.size() != 1 || deduped_images.front().kind != EntryKind::PngImage ||
+      deduped_images.front().image_sha256.size() != 64 ||
+      gy::clipboard_history::ReadPendingOutbox().size() != 1) {
+    return Fail("deduplicated image capture did not persist one hashed retry record");
+  }
+  gy::clipboard_history::testing::SuppressRemoteImage(702);
+  if (gy::clipboard_history::testing::AppendPngForTesting(png, 702) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 702) ||
+      gy::clipboard_history::ReadAll().size() != 1) {
+    return Fail("a remote image update escaped the one-event capture guard");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after capture de-duplication test");
+
   // A remote write must be ignored exactly once, and only for the Windows
   // clipboard sequence it created.  A user who copies immediately afterwards
   // gets a new sequence and must never be swallowed by the two-second guard.

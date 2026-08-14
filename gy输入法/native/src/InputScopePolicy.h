@@ -51,6 +51,31 @@ constexpr bool IsPasswordContext(InputScope scope) noexcept {
          scope == IS_ALPHANUMERIC_PIN_SET;
 }
 
+// Passwords and PINs are a hard privacy boundary. Unlike a URL or email
+// field, they cannot be temporarily switched back to Chinese composition by
+// the GY mode shortcut while they have focus.
+constexpr bool IsSensitiveDirectInput(InputScope scope) noexcept {
+  return IsPasswordContext(scope);
+}
+
+constexpr bool AllowsManualChineseOverride(bool direct, bool sensitive) noexcept {
+  return direct && !sensitive;
+}
+
+// The temporary Shift override belongs to one semantic field, never to an
+// entire browser window. A tab can keep the same HWND and TSF context while
+// focus moves from an email field to a password field, so the override must
+// be cleared whenever the field classification changes.
+constexpr bool ShouldClearManualChineseOverrideOnScopeChange(bool previous_known,
+                                                              bool previous_direct,
+                                                              bool previous_sensitive,
+                                                              bool next_known,
+                                                              bool next_direct,
+                                                              bool next_sensitive) noexcept {
+  return previous_known != next_known || previous_direct != next_direct ||
+         previous_sensitive != next_sensitive;
+}
+
 // Browsers and Electron controls do not always publish a TSF InputScope.  In
 // that case GY may use *accessibility metadata only* (label, automation ID or
 // help text) to recognise the small set of fields that require literal input.
@@ -73,13 +98,43 @@ inline bool IsEnglishAutomationHint(std::wstring_view hint) noexcept {
   };
   for (const std::wstring_view token : {
            L"email", L"e-mail", L"url", L"uri", L"website", L"password", L"passwd", L"pwd",
-           L"pin", L"otp", L"one-time", L"verification", L"security code", L"username", L"login",
-           L"account", L"telephone", L"phone"}) {
+            L"pin", L"otp", L"one-time", L"verification", L"security code", L"username", L"login",
+            L"telephone", L"phone"}) {
     if (contains_ascii(token)) return true;
   }
   for (const std::wstring_view token : {
            L"邮箱", L"邮件", L"网址", L"链接", L"密码", L"验证码", L"校验码", L"动态码",
-           L"一次性", L"手机", L"电话", L"用户名", L"登录名", L"账号"}) {
+            L"一次性", L"手机", L"电话", L"用户名", L"登录名"}) {
+    if (hint.find(token) != std::wstring_view::npos) return true;
+  }
+  return false;
+}
+
+// Accessibility labels are metadata rather than typed text. Keep the hard
+// privacy subset narrower than the broader literal-input classifier so an
+// email or URL field can still use the temporary current-field Chinese
+// override when the user deliberately asks for it.
+inline bool IsSensitiveAutomationHint(std::wstring_view hint) noexcept {
+  auto contains_ascii = [hint](std::wstring_view token) {
+    if (token.empty() || token.size() > hint.size()) return false;
+    for (size_t start = 0; start + token.size() <= hint.size(); ++start) {
+      bool match = true;
+      for (size_t index = 0; index < token.size(); ++index) {
+        wchar_t value = hint[start + index];
+        if (value >= L'A' && value <= L'Z') value = static_cast<wchar_t>(value - L'A' + L'a');
+        if (value != token[index]) { match = false; break; }
+      }
+      if (match) return true;
+    }
+    return false;
+  };
+  for (const std::wstring_view token : {
+           L"password", L"passwd", L"pwd", L"pin", L"otp", L"one-time",
+           L"verification", L"security code"}) {
+    if (contains_ascii(token)) return true;
+  }
+  for (const std::wstring_view token : {
+           L"密码", L"验证码", L"校验码", L"动态码", L"一次性"}) {
     if (hint.find(token) != std::wstring_view::npos) return true;
   }
   return false;

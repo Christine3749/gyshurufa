@@ -1,4 +1,6 @@
 #include "SettingsWindow.h"
+#include "CandidateAppearancePolicy.h"
+#include "CandidateDisplayEvidence.h"
 #include "GyAccountAuth.h"
 #include "GyKeepSync.h"
 #include "InputMode.h"
@@ -124,8 +126,6 @@ Palette PaletteForTheme(int theme) {
       return {RGB(16, 18, 22), RGB(29, 33, 40), RGB(46, 51, 60), RGB(35, 39, 47), RGB(52, 58, 69), RGB(250, 250, 251), RGB(155, 163, 179)};
   }
 }
-constexpr UINT kMaxSettingsDpi = 136;
-
 int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
 UINT DpiFor(HWND hwnd) { return hwnd ? GetDpiForWindow(hwnd) : GetDpiForSystem(); }
 
@@ -554,6 +554,8 @@ void SettingsWindow::Show(const RECT& anchor) {
   if (!RegisterSettingsClass()) return;
   MONITORINFO monitor{sizeof(monitor)};
   GetMonitorInfoW(MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST), &monitor);
+  const HMONITOR target_monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+  display_monitor_ = target_monitor;
   const RECT work = monitor.rcWork;
   const int work_height = static_cast<int>(work.bottom - work.top);
   const int work_width = static_cast<int>(work.right - work.left);
@@ -565,7 +567,23 @@ void SettingsWindow::Show(const RECT& anchor) {
   // On a small display the effective DPI is reduced only enough to keep the
   // complete shell on-screen.
   const UINT fitting_dpi = static_cast<UINT>(std::max(80, MulDiv(std::max(1, work_height - 16), 96, 680)));
-  dpi_ = std::min({native_dpi, fitting_dpi, kMaxSettingsDpi});
+  const std::wstring settings_path = SettingsPath();
+  const int requested_scale = settings_path.empty()
+      ? gy::candidate_appearance::kAutoScalePreference
+      : static_cast<int>(GetPrivateProfileIntW(
+            L"Appearance", L"CandidateScale",
+            gy::candidate_appearance::kAutoScalePreference, settings_path.c_str()));
+  const int interface_scale_percent = gy::candidate_appearance::ResolveScalePercentForMonitor(
+      requested_scale, target_monitor);
+  const UINT interface_dpi = static_cast<UINT>(
+      std::max(1, MulDiv(static_cast<int>(native_dpi), interface_scale_percent, 100)));
+  // Respect the display's actual scale whenever the 680-DIP shell fits. The
+  // old 136-DPI ceiling silently rendered a 150% ThinkPad at about 94%, which
+  // made the entire settings surface look like the candidate 95% option even
+  // when CandidateScale was still the default 100%.
+  // CandidateScale is a preference: auto follows the physical monitor that
+  // owns this window; explicit 95/100 remains available as a user override.
+  dpi_ = std::min(interface_dpi, fitting_dpi);
   width_ = std::min(Scale(dpi_, 520), std::max(Scale(dpi_, 360), work_width - Scale(dpi_, 16)));
   height_ = std::min(Scale(dpi_, 680), std::max(Scale(dpi_, 420), work_height - Scale(dpi_, 16)));
   const int width = width_;
@@ -721,8 +739,9 @@ void SettingsWindow::Layout() {
   const int nav_top = Scale(dpi_, 118), nav_step = Scale(dpi_, 47);
   for (int i = 0; i < 6; ++i) nav_rects_[i] = {nav_left, nav_top + i * nav_step, nav_left + nav_width, nav_top + (i + 1) * nav_step};
   for (int i = 0; i < 3; ++i) { input_mode_rects_[i] = {}; theme_rects_[i] = {}; size_rects_[i] = {}; }
+  compact_scale_rect_ = {};
   account_email_rect_ = {}; account_password_rect_ = {}; account_action_rect_ = {}; account_logout_rect_ = {};
-  phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {};
+  phrases_rect_ = {}; clear_rect_ = {}; export_rect_ = {}; import_rect_ = {}; ai_preview_rect_ = {}; warm_rect_ = {}; mixed_input_rect_ = {};
   clip_sync_card_ = {}; clip_sync_switch_ = {}; clip_instant_card_ = {}; clip_instant_switch_ = {}; clip_skip_card_ = {}; clip_skip_action_ = {};
   clip_history_clear_ = {}; clip_history_list_ = {};
   version_card_ = {}; update_card_ = {}; update_check_rect_ = {}; update_install_rect_ = {}; update_repair_rect_ = {}; update_rollback_rect_ = {}; update_status_rect_ = {};
@@ -752,10 +771,15 @@ void SettingsWindow::Layout() {
     done_y = clip_skip_card_.bottom + Scale(dpi_, 22);
   } else if (page_ == Page::Input) {
     for (int i = 0; i < 3; ++i) input_mode_rects_[i] = {content_left + i * option_width, base_y, content_left + (i + 1) * option_width, base_y + group_height};
-    phrases_rect_ = {content_left, base_y + group_height + Scale(dpi_, 28), content_left + card_width, base_y + group_height + Scale(dpi_, 86)};
-    warm_rect_ = {content_left, phrases_rect_.bottom + Scale(dpi_, 14), content_left + card_width, phrases_rect_.bottom + Scale(dpi_, 86)};
+    const int input_card_height = Scale(dpi_, 80);
+    const int first_card_top = base_y + group_height + Scale(dpi_, 28);
+    phrases_rect_ = {content_left, first_card_top, content_left + card_width, first_card_top + input_card_height};
+    warm_rect_ = {content_left, phrases_rect_.bottom + Scale(dpi_, 14), content_left + card_width,
+                  phrases_rect_.bottom + Scale(dpi_, 14) + input_card_height};
+    mixed_input_rect_ = {content_left, warm_rect_.bottom + Scale(dpi_, 14), content_left + card_width,
+                         warm_rect_.bottom + Scale(dpi_, 14) + input_card_height};
     ShowWindow(phrases_edit_, SW_HIDE);
-    done_y = warm_rect_.bottom + Scale(dpi_, 22);
+    done_y = mixed_input_rect_.bottom + Scale(dpi_, 22);
   } else if (page_ == Page::Appearance) {
     // Full-width stacked theme cards preserve the approved narrow vertical
     // composition instead of turning this page into a three-column strip.
@@ -767,7 +791,10 @@ void SettingsWindow::Layout() {
     }
     const int size_y = theme_rects_[2].bottom + Scale(dpi_, 36);
     for (int i = 0; i < 3; ++i) size_rects_[i] = {content_left + i * option_width, size_y, content_left + (i + 1) * option_width, size_y + group_height};
-    ai_preview_rect_ = {content_left, size_y + group_height + Scale(dpi_, 32), content_left + card_width, size_y + group_height + Scale(dpi_, 168)};
+    compact_scale_rect_ = {content_left, size_y + group_height + Scale(dpi_, 14), content_left + card_width,
+                           size_y + group_height + Scale(dpi_, 74)};
+    ai_preview_rect_ = {content_left, compact_scale_rect_.bottom + Scale(dpi_, 16), content_left + card_width,
+                        compact_scale_rect_.bottom + Scale(dpi_, 160)};
     ShowWindow(phrases_edit_, SW_HIDE);
     done_y = ai_preview_rect_.bottom + Scale(dpi_, 20);
   } else if (page_ == Page::Account) {
@@ -810,10 +837,9 @@ void SettingsWindow::Layout() {
   } else if (page_ == Page::Updates) {
     version_card_ = {content_left, base_y, content_left + card_width, base_y + Scale(dpi_, 106)};
     update_card_ = {content_left, version_card_.bottom + Scale(dpi_, 14), content_left + card_width, version_card_.bottom + Scale(dpi_, 314)};
-    if (!update_check_in_progress_ && !update_install_in_progress_) {
-      update_check_rect_ = {update_card_.right - Scale(dpi_, 218), update_card_.top + Scale(dpi_, 8),
-                            update_card_.right - Scale(dpi_, 166), update_card_.top + Scale(dpi_, 36)};
-    }
+    // “检查”与当前版本同一行；更新卡只保留本次更新和恢复操作。
+    update_check_rect_ = {version_card_.left + Scale(dpi_, 126), version_card_.top + Scale(dpi_, 30),
+                          version_card_.left + Scale(dpi_, 186), version_card_.top + Scale(dpi_, 60)};
     if (update_available_ && !update_install_in_progress_) {
       update_install_rect_ = {update_card_.right - Scale(dpi_, 158), update_card_.top + Scale(dpi_, 8),
                               update_card_.right - Scale(dpi_, 76), update_card_.top + Scale(dpi_, 36)};
@@ -1043,20 +1069,24 @@ void SettingsWindow::Paint(HDC dc) {
     Rounded(dc, clip_skip_action_, pending_upload_count_ ? pal.surface_hover : pal.surface_alt, pal.border, Scale(dpi_, 7));
     Text(dc, pending_upload_count_ ? L"跳过旧记录" : L"已无积压", clip_skip_action_, pending_upload_count_ ? kBlue : pal.muted, DT_CENTER, tiny);
   } else if (page_ == Page::Input) {
-    Text(dc, L"输入语言", RECT{input_mode_rects_[0].left, input_mode_rects_[0].top - Scale(dpi_, 22), input_mode_rects_[2].right, input_mode_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* input_modes[] = {L"简体", L"繁体", L"EN"};
     DrawSegmentedChoices(dc, input_mode_rects_, input_modes, input_mode_, pal, dpi_, medium);
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"切换规则", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 9), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
-    Text(dc, L"Shift 快速切换 EN；密码、邮箱、网址等输入框自动临时使用英文。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 31), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50)}, pal.muted, DT_LEFT, tiny);
-    Text(dc, L"离开后恢复原状态；只读取输入框类型，不读取或保存输入内容。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 50), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"Shift 快速切换 EN；EN 使用与中文完全相同的候选输入框。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 33), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 52)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"密码、PIN、邮箱、网址、终端始终直通；其余输入框可选英文候选。", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 54), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.bottom - Scale(dpi_, 9)}, pal.muted, DT_LEFT, tiny);
     // Warm start card: the toggle is honest about the low-spec trade-off, so
     // the annotation must stay in sync with PerformanceSettings.h consumers.
     Rounded(dc, warm_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"热启动加速", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 9), warm_rect_.left + Scale(dpi_, 190), warm_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
     Text(dc, warm_start_ ? L"已开启 · 点击关闭" : L"已关闭 · 点击开启", RECT{warm_rect_.right - Scale(dpi_, 150), warm_rect_.top + Scale(dpi_, 9), warm_rect_.right - Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 31)}, warm_start_ ? kBlue : pal.muted, DT_RIGHT, medium);
-    Text(dc, L"开启后引擎保持热连接，按键零等待；关闭后每次按键重新握手。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 32), warm_rect_.right - Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 48)}, pal.muted, DT_LEFT, tiny);
-    Text(dc, L"建议 4 核 CPU / 8 GB 内存及以上开启；更低配置的设备请关闭。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 49), warm_rect_.right - Scale(dpi_, 16), warm_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"开启后引擎保持热连接，按键零等待；关闭后每次按键重新握手。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 33), warm_rect_.right - Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 52)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"建议 4 核 CPU / 8 GB 内存及以上开启；更低配置的设备请关闭。", RECT{warm_rect_.left + Scale(dpi_, 16), warm_rect_.top + Scale(dpi_, 54), warm_rect_.right - Scale(dpi_, 16), warm_rect_.bottom - Scale(dpi_, 9)}, pal.muted, DT_LEFT, tiny);
+    Rounded(dc, mixed_input_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"中英混打", RECT{mixed_input_rect_.left + Scale(dpi_, 16), mixed_input_rect_.top + Scale(dpi_, 9), mixed_input_rect_.left + Scale(dpi_, 190), mixed_input_rect_.top + Scale(dpi_, 31)}, pal.text, DT_LEFT, medium);
+    Text(dc, mixed_input_ ? L"已开启 · 点击关闭" : L"已关闭 · 点击开启", RECT{mixed_input_rect_.right - Scale(dpi_, 150), mixed_input_rect_.top + Scale(dpi_, 9), mixed_input_rect_.right - Scale(dpi_, 16), mixed_input_rect_.top + Scale(dpi_, 31)}, mixed_input_ ? kBlue : pal.muted, DT_RIGHT, medium);
+    Text(dc, L"简体/繁体中命中英文词时，英文原词排第 1 项；数字键仍可直选中文候选。", RECT{mixed_input_rect_.left + Scale(dpi_, 16), mixed_input_rect_.top + Scale(dpi_, 33), mixed_input_rect_.right - Scale(dpi_, 16), mixed_input_rect_.top + Scale(dpi_, 52)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"更新检查完成后自动同步词库；输入时只读取本地离线快照，不联网。", RECT{mixed_input_rect_.left + Scale(dpi_, 16), mixed_input_rect_.top + Scale(dpi_, 54), mixed_input_rect_.right - Scale(dpi_, 16), mixed_input_rect_.bottom - Scale(dpi_, 9)}, pal.muted, DT_LEFT, tiny);
   } else if (page_ == Page::Appearance) {
     Text(dc, L"候选窗主题", RECT{theme_rects_[0].left, theme_rects_[0].top - Scale(dpi_, 22), theme_rects_[2].right, theme_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* themes[] = {L"GY 蓝夜", L"暖白", L"石墨"};
@@ -1074,13 +1104,22 @@ void SettingsWindow::Paint(HDC dc) {
     Text(dc, L"候选字大小", RECT{size_rects_[0].left, size_rects_[0].top - Scale(dpi_, 22), size_rects_[2].right, size_rects_[0].top - Scale(dpi_, 3)}, pal.muted, DT_LEFT, tiny);
     const wchar_t* sizes[] = {L"紧凑", L"默认", L"大"};
     DrawSegmentedChoices(dc, size_rects_, sizes, size_index_, pal, dpi_, medium);
+    Rounded(dc, compact_scale_rect_, pal.surface, pal.border, Scale(dpi_, 9));
+    Text(dc, L"输入法整体尺寸", RECT{compact_scale_rect_.left + Scale(dpi_, 16), compact_scale_rect_.top + Scale(dpi_, 8), compact_scale_rect_.left + Scale(dpi_, 16) + Scale(dpi_, 180), compact_scale_rect_.top + Scale(dpi_, 28)}, pal.text, DT_LEFT, medium);
+    const std::wstring scale_status = candidate_scale_preference_ == gy::candidate_appearance::kCompactScalePercent
+        ? L"固定 95% · 点击切换"
+        : candidate_scale_preference_ == gy::candidate_appearance::kDefaultScalePercent
+        ? L"固定 100% · 点击切换"
+        : L"自动 · 当前 " + std::to_wstring(resolved_candidate_scale_percent_) + L"%";
+    Text(dc, scale_status, RECT{compact_scale_rect_.right - Scale(dpi_, 210), compact_scale_rect_.top + Scale(dpi_, 8), compact_scale_rect_.right - Scale(dpi_, 16), compact_scale_rect_.top + Scale(dpi_, 28)}, candidate_scale_preference_ == gy::candidate_appearance::kAutoScalePreference ? kBlue : pal.muted, DT_RIGHT, tiny);
+    Text(dc, L"自动按实际屏幕选择：笔记本 95%，大屏 100%；无法识别时保持 100%。", RECT{compact_scale_rect_.left + Scale(dpi_, 16), compact_scale_rect_.top + Scale(dpi_, 31), compact_scale_rect_.right - Scale(dpi_, 16), compact_scale_rect_.bottom - Scale(dpi_, 7)}, pal.muted, DT_LEFT, tiny);
     Rounded(dc, ai_preview_rect_, pal.surface, pal.border, Scale(dpi_, 10));
     Text(dc, L"AI 外观预览助手", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 12), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
     Text(dc, L"可根据你的描述生成预览；确认前不会更改任何设置。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 34), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 54)}, pal.muted, DT_LEFT, tiny);
-    RECT preview_input{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 66), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 100)};
+    RECT preview_input{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 60), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 92)};
     Rounded(dc, preview_input, pal.ink, pal.border, Scale(dpi_, 7));
     Text(dc, L"例如：更安静一点，字稍微大一点", RECT{preview_input.left + Scale(dpi_, 12), preview_input.top, preview_input.right - Scale(dpi_, 12), preview_input.bottom}, pal.muted, DT_LEFT, tiny);
-    Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 110), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 10)}, pal.muted, DT_LEFT, tiny);
+    Text(dc, L"只可建议主题、字号与对比度；不会修改 Logo、候选窗箭头、布局或输入交互。", RECT{ai_preview_rect_.left + Scale(dpi_, 16), ai_preview_rect_.top + Scale(dpi_, 102), ai_preview_rect_.right - Scale(dpi_, 16), ai_preview_rect_.bottom - Scale(dpi_, 8)}, pal.muted, DT_LEFT, tiny);
   } else if (page_ == Page::Account) {
     Rounded(dc, phrases_rect_, pal.surface, pal.border, Scale(dpi_, 9));
     Text(dc, L"GY 账户", RECT{phrases_rect_.left + Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 10), phrases_rect_.right - Scale(dpi_, 16), phrases_rect_.top + Scale(dpi_, 32)}, pal.text, DT_LEFT, medium);
@@ -1201,11 +1240,9 @@ void SettingsWindow::Paint(HDC dc) {
         : L"注册表 Host v" + registered_version_ + L" · TSF / DLL v" + registered_core_version_;
     Text(dc, tsf_detail, RECT{version_card_.left + Scale(dpi_, 16), version_card_.top + Scale(dpi_, 80), version_card_.right - Scale(dpi_, 16), version_card_.bottom - Scale(dpi_, 8)}, versions_consistent_ ? pal.muted : RGB(210, 80, 80), DT_LEFT, tiny);
     Rounded(dc, update_card_, pal.surface, pal.border, Scale(dpi_, 9));
-    const int update_actions_left = update_check_rect_.right > update_check_rect_.left
-        ? update_check_rect_.left
-        : (update_rollback_rect_.right > update_rollback_rect_.left
-           ? update_rollback_rect_.left
-           : (update_install_rect_.right > update_install_rect_.left ? update_install_rect_.left : update_repair_rect_.left));
+    const int update_actions_left = update_rollback_rect_.right > update_rollback_rect_.left
+        ? update_rollback_rect_.left
+        : (update_install_rect_.right > update_install_rect_.left ? update_install_rect_.left : update_repair_rect_.left);
     Text(dc, L"本次更新", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 12), update_actions_left - Scale(dpi_, 12), update_card_.top + Scale(dpi_, 36)}, pal.text, DT_LEFT, medium);
     if (release_notes_.empty()) {
       Text(dc, L"此版本没有附带更新说明。", RECT{update_card_.left + Scale(dpi_, 16), update_card_.top + Scale(dpi_, 52), update_card_.right - Scale(dpi_, 16), update_card_.top + Scale(dpi_, 78)}, pal.muted, DT_LEFT, tiny);
@@ -1251,9 +1288,8 @@ void SettingsWindow::Paint(HDC dc) {
     }
     Text(dc, update_repair_in_progress_ ? L"处理中…" : L"整备", update_repair_rect_,
          update_repair_in_progress_ ? pal.muted : kBlue, DT_RIGHT, medium);
-    if (update_check_rect_.right > update_check_rect_.left) {
-      Text(dc, L"检查", update_check_rect_, kBlue, DT_CENTER, tiny);
-    }
+    Text(dc, update_check_in_progress_ ? L"检查中…" : L"检查", update_check_rect_,
+         update_check_in_progress_ ? pal.muted : kBlue, DT_CENTER, tiny);
     if (update_install_rect_.right > update_install_rect_.left) {
       Rounded(dc, update_install_rect_, kBlue, kBlue, Scale(dpi_, 6));
       const std::wstring install_label = update_ready_to_install_ ? L"立即安装" : L"下载并安装";
@@ -1303,7 +1339,13 @@ void SettingsWindow::Load() {
   theme_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"Theme", 0, path.c_str())), 0, 2);
   const int points = GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str());
   size_index_ = points <= 13 ? 0 : points >= 17 ? 2 : 1;
+  candidate_scale_preference_ = static_cast<int>(gy::candidate_appearance::NormalizeScalePreference(
+      static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"CandidateScale",
+          gy::candidate_appearance::kAutoScalePreference, path.c_str()))));
+  resolved_candidate_scale_percent_ = gy::candidate_appearance::ResolveScalePercentForMonitor(
+      candidate_scale_preference_, MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST));
   warm_start_ = GetPrivateProfileIntW(L"Performance", L"WarmStart", 1, path.c_str()) != 0;
+  mixed_input_ = GetPrivateProfileIntW(L"MixedInput", L"Enabled", 0, path.c_str()) != 0;
   // CLIPBOARD-PAGE-DESIGN §4：跨设备剪贴板与即时粘贴均默认开。
   clip_enabled_ = GetPrivateProfileIntW(L"Clipboard", L"Enabled", 1, path.c_str()) != 0;
   clip_instant_ = GetPrivateProfileIntW(L"Clipboard", L"InstantPaste", 1, path.c_str()) != 0;
@@ -1325,6 +1367,9 @@ void SettingsWindow::LoadUpdateState() {
   const std::wstring candidate = ReadUpdateStateValue(L"version");
   update_checked_at_ = ReadUpdateStateValue(L"checkedAtUtc");
   const std::wstring error = ReadUpdateStateValue(L"error");
+  const std::wstring lexicon_status = ReadUpdateStateValue(L"lexiconStatus");
+  const std::wstring lexicon_version = ReadUpdateStateValue(L"lexiconVersion");
+  const std::wstring lexicon_error = ReadUpdateStateValue(L"lexiconError");
   if (status == L"up-to-date") {
     update_check_status_ = update_checked_at_.empty() ? L"已是最新版本。" : L"已检查更新：当前已是最新版本。";
   } else if (status == L"update-available") {
@@ -1342,6 +1387,19 @@ void SettingsWindow::LoadUpdateState() {
   } else {
     update_check_status_.clear();
   }
+  if (status != L"check-failed") {
+    if (lexicon_status == L"ready" && !lexicon_version.empty()) {
+      const std::wstring detail = !lexicon_error.empty()
+          ? L"英文词库本次同步未完成，继续使用 v" + lexicon_version + L"。"
+          : L"英文词库已同步 v" + lexicon_version + L"。";
+      update_check_status_ = update_check_status_.empty() ? detail : update_check_status_ + L" " + detail;
+    } else if (lexicon_status == L"failed") {
+      const std::wstring detail = lexicon_error.empty()
+          ? L"英文词库同步未完成，继续使用现有本地词库。"
+          : L"英文词库同步未完成，继续使用现有本地词库：" + lexicon_error;
+      update_check_status_ = update_check_status_.empty() ? detail : update_check_status_ + L" " + detail;
+    }
+  }
   if ((status == L"update-available" || status == L"ready-to-install") &&
       !candidate.empty() && candidate != release_version_) {
     update_available_ = true;
@@ -1357,10 +1415,18 @@ void SettingsWindow::Save() {
   WritePrivateProfileStringW(L"Account", L"Name", nullptr, path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"Theme", std::to_wstring(theme_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Appearance", L"CandidateSize", std::to_wstring(points[size_index_]).c_str(), path.c_str());
+  WritePrivateProfileStringW(L"Appearance", L"CandidateScale",
+                             std::to_wstring(candidate_scale_preference_).c_str(), path.c_str());
   WritePrivateProfileStringW(L"Performance", L"WarmStart", warm_start_ ? L"1" : L"0", path.c_str());
+  WritePrivateProfileStringW(L"MixedInput", L"Enabled", mixed_input_ ? L"1" : L"0", path.c_str());
   WritePrivateProfileStringW(L"Clipboard", L"Enabled", clip_enabled_ ? L"1" : L"0", path.c_str());
   WritePrivateProfileStringW(L"Clipboard", L"InstantPaste", clip_instant_ ? L"1" : L"0", path.c_str());
-  gy::input_mode::Write(input_mode_);
+  const int requested_input_mode = input_mode_;
+  if (!gy::input_mode::Write(requested_input_mode)) {
+    input_mode_ = gy::input_mode::Read();
+    MessageBoxW(hwnd_, L"输入模式未能完整保存，已恢复为实际生效的模式。请稍后重试。",
+                L"GY 输入法", MB_OK | MB_ICONERROR);
+  }
   const int length = GetWindowTextLengthW(phrases_edit_); std::vector<wchar_t> raw(static_cast<size_t>(length) + 1, L'\0'); GetWindowTextW(phrases_edit_, raw.data(), static_cast<int>(raw.size()));
   std::wstring section; const std::wstring input(raw.data()); size_t begin = 0;
   while (begin <= input.size()) {
@@ -1373,7 +1439,14 @@ void SettingsWindow::Save() {
 }
 void SettingsWindow::ClearLearning() {
   if (MessageBoxW(hwnd_, L"清空本机的所有候选学习记录？常用短语不会受影响。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
-  const std::wstring path = SettingsPath(); if (EnsureUnicodeSettingsFile(path)) WritePrivateProfileStringW(L"Learning", nullptr, nullptr, path.c_str());
+  const std::wstring path = SettingsPath();
+  if (!EnsureUnicodeSettingsFile(path)) return;
+  // The stable three-confirmation model reads LearningStats.
+  // Clearing only the legacy Learning section made a supposedly forgotten
+  // preference reappear on the next lookup. Clear both local-only stores;
+  // custom phrases remain intentionally untouched.
+  WritePrivateProfileStringW(L"Learning", nullptr, nullptr, path.c_str());
+  WritePrivateProfileStringW(L"LearningStats", nullptr, nullptr, path.c_str());
 }
 void SettingsWindow::ClearHistory() {
   // 确认文案逐字来自 CLIPBOARD-PAGE-DESIGN §2 卡片 3。
@@ -1396,7 +1469,10 @@ void SettingsWindow::ImportBackup() {
   CopyFileW(destination.c_str(), (destination + L".bak").c_str(), FALSE);
   if (!CopyFileW(source.c_str(), destination.c_str(), FALSE)) { MessageBoxW(hwnd_, L"无法导入设置文件。原来的设置已保留。", L"GY 输入法", MB_OK | MB_ICONERROR); return; }
   const int imported_mode = static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", gy::input_mode::kSimplified, destination.c_str()));
-  gy::input_mode::Write(imported_mode);
+  if (!gy::input_mode::Write(imported_mode)) {
+    MessageBoxW(hwnd_, L"导入文件已保留，但输入模式未能完整写入，已恢复为实际生效的模式。",
+                L"GY 输入法", MB_OK | MB_ICONERROR);
+  }
   Load(); InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -1846,8 +1922,8 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point) || self->Hit(self->clip_skip_action_, point);
-      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
-      if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point) || self->Hit(self->mixed_input_rect_, point); }
+      if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->compact_scale_rect_, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_) {
@@ -1860,8 +1936,8 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       bool hand = self->Hit(self->done_rect_, point) || self->Hit(self->close_rect_, point);
       for (const RECT& rect : self->nav_rects_) hand = hand || self->Hit(rect, point);
       if (self->page_ == Page::General) hand = hand || self->Hit(self->phrases_rect_, point) || self->Hit(self->clear_rect_, point) || self->Hit(self->export_rect_, point) || self->Hit(self->import_rect_, point) || self->Hit(self->clip_sync_switch_, point) || self->Hit(self->clip_instant_switch_, point);
-      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point); }
-      if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); }
+      if (self->page_ == Page::Input) { for (const RECT& rect : self->input_mode_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->warm_rect_, point) || self->Hit(self->mixed_input_rect_, point); }
+      if (self->page_ == Page::Appearance) { for (const RECT& rect : self->theme_rects_) hand = hand || self->Hit(rect, point); for (const RECT& rect : self->size_rects_) hand = hand || self->Hit(rect, point); hand = hand || self->Hit(self->compact_scale_rect_, point); }
       if (self->page_ == Page::Account) hand = hand || self->Hit(self->account_action_rect_, point) || self->Hit(self->account_logout_rect_, point);
       if (self->page_ == Page::Clipboard) hand = hand || self->Hit(self->clip_history_clear_, point);
       if (self->page_ == Page::Updates && !self->update_repair_in_progress_) hand = hand || self->Hit(self->update_check_rect_, point) || self->Hit(self->update_install_rect_, point) || self->Hit(self->update_repair_rect_, point);
@@ -1872,8 +1948,21 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       for (int i = 0; i < 6; ++i) if (self->Hit(self->nav_rects_[i], point)) { self->page_ = static_cast<Page>(i); self->Layout(); return 0; }
       if (self->page_ == Page::Input) for (int i = 0; i < 3; ++i) if (self->Hit(self->input_mode_rects_[i], point)) { self->input_mode_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Input && self->Hit(self->warm_rect_, point)) { self->warm_start_ = !self->warm_start_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Input && self->Hit(self->mixed_input_rect_, point)) { self->mixed_input_ = !self->mixed_input_; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->theme_rects_[i], point)) { self->theme_ = i; self->Save(); self->ApplyThemeBrush(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (self->page_ == Page::Appearance) for (int i = 0; i < 3; ++i) if (self->Hit(self->size_rects_[i], point)) { self->size_index_ = i; self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (self->page_ == Page::Appearance && self->Hit(self->compact_scale_rect_, point)) {
+        self->candidate_scale_preference_ =
+            self->candidate_scale_preference_ == gy::candidate_appearance::kAutoScalePreference
+                ? gy::candidate_appearance::kCompactScalePercent
+                : self->candidate_scale_preference_ == gy::candidate_appearance::kCompactScalePercent
+                ? gy::candidate_appearance::kDefaultScalePercent
+                : gy::candidate_appearance::kAutoScalePreference;
+        self->resolved_candidate_scale_percent_ =
+            gy::candidate_appearance::ResolveScalePercentForMonitor(
+                self->candidate_scale_preference_, self->display_monitor_);
+        self->Save(); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+      }
       if (self->page_ == Page::Account && self->Hit(self->account_action_rect_, point)) { self->FocusAccountTarget(static_cast<int>(AccountFocus::Login)); self->ActivateAccountTarget(); return 0; }
       if (self->page_ == Page::Account && self->Hit(self->account_logout_rect_, point)) { self->FocusAccountTarget(static_cast<int>(AccountFocus::Logout)); self->ActivateAccountTarget(); return 0; }
       // 剪贴板开关在通用页：拨动即写入（不等“完成”）；剪贴板页只剩清空。
@@ -1965,11 +2054,15 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpar
       return 0;
     }
     case WM_DPICHANGED: {
-      self->dpi_ = std::min<UINT>(HIWORD(wparam), kMaxSettingsDpi);
-      self->ClearClipboardThumbnails();
       const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
       HMONITOR monitor = MonitorFromRect(suggested, MONITOR_DEFAULTTONEAREST);
       MONITORINFO info{sizeof(info)}; GetMonitorInfoW(monitor, &info);
+      const UINT native_dpi = HIWORD(wparam);
+      const int work_height = static_cast<int>(info.rcWork.bottom - info.rcWork.top);
+      const UINT fitting_dpi = static_cast<UINT>(std::max(
+          80, MulDiv(std::max(1, work_height - 32), 96, 680)));
+      self->dpi_ = std::min(native_dpi, fitting_dpi);
+      self->ClearClipboardThumbnails();
       self->width_ = std::min(Scale(self->dpi_, 520), std::max(Scale(self->dpi_, 360), static_cast<int>(info.rcWork.right - info.rcWork.left) - Scale(self->dpi_, 32)));
       self->height_ = std::min(Scale(self->dpi_, 680), std::max(Scale(self->dpi_, 460), static_cast<int>(info.rcWork.bottom - info.rcWork.top) - Scale(self->dpi_, 32)));
       SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, self->width_, self->height_, SWP_NOZORDER | SWP_NOACTIVATE);

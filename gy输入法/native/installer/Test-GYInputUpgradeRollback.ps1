@@ -68,6 +68,25 @@ function Assert-PendingCandidate([string]$ExpectedVersion) {
   }
 }
 
+function Assert-RollbackSnapshot([string]$ExpectedVersion) {
+  $previousPath = Join-Path $installRoot 'install-state.previous.json'
+  if (-not (Test-Path -LiteralPath $previousPath -PathType Leaf)) {
+    throw 'Candidate install did not preserve a rollback snapshot.'
+  }
+  $previous = Get-Content -LiteralPath $previousPath -Raw | ConvertFrom-Json
+  if ([string]$previous.version -ne $ExpectedVersion -or
+      [string]$previous.hostVersion -ne $ExpectedVersion -or
+      [string]$previous.coreVersion -ne $ExpectedVersion -or
+      [string]$previous.activationState -ne 'active' -or
+      $previous.registryVerified -ne $true -or
+      $previous.requiresClientReload -ne $false -or
+      -not (Test-Path -LiteralPath ([string]$previous.dll) -PathType Leaf) -or
+      -not (Test-Path -LiteralPath ([string]$previous.host) -PathType Leaf) -or
+      -not (Test-Path -LiteralPath ([string]$previous.health) -PathType Leaf)) {
+    throw "Candidate install wrote an ineligible rollback snapshot for v$ExpectedVersion."
+  }
+}
+
 function Get-SetupVersion([string]$Path) {
   $match = [regex]::Match((Split-Path -Leaf $Path), '^GYInputSetup-(\d+\.\d+\.\d+)\.exe$')
   if (-not $match.Success) { throw "Installer filename must be GYInputSetup-x.y.z.exe: $Path" }
@@ -148,11 +167,12 @@ function Install-Release([string]$SetupPath, [string]$ExpectedVersion, [string]$
   return Wait-StagedOrActiveRelease $ExpectedVersion
 }
 
-function Install-Candidate([string]$ExpectedVersion) {
+function Install-Candidate([string]$ExpectedVersion, [string]$ExpectedRollbackVersion) {
   $state = Install-Release $InstallerPath $ExpectedVersion 'candidate'
   if ([string]$state.activationState -ne 'pending') {
     throw "Candidate v$ExpectedVersion did not enter the required pending activation state."
   }
+  Assert-RollbackSnapshot $ExpectedRollbackVersion
 }
 
 function Complete-PendingCandidate([string]$ExpectedVersion) {
@@ -223,12 +243,12 @@ try {
   Assert-ActiveVersion $ExpectedInitialVersion 'Baseline'
   Invoke-InstalledValidation "baseline v$ExpectedInitialVersion"
 
-  Install-Candidate $candidateVersion
+  Install-Candidate $candidateVersion $ExpectedInitialVersion
   Complete-PendingCandidate $candidateVersion
   Invoke-VerifiedRollback $ExpectedInitialVersion
 
   if ($KeepCandidateActive) {
-    Install-Candidate $candidateVersion
+    Install-Candidate $candidateVersion $ExpectedInitialVersion
     Complete-PendingCandidate $candidateVersion
   }
 

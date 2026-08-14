@@ -1,5 +1,9 @@
 #include "CandidateWindow.h"
+#include "CandidateAppearancePolicy.h"
+#include "CandidateDisplayEvidence.h"
 #include "CandidateLayout.h"
+#include "CandidatePlacementPolicy.h"
+#include "CandidatePresentationPolicy.h"
 
 #include <algorithm>
 #include <iterator>
@@ -13,8 +17,47 @@ constexpr COLORREF kGyBlue = RGB(40, 99, 235);           // Candidate selection 
 constexpr COLORREF kDisclosureBlue = RGB(82, 128, 226);  // Quiet disclosure accent
 constexpr int kDisclosureInsetX = 8;                         // Locked collapsed control anchor
 constexpr int kDisclosureInsetBottom = 8;                    // Locked collapsed control anchor
+// Latin glyphs need real breathing room on both sides. The previous eight-DIP
+// total inset left only 6/5 DIPs for painting after integer DPI rounding, so a
+// final d/k/n could touch (or appear cut by) the next chip. Keep this separate
+// from the Chinese shortcut geometry: EN has no inline number label.
+constexpr int kEnglishWordInsetLeft = 12;
+constexpr int kEnglishWordInsetRight = 12;
+constexpr int kEnglishCandidateGap = 8;
+// GetTextExtentPoint32 reports advance width, while ClearType can paint the
+// final Latin glyph a few pixels beyond that advance. Without a separate text
+// guard, final d/n/r stems are clipped and visually turn into c/r fragments.
+constexpr int kEnglishTextOverhangGuard = 3;
 
-int Scale(UINT dpi, int value) { return MulDiv(value, static_cast<int>(dpi), 96); }
+// CandidateWindow is owned by one Host UI thread. Keeping the selected whole
+// surface scale here lets every padding, chip, control and font use one
+// coherent 95% or 100% metric without a per-keystroke settings-file read.
+thread_local int g_candidate_scale_percent = gy::candidate_appearance::kDefaultScalePercent;
+
+int Scale(UINT dpi, int value) {
+  return MulDiv(value, static_cast<int>(dpi) * g_candidate_scale_percent, 96 * 100);
+}
+
+int ScaleTypography(UINT dpi, int value) {
+  return MulDiv(value, static_cast<int>(dpi) *
+      gy::candidate_appearance::TypographyScalePercent(g_candidate_scale_percent), 96 * 100);
+}
+
+int ScaleDetail(UINT dpi, int value) {
+  return MulDiv(value, static_cast<int>(dpi) *
+      gy::candidate_appearance::DetailScalePercent(g_candidate_scale_percent), 96 * 100);
+}
+
+int ScaleVertical(UINT dpi, int value) {
+  return MulDiv(value, static_cast<int>(dpi) *
+      gy::candidate_appearance::VerticalScalePercent(g_candidate_scale_percent), 96 * 100);
+}
+
+// The outside clearance protects text owned by the target application. It is
+// deliberately independent from GY's optional 95% surface scale.
+int ScaleDpiOnly(UINT dpi, int value) {
+  return MulDiv(value, static_cast<int>(dpi), 96);
+}
 
 UINT WindowDpi(HWND hwnd) {
   const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : GetDpiForSystem();
@@ -45,6 +88,14 @@ int CandidatePointSize() {
   const std::wstring path = SettingsPath();
   const int size = path.empty() ? 15 : static_cast<int>(GetPrivateProfileIntW(L"Appearance", L"CandidateSize", 15, path.c_str()));
   return std::clamp(size, 13, 17);
+}
+
+int CandidateScalePreference() {
+  const std::wstring path = SettingsPath();
+  return path.empty() ? gy::candidate_appearance::kAutoScalePreference
+      : static_cast<int>(GetPrivateProfileIntW(
+            L"Appearance", L"CandidateScale", gy::candidate_appearance::kAutoScalePreference,
+            path.c_str()));
 }
 
 int CandidateInputMode() {
@@ -89,13 +140,13 @@ void DrawDisclosureChevron(HDC dc, const RECT& rect, bool expanded, COLORREF col
   // Position invariant: in the collapsed strip the disclosure stays at the
   // lower-left of its own cell, before the mode indicator. Style changes must
   // not alter these coordinates.
-  const int center_x = expanded ? (rect.left + rect.right) / 2 : rect.left + Scale(dpi, kDisclosureInsetX);
-  const int center_y = expanded ? (rect.top + rect.bottom) / 2 : rect.bottom - Scale(dpi, kDisclosureInsetBottom);
-  const int half_width = Scale(dpi, 5);
-  const int half_height = Scale(dpi, 3);
+  const int center_x = expanded ? (rect.left + rect.right) / 2 : rect.left + ScaleDetail(dpi, kDisclosureInsetX);
+  const int center_y = expanded ? (rect.top + rect.bottom) / 2 : rect.bottom - ScaleDetail(dpi, kDisclosureInsetBottom);
+  const int half_width = ScaleDetail(dpi, 5);
+  const int half_height = ScaleDetail(dpi, 3);
   LOGBRUSH brush{BS_SOLID, color, 0};
   const HPEN pen = ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
-                                std::max(1, Scale(dpi, 1)), &brush, 0, nullptr);
+                                std::max(1, ScaleDetail(dpi, 1)), &brush, 0, nullptr);
   const HGDIOBJ old_pen = SelectObject(dc, pen);
   POINT points[3]{};
   if (expanded) {
@@ -119,7 +170,7 @@ int Measure(HDC dc, HFONT font, const std::wstring& text) {
 }
 
 HFONT Font(UINT dpi, int points, int weight) {
-  return CreateFontW(-Scale(dpi, points), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+  return CreateFontW(-ScaleTypography(dpi, points), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                      DEFAULT_PITCH, L"Microsoft YaHei UI");
 }
@@ -182,44 +233,70 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   candidate_rects_.clear();
   const int padding = Scale(dpi, 6);
   const int gap = Scale(dpi, 3);
-  const int chip_height = Scale(dpi, candidate_point_size_ + 14);
+  const int chip_height = ScaleVertical(dpi, candidate_point_size_ + 14);
   const int max_width = std::max(Scale(dpi, 180), available_width);
   const HFONT candidate_font = Font(dpi, candidate_point_size_, FW_SEMIBOLD);
   const HFONT status_font = Font(dpi, 12, FW_SEMIBOLD);
   HDC dc = GetDC(nullptr);
 
   const std::wstring mode_label = ModeLabel(input_mode_);
-  const int mode_width = Measure(dc, status_font, mode_label) + Scale(dpi, 18);
+  const int mode_width = Measure(dc, status_font, mode_label) + Scale(
+      dpi, gy::candidate_appearance::ModeHorizontalInsetsDips(candidate_scale_percent_));
   const int page_button_width = Scale(dpi, 26);
   const int page_indicator_width = Scale(dpi, 42);
-  const int expand_width = Scale(dpi, 24);
-  const bool expanded_grid = expanded_ && !mode_popup_;
-  const unsigned capacity = expanded_grid ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
+  const int expand_width = Scale(
+      dpi, gy::candidate_appearance::DisclosureWidthDips(candidate_scale_percent_));
+  const auto surface = gy::candidate_presentation::Resolve(
+      candidate_purpose_, chinese_grid_open_, static_cast<unsigned>(candidates_.size()), mode_popup_,
+      english_list_open_);
+  const bool expanded_grid = gy::candidate_presentation::IsChineseGrid(surface);
+  const bool english_list = gy::candidate_presentation::IsEnglishList(surface);
+  const bool stacked_surface = expanded_grid || english_list;
+  const bool english_surface = gy::candidate_presentation::IsEnglish(surface);
+  const bool unnumbered_english = english_surface &&
+      !gy::candidate_presentation::UsesNumericShortcuts(surface);
+  const unsigned capacity = gy::candidate_presentation::PageSize(surface);
   const unsigned visible_count = mode_popup_ || page_start_ >= candidates_.size() ? 0 : std::min<unsigned>(capacity,
       static_cast<unsigned>(candidates_.size()) - page_start_);
-  const bool can_expand = !mode_popup_ && candidates_.size() > kCandidatesPerPage;
+  const bool can_expand = !mode_popup_ &&
+      (gy::candidate_presentation::CanExpand(
+           candidate_purpose_, static_cast<unsigned>(candidates_.size())) ||
+       gy::candidate_presentation::CanExpandEnglish(
+           candidate_purpose_, static_cast<unsigned>(candidates_.size())));
   int x = std::max(0, padding - 1);
   int right_edge = padding;
-  const int non_word_width = Scale(dpi, 24);
+  const int non_word_width = unnumbered_english ? 0 : Scale(
+      dpi, gy::candidate_appearance::ChineseNumberGutterDips(candidate_scale_percent_));
   const int collapsed_controls = mode_popup_ ? 0 : mode_width + (can_expand ? gap + expand_width : 0);
-  const int total_gap = gap * static_cast<int>(visible_count > 0 ? visible_count - 1 : 0);
+  const int candidate_gap = english_surface ? Scale(dpi, kEnglishCandidateGap) : gap;
+  const int compact_word_insets = unnumbered_english
+      ? Scale(dpi,
+              gy::candidate_appearance::EnglishWordLeftDips(candidate_scale_percent_) +
+              gy::candidate_appearance::EnglishWordRightDips(candidate_scale_percent_) +
+              kEnglishTextOverhangGuard)
+      : Scale(dpi, gy::candidate_appearance::ChineseCompactInsetsDips(candidate_scale_percent_));
+  const int total_gap = candidate_gap * static_cast<int>(visible_count > 0 ? visible_count - 1 : 0);
   // Four Han characters are a normal Chinese word, not an overflow case. Grow
   // the compact row to fit that minimum before considering long-word clipping.
-  const int four_character_word_width = Measure(dc, candidate_font, L"输入法候");
-  const int word_room = std::max(four_character_word_width,
+  const int minimum_word_width = unnumbered_english
+      ? Measure(dc, candidate_font, L"world")
+      : Measure(dc, candidate_font, L"输入法候");
+  const int word_room = std::max(minimum_word_width,
       std::max(Scale(dpi, 22),
           (max_width - x - padding - collapsed_controls - total_gap) /
-              std::max(1, static_cast<int>(visible_count)) - non_word_width));
+              std::max(1, static_cast<int>(visible_count)) - non_word_width - compact_word_insets));
 
   if (expanded_grid) {
     grid_columns_ = expanded_column_target_;
+  } else if (english_list) {
+    grid_columns_ = 1;
   } else {
     grid_columns_ = kCandidatesPerPage;
   }
   // Expanded mode is a fixed five-column matrix. Do not shrink it to the
   // visible candidate count: six candidates must render as 5 + 1, never 3 x 2.
-  const unsigned grid_columns = expanded_grid ? kExpandedColumns
-                                              : std::min<unsigned>(grid_columns_, std::max(1u, visible_count));
+  const unsigned grid_columns = expanded_grid ? kExpandedColumns : english_list ? 1
+      : std::min<unsigned>(grid_columns_, std::max(1u, visible_count));
   const int fitted_grid_cell_width = std::max(Scale(dpi, 54),
       (max_width - 2 * padding - gap * static_cast<int>(grid_columns - 1)) / static_cast<int>(grid_columns));
   // Keep the approved five-column geometry, but make the expanded matrix a
@@ -233,15 +310,17 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   // comfortable width remains the ceiling; the compact minimum is the floor.
   const int grid_cell_cap = std::min(comfortable_grid_cell_width, fitted_grid_cell_width);
   int content_grid_cell_width = Scale(dpi, 54);
-  if (expanded_grid) {
+  if (stacked_surface) {
     const int cell_insets = Scale(dpi, 21) + Scale(dpi, 5) + Scale(dpi, 8);
     for (unsigned i = 0; i < visible_count; ++i) {
       content_grid_cell_width = std::max(content_grid_cell_width,
           Measure(dc, candidate_font, candidates_[page_start_ + i]) + cell_insets);
     }
   }
-  const int grid_cell_width = expanded_grid
-      ? std::clamp(content_grid_cell_width, (Scale(dpi, 54) + grid_cell_cap) / 2, grid_cell_cap)
+  const int grid_cell_width = stacked_surface
+      ? english_list
+          ? std::clamp(content_grid_cell_width, Scale(dpi, 120), std::min(Scale(dpi, 320), fitted_grid_cell_width))
+          : std::clamp(content_grid_cell_width, (Scale(dpi, 54) + grid_cell_cap) / 2, grid_cell_cap)
       : fitted_grid_cell_width;
   // Candidate text is an input decision, not decoration: when the natural row
   // fits the panel cap, every chip gets its full measured width and nothing is
@@ -250,15 +329,16 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   // silently dropping the tail of a long candidate.
   clip_overflow_ = false;
   if (visible_count > 0) {
-    if (expanded_grid) {
-      const int word_area = grid_cell_width - Scale(dpi, 21) - Scale(dpi, 5);
+    if (stacked_surface) {
+      const int word_area = grid_cell_width - Scale(dpi,
+          english_list ? kEnglishWordInsetLeft + kEnglishWordInsetRight : 21 + 5);
       for (unsigned i = 0; i < visible_count; ++i) {
         if (Measure(dc, candidate_font, candidates_[page_start_ + i]) > word_area) { clip_overflow_ = true; break; }
       }
     } else {
       int natural_width = x + total_gap + gap + collapsed_controls + padding;
       for (unsigned i = 0; i < visible_count; ++i) {
-        natural_width += non_word_width + Measure(dc, candidate_font, candidates_[page_start_ + i]) + Scale(dpi, 8);
+        natural_width += non_word_width + Measure(dc, candidate_font, candidates_[page_start_ + i]) + compact_word_insets;
       }
       clip_overflow_ = natural_width > max_width;
     }
@@ -267,21 +347,24 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   for (unsigned i = 0; i < visible_count; ++i) {
     const int measured_word_width = Measure(dc, candidate_font, candidates_[page_start_ + i]);
     const int word_width = clip_overflow_ ? std::min(measured_word_width, word_room) : measured_word_width;
-    const int chip_width = expanded_grid ? grid_cell_width : non_word_width + word_width + Scale(dpi, 8);
-    const unsigned row = expanded_grid ? i / grid_columns : 0;
-    const unsigned column = expanded_grid ? i % grid_columns : 0;
-    const int left = expanded_grid ? padding + static_cast<int>(column) * (chip_width + gap) : x;
-    const int top = expanded_grid ? padding + static_cast<int>(row) * (chip_height + gap) : padding;
+    const int chip_width = stacked_surface
+        ? grid_cell_width : non_word_width + word_width + compact_word_insets;
+    const unsigned row = stacked_surface ? i / grid_columns : 0;
+    const unsigned column = stacked_surface ? i % grid_columns : 0;
+    const int left = stacked_surface
+        ? padding + static_cast<int>(column) * (chip_width + gap) : x;
+    const int top = stacked_surface
+        ? padding + static_cast<int>(row) * (chip_height + gap) : padding;
     candidate_rects_.push_back(RECT{left, top, left + chip_width, top + chip_height});
-    if (!expanded_grid) x += chip_width + gap;
-    right_edge = expanded_grid ? left + chip_width : std::max(right_edge, x - gap);
+    if (!expanded_grid) x += chip_width + candidate_gap;
+    right_edge = stacked_surface ? left + chip_width : std::max(right_edge, x - candidate_gap);
   }
   // A five-column grid owns all five columns even when the current page only
   // has one, six, or twenty candidates. Deriving the window width from the
   // final visible candidate clipped columns 4–5 whenever that candidate was
   // in an earlier column (for example 6 candidates used to look like 3 × 2).
   // Keep the fixed grid boundary independent from the candidate count.
-  const int grid_right = expanded_grid
+  const int grid_right = stacked_surface
       ? gy::candidate_layout::GridRight(padding, grid_cell_width, gap, grid_columns)
       : right_edge;
   mode_rect_ = RECT{};
@@ -290,13 +373,16 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   page_indicator_rect_ = RECT{};
   expand_rect_ = RECT{};
   if (!mode_popup_) {
-    const int control_top = expanded_grid ? (candidate_rects_.empty() ? padding : candidate_rects_.back().bottom + gap) : padding;
-    if (expanded_grid) {
+    const bool expanded_surface = stacked_surface;
+    const int control_top = expanded_surface
+        ? (candidate_rects_.empty() ? padding : candidate_rects_.back().bottom + gap) : padding;
+    if (expanded_surface) {
       // Locked order: disclosure first, then mode label.
       expand_rect_ = RECT{padding, control_top, padding + expand_width, control_top + chip_height};
       const int mode_left = expand_rect_.right + gap;
       mode_rect_ = RECT{mode_left, control_top, mode_left + mode_width, control_top + chip_height};
-      const bool has_more_pages = page_start_ > 0 || page_start_ + capacity < candidates_.size();
+      const bool has_more_pages = expanded_grid &&
+          (page_start_ > 0 || page_start_ + capacity < candidates_.size());
       if (has_more_pages) {
         const int next_left = grid_right - page_button_width;
         next_page_rect_ = RECT{next_left, control_top, next_left + page_button_width, control_top + chip_height};
@@ -306,7 +392,8 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
         previous_page_rect_ = RECT{previous_left, control_top, previous_left + page_button_width, control_top + chip_height};
       }
     } else {
-      // Locked order: candidates → disclosure → divider → 中 / 繁 / EN.
+      // Chinese keeps candidates → disclosure → divider → 中 / 繁.
+      // English has no disclosure path at all: candidates → divider → EN.
       if (can_expand) {
         const int expand_left = right_edge + gap;
         expand_rect_ = RECT{expand_left, control_top, expand_left + expand_width, control_top + chip_height};
@@ -320,9 +407,10 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
     // Mode popup is a small floating tag, not a candidate row: fixed compact
     // height, independent from the candidate font size setting.
     const HFONT tag_font = status_font;
-    const int strip_height = Scale(dpi, 26);
+    const int strip_height = ScaleVertical(dpi, 26);
     // The window IS the badge: one glyph gets a square, EN gets natural width.
-    const int tag_width = std::max(Measure(dc, tag_font, mode_label) + Scale(dpi, 14), strip_height);
+    const int tag_width = std::max(Measure(dc, tag_font, mode_label) + Scale(
+        dpi, gy::candidate_appearance::ModeHorizontalInsetsDips(candidate_scale_percent_) - 4), strip_height);
     mode_rect_ = RECT{0, 0, tag_width, strip_height};
     right_edge = mode_rect_.right;
   }
@@ -331,38 +419,52 @@ void CandidateWindow::Layout(UINT dpi, int available_width) {
   DeleteObject(status_font);
 
   // Do not clamp a normal four-character candidate back into an ellipsis.
-  content_width_ = expanded_grid ? grid_right + padding
+  content_width_ = stacked_surface ? grid_right + padding
       : mode_popup_ ? right_edge : std::max(Scale(dpi, 48), right_edge + padding);
-  content_height_ = expanded_grid ? mode_rect_.bottom + padding
+  content_height_ = stacked_surface ? mode_rect_.bottom + padding
       : mode_popup_ ? mode_rect_.bottom : chip_height + 2 * padding;
   pinyin_rect_ = RECT{};
   candidate_strip_rect_ = RECT{0, 0, content_width_, content_height_};
 }
 void CandidateWindow::Show(const RECT& caret, const std::wstring& pinyin,
                             const std::vector<std::wstring>& candidates, unsigned selected,
-                            unsigned page_start, int input_mode, bool expanded) {
+                            unsigned page_start, int input_mode, unsigned candidate_purpose,
+                            bool chinese_grid_open, bool english_list_open,
+                            bool english_candidate_focus,
+                            const std::vector<unsigned>& correction_indices) {
   mode_popup_ = false;
   input_mode_ = std::clamp(input_mode, 0, 2);
   english_mode_ = input_mode_ == 2;
+  candidate_purpose_ = gy::candidate_presentation::NormalizePurpose(candidate_purpose);
   // The TSF DLL owns the state. Never let Host-local click state override a
   // keyboard ↓ expansion requested by the active application.
-  expanded_ = expanded;
-  ShowInternal(caret, pinyin, candidates, selected, page_start);
+  chinese_grid_open_ = chinese_grid_open && gy::candidate_presentation::CanExpand(
+      candidate_purpose_, static_cast<unsigned>(candidates.size()));
+  english_list_open_ = english_list_open && gy::candidate_presentation::CanExpandEnglish(
+      candidate_purpose_, static_cast<unsigned>(candidates.size()));
+  english_candidate_focus_ = english_mode_ && english_candidate_focus;
+  ShowInternal(caret, pinyin, candidates, selected, page_start, correction_indices);
 }
 
 void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin,
                                    const std::vector<std::wstring>& candidates, unsigned selected,
-                                   unsigned page_start) {
+                                   unsigned page_start, const std::vector<unsigned>& correction_indices) {
   caret_rect_ = caret;
   if (hwnd_) KillTimer(hwnd_, 1);
   pinyin_ = pinyin;
   candidates_ = candidates;
+  correction_indices_ = correction_indices;
+  std::sort(correction_indices_.begin(), correction_indices_.end());
+  correction_indices_.erase(std::unique(correction_indices_.begin(), correction_indices_.end()), correction_indices_.end());
   if (candidates_.empty() && !mode_popup_) return Hide();
   if (candidates_.empty()) {
     page_start_ = 0;
     selected_ = 0;
   } else {
-    const unsigned page_size = expanded_ ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
+    const auto surface = gy::candidate_presentation::Resolve(
+        candidate_purpose_, chinese_grid_open_, static_cast<unsigned>(candidates_.size()), false,
+        english_list_open_);
+    const unsigned page_size = gy::candidate_presentation::PageSize(surface);
     const unsigned last_page = static_cast<unsigned>((candidates_.size() - 1) / page_size) * page_size;
     page_start_ = std::min(page_start, last_page);
     selected_ = std::min<unsigned>(selected, static_cast<unsigned>(candidates_.size() - 1));
@@ -374,10 +476,14 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   visual_style_ = CandidateStyle();
   dark_theme_ = visual_style_ != 1;
 
-  MONITORINFO monitor_info{sizeof(monitor_info)};
+  MONITORINFOEXW monitor_info{};
+  monitor_info.cbSize = sizeof(monitor_info);
   RECT work_area{caret.left, caret.top, caret.left + Scale(96, 520), caret.top + Scale(96, 60)};
   const HMONITOR monitor = MonitorFromRect(&caret, MONITOR_DEFAULTTONEAREST);
   if (monitor) GetMonitorInfoW(monitor, &monitor_info), work_area = monitor_info.rcWork;
+  candidate_scale_percent_ = gy::candidate_appearance::ResolveScalePercentForMonitor(
+      CandidateScalePreference(), monitor);
+  g_candidate_scale_percent = candidate_scale_percent_;
   RegisterCandidateClass();
   const bool creating = !hwnd_;
   if (creating) {
@@ -401,19 +507,25 @@ void CandidateWindow::ShowInternal(const RECT& caret, const std::wstring& pinyin
   // Keep five columns, but cap the panel at a comfortable physical width so
   // the confirmed GY layout is the same on laptop and desktop screens.
   const int monitor_available = std::max(Scale(dpi, 180), monitor_width - Scale(dpi, 20));
-  const int compact_panel_cap = expanded_ ? Scale(dpi, 820) : Scale(dpi, 720);
+  const int compact_panel_cap = chinese_grid_open_ ? Scale(dpi, 820)
+      : english_list_open_ ? Scale(dpi, 420) : Scale(dpi, 720);
   const int available_width = std::min(monitor_available, compact_panel_cap);
   Layout(dpi, available_width);
   const int width = content_width_;
   const int height = content_height_;
-  int x = std::clamp(static_cast<int>(caret.left), static_cast<int>(work_area.left),
+  const auto anchor = gy::candidate_placement::NormalizeAnchor(
+      static_cast<int>(caret.left), static_cast<int>(caret.top),
+      static_cast<int>(caret.right), static_cast<int>(caret.bottom),
+      ScaleDpiOnly(dpi, gy::candidate_placement::kMinimumAnchorHeightDips));
+  int x = std::clamp(anchor.left, static_cast<int>(work_area.left),
                      std::max(static_cast<int>(work_area.left), static_cast<int>(work_area.right) - width));
-  int y = caret.bottom + Scale(dpi, 5);
-  if (y + height > work_area.bottom && caret.top - height - Scale(dpi, 5) >= work_area.top) y = caret.top - height - Scale(dpi, 5);
-  y = std::clamp(y, static_cast<int>(work_area.top),
-                 std::max(static_cast<int>(work_area.top), static_cast<int>(work_area.bottom) - height));
+  const auto vertical = gy::candidate_placement::PlaceVertically(
+      static_cast<int>(work_area.top), static_cast<int>(work_area.bottom), anchor, height,
+      ScaleDpiOnly(dpi, gy::candidate_placement::kTextGapDips));
+  const int y = vertical.y;
   if (width != window_width_ || height != window_height_) {
-    HRGN rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1, Scale(dpi, 9), Scale(dpi, 9));
+    HRGN rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                     ScaleDetail(dpi, 9), ScaleDetail(dpi, 9));
     SetWindowRgn(hwnd_, rounded, TRUE);
     window_width_ = width;
     window_height_ = height;
@@ -428,6 +540,9 @@ void CandidateWindow::ShowMode(const RECT& caret, int input_mode) {
   mode_popup_ = true;
   input_mode_ = std::clamp(input_mode, 0, 2);
   english_mode_ = input_mode_ == 2;
+  candidate_purpose_ = english_mode_
+      ? gy::candidate_presentation::Purpose::EnglishCompletion
+      : gy::candidate_presentation::Purpose::ChineseConversion;
   ShowInternal(caret, L"", {}, 0, 0);
   if (hwnd_) SetTimer(hwnd_, 1, 700, nullptr);
 }
@@ -444,7 +559,9 @@ void CandidateWindow::Hide() {
     hwnd_ = nullptr;
   }
   mode_popup_ = false;
-  expanded_ = false;
+  chinese_grid_open_ = false;
+  english_list_open_ = false;
+  english_candidate_focus_ = false;
   window_width_ = 0;
   window_height_ = 0;
 }
@@ -499,23 +616,29 @@ LRESULT CALLBACK CandidateWindow::WindowProc(HWND hwnd, UINT message, WPARAM wpa
       return 0;
     }
     if (!IsRectEmpty(&self->previous_page_rect_) && PtInRect(&self->previous_page_rect_, point)) {
-      self->choose_(self->expanded_ ? kPreviousExpandedPageAction : kPreviousPageAction);
+      self->choose_(self->chinese_grid_open_ ? kPreviousChineseGridPageAction : kPreviousPageAction);
       return 0;
     }
     if (!IsRectEmpty(&self->expand_rect_) && PtInRect(&self->expand_rect_, point)) {
-      self->expanded_ = !self->expanded_;
-      self->ShowInternal(self->caret_rect_, self->pinyin_, self->candidates_, self->selected_, self->page_start_);
-      self->choose_(kToggleExpandedAction);
+      if (self->english_mode_) {
+        self->english_list_open_ = !self->english_list_open_;
+        self->english_candidate_focus_ = true;
+      }
+      else self->chinese_grid_open_ = !self->chinese_grid_open_;
+      self->ShowInternal(self->caret_rect_, self->pinyin_, self->candidates_, self->selected_,
+                         self->page_start_, self->correction_indices_);
+      self->choose_(self->english_mode_ ? kToggleEnglishListAction : kToggleChineseGridAction);
       return 0;
     }
     if (!IsRectEmpty(&self->next_page_rect_) && PtInRect(&self->next_page_rect_, point)) {
-      self->choose_(self->expanded_ ? kNextExpandedPageAction : kNextPageAction);
+      self->choose_(self->chinese_grid_open_ ? kNextChineseGridPageAction : kNextPageAction);
       return 0;
     }
     for (unsigned i = 0; i < self->candidate_rects_.size(); ++i) {
       if (PtInRect(&self->candidate_rects_[i], point)) {
         if (self->choose_(self->page_start_ + i)) {
-          self->expanded_ = false;
+          self->chinese_grid_open_ = false;
+          self->english_list_open_ = false;
         }
         break;
       }
@@ -549,7 +672,8 @@ void CandidateWindow::Paint(HDC dc) {
   const HPEN border_pen = CreatePen(PS_SOLID, 1, border);
   const HGDIOBJ old_pen = SelectObject(dc, border_pen);
   const HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-  RoundRect(dc, 0, 0, client.right, client.bottom, Scale(dpi_, 9), Scale(dpi_, 9));
+  RoundRect(dc, 0, 0, client.right, client.bottom,
+            ScaleDetail(dpi_, 9), ScaleDetail(dpi_, 9));
   SelectObject(dc, old_pen);
   SelectObject(dc, old_brush);
   DeleteObject(border_pen);
@@ -558,42 +682,80 @@ void CandidateWindow::Paint(HDC dc) {
   const HFONT candidate_font = Font(dpi_, candidate_point_size_, FW_SEMIBOLD);
   const HFONT key_font = Font(dpi_, 10, FW_SEMIBOLD);
   const HFONT status_font = Font(dpi_, 12, FW_SEMIBOLD);
+  const auto surface = gy::candidate_presentation::Resolve(
+      candidate_purpose_, chinese_grid_open_, static_cast<unsigned>(candidates_.size()), mode_popup_,
+      english_list_open_);
   Text(dc, ModeLabel(input_mode_), mode_rect_, kGyBlue, DT_CENTER, status_font);
   if (!mode_popup_ && !IsRectEmpty(&expand_rect_)) {
-    const int divider = expand_rect_.right + Scale(dpi_, 1);
-    Fill(dc, RECT{divider, expand_rect_.top + Scale(dpi_, 7), divider + 1,
-                 expand_rect_.bottom - Scale(dpi_, 7)}, border);
+    const int divider = expand_rect_.right + ScaleDetail(dpi_, 1);
+    Fill(dc, RECT{divider, expand_rect_.top + ScaleDetail(dpi_, 7), divider + 1,
+                 expand_rect_.bottom - ScaleDetail(dpi_, 7)}, border);
   }
   for (unsigned i = 0; i < candidate_rects_.size(); ++i) {
     const unsigned candidate_index = page_start_ + i;
     const RECT chip_rect = candidate_rects_[i];
-    const bool selected = candidate_index == selected_;
+    const bool english_surface = gy::candidate_presentation::IsEnglish(surface) &&
+        !gy::candidate_presentation::UsesNumericShortcuts(surface);
+    const bool selected = candidate_index == selected_ &&
+        (!english_surface || english_candidate_focus_);
+    const bool correction = std::binary_search(correction_indices_.begin(), correction_indices_.end(), candidate_index);
     if (selected) {
       const HBRUSH brush = CreateSolidBrush(selected_background);
       const HGDIOBJ old_candidate_brush = SelectObject(dc, brush);
       const HGDIOBJ old_candidate_pen = SelectObject(dc, GetStockObject(NULL_PEN));
       RoundRect(dc, chip_rect.left, chip_rect.top, chip_rect.right, chip_rect.bottom,
-                Scale(dpi_, 6), Scale(dpi_, 6));
+                ScaleDetail(dpi_, 6), ScaleDetail(dpi_, 6));
       SelectObject(dc, old_candidate_brush);
       SelectObject(dc, old_candidate_pen);
       DeleteObject(brush);
     }
-    RECT key{chip_rect.left + Scale(dpi_, 6), chip_rect.top, chip_rect.left + Scale(dpi_, 19), chip_rect.bottom};
-    const bool has_shortcut = !expanded_ || i < kCandidatesPerPage;
+    RECT key{chip_rect.left + Scale(dpi_, 6), chip_rect.top,
+             chip_rect.left + Scale(dpi_, 19), chip_rect.bottom};
+    const bool has_shortcut = gy::candidate_presentation::UsesNumericShortcuts(surface) &&
+        (!gy::candidate_presentation::IsChineseGrid(surface) || i < kCandidatesPerPage);
     Text(dc, has_shortcut ? std::to_wstring(i + 1) : L"", key, selected ? selected_text : muted, DT_CENTER, key_font);
-    RECT word{chip_rect.left + Scale(dpi_, 21), chip_rect.top, chip_rect.right - Scale(dpi_, 5), chip_rect.bottom};
+    const int word_left_dips = english_surface
+        ? gy::candidate_appearance::EnglishWordLeftDips(candidate_scale_percent_)
+        : gy::candidate_appearance::ChineseWordLeftDips(candidate_scale_percent_);
+    const int word_right_dips = english_surface
+        ? gy::candidate_appearance::EnglishWordRightDips(candidate_scale_percent_)
+        : gy::candidate_appearance::ChineseWordRightDips(candidate_scale_percent_);
+    RECT word{chip_rect.left + Scale(dpi_, word_left_dips), chip_rect.top,
+              chip_rect.right - Scale(dpi_, word_right_dips), chip_rect.bottom};
     // Candidate text is an input decision, not decorative copy. Never turn
     // it into “…”: Layout reserves enough room for the engine's bounded
     // phrases, and users can see exactly what Enter or its numeric shortcut
     // will commit. Ellipsis is the honest last resort for rows that physically
     // overflow the panel (clip_overflow_); Layout guarantees it never triggers
     // for candidates that fit.
-    Text(dc, candidates_[candidate_index], word, selected ? selected_text : text, DT_LEFT, candidate_font, false);
+    const std::wstring& candidate = candidates_[candidate_index];
+    const bool inline_completion = surface == gy::candidate_presentation::Surface::EnglishStrip &&
+        candidate_index == 0 &&
+        !pinyin_.empty() && candidate.size() > pinyin_.size() &&
+        candidate.rfind(pinyin_, 0) == 0;
+    const COLORREF candidate_text = selected ? selected_text : correction ? RGB(236, 95, 98) : text;
+    if (!inline_completion) {
+      Text(dc, candidate, word, candidate_text, DT_LEFT, candidate_font, false);
+      if (correction) {
+        RECT mark{word.right - Scale(dpi_, 7), word.top + Scale(dpi_, 5), word.right, word.bottom};
+        Text(dc, L"纠", mark, RGB(236, 95, 98), DT_LEFT, key_font, false);
+      }
+      continue;
+    }
+    // The word is still a normal selectable first suggestion. Only its
+    // untyped suffix is muted, so continuing to type or pressing Space rejects
+    // it; Tab (or Space after an explicit arrow action) accepts completion.
+    const int typed_width = Measure(dc, candidate_font, pinyin_);
+    RECT typed{word.left, word.top, std::min(word.right, word.left + typed_width), word.bottom};
+    Text(dc, pinyin_, typed, candidate_text, DT_LEFT, candidate_font, false);
+    RECT suffix{typed.right, word.top, word.right, word.bottom};
+    Text(dc, candidate.substr(pinyin_.size()), suffix,
+         selected ? RGB(213, 225, 255) : muted, DT_LEFT, candidate_font, false);
   }
 
   if (!mode_popup_ && !IsRectEmpty(&next_page_rect_)) {
     const bool can_go_previous = page_start_ > 0;
-    const unsigned page_size = expanded_ ? kExpandedColumns * kExpandedMaxRows : kCandidatesPerPage;
+    const unsigned page_size = gy::candidate_presentation::PageSize(surface);
     const bool can_go_next = page_start_ + page_size < candidates_.size();
     const HFONT pager_font = Font(dpi_, 18, FW_SEMIBOLD);
     const unsigned page = page_start_ / page_size + 1;
@@ -605,7 +767,8 @@ void CandidateWindow::Paint(HDC dc) {
     DeleteObject(pager_font);
   }
   if (!mode_popup_ && !IsRectEmpty(&expand_rect_)) {
-    DrawDisclosureChevron(dc, expand_rect_, expanded_, kDisclosureBlue, dpi_);
+    DrawDisclosureChevron(dc, expand_rect_, chinese_grid_open_ || english_list_open_,
+                          kDisclosureBlue, dpi_);
   }
 
   DeleteObject(candidate_font);

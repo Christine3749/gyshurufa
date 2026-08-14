@@ -1,11 +1,14 @@
 param(
-  [string]$Version
+  [string]$Version,
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifest = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
+if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+else { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version }
 
 $isccCandidates = @(
   (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),

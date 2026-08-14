@@ -9,9 +9,9 @@ class PinyinEngine {
 public:
   enum class LearningTier : std::uint8_t {
     None,
-    Once,
-    Memory,
-    High,
+    Observed,
+    Armed,
+    Preferred,
     Fixed,
   };
 
@@ -21,6 +21,7 @@ public:
     unsigned recent_30_days = 0;
     unsigned active_days = 0;
     bool pinned = false;
+    bool armed = false;
     LearningTier tier = LearningTier::None;
   };
 
@@ -29,14 +30,16 @@ public:
   PinyinEngine(const PinyinEngine&) = delete;
   PinyinEngine& operator=(const PinyinEngine&) = delete;
 
-  [[nodiscard]] std::vector<std::wstring> Lookup(const std::wstring& pinyin) const;
+  [[nodiscard]] std::vector<std::wstring> Lookup(const std::wstring& pinyin, int input_mode) const;
   // Returns only candidates produced for the exact query. Lookup() may append
   // shorter-prefix fallback candidates to fill the first page; segmentation
   // logic must never treat those fallback entries as proof that a longer
   // prefix was consumed.
-  [[nodiscard]] std::vector<std::wstring> LookupExact(const std::wstring& pinyin) const;
+  [[nodiscard]] std::vector<std::wstring> LookupExact(const std::wstring& pinyin, int input_mode) const;
   // Stores only a local pinyin-to-candidate preference; no surrounding text is retained.
-  void Learn(const std::wstring& pinyin, const std::wstring& candidate) const;
+  void Learn(const std::wstring& pinyin, const std::wstring& candidate, int input_mode = -1) const;
+  void UndoLastLearn(const std::wstring& pinyin, const std::wstring& candidate,
+                     int input_mode = -1) const;
   // A pinned entry is a user-approved fixed word. It is intentionally a
   // separate operation from normal learning so one accidental selection can
   // never create a permanent dictionary preference.

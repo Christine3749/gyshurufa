@@ -18,10 +18,16 @@
 # versioned so a clean clone can build without relying on another worktree.
 !gy输入法/native/runtime/
 gy输入法/native/runtime/*
+!gy输入法/native/runtime/english/
+gy输入法/native/runtime/english/*
+!gy输入法/native/runtime/english/english.tsv
+!gy输入法/native/runtime/english/LICENSE.frequency-words.txt
+!gy输入法/native/runtime/english/manifest.json
 !gy输入法/native/runtime/rime/
 gy输入法/native/runtime/rime/*
 !gy输入法/native/runtime/rime/shared/
 gy输入法/native/runtime/rime/shared/*
+!gy输入法/native/runtime/rime/shared/luna_pinyin.schema.yaml
 !gy输入法/native/runtime/rime/shared/build/
 gy输入法/native/runtime/rime/shared/build/*
 !gy输入法/native/runtime/rime/shared/build/default.yaml
@@ -45,6 +51,19 @@ security-scan-*.jsonl
 .DS_Store
 /releases/
 gy输入法---官方网站/publish/
+
+# A clean Windows source handoff must be able to configure and link without a
+# second private workstation. These are the small, redistributable librime SDK
+# files used by native/CMakeLists.txt; release installers and build outputs stay
+# ignored by the broad rules above.
+!gy输入法/native/runtime/rime/AUTHORS.rime-data.txt
+!gy输入法/native/runtime/rime/LICENSE.librime.txt
+!gy输入法/native/runtime/rime/LICENSE.rime-data.txt
+!gy输入法/native/runtime/rime/include/
+!gy输入法/native/runtime/rime/include/rime_api.h
+!gy输入法/native/runtime/rime/lib/
+!gy输入法/native/runtime/rime/lib/rime.dll
+!gy输入法/native/runtime/rime/lib/rime.lib
 
 # HS 项目工作副本（独立仓库，不入本仓）
 HS-halfsphere/

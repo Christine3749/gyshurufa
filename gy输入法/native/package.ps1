@@ -1,13 +1,18 @@
 ﻿param(
   [string]$Version,
   [ValidateSet('Release')][string]$Configuration = 'Release',
-  [string]$OutputRoot = (Join-Path $PSScriptRoot 'release')
+  [string]$OutputRoot = (Join-Path $PSScriptRoot 'release'),
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifest = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
+if ([string]$manifest.windows.state -ne 'draft') { throw 'Release payload preparation only accepts a fresh draft. Never rebuild or overwrite a candidate or published version.' }
+if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+else { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version }
+$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 
 $build = Join-Path $PSScriptRoot 'build-release'
 cmake -S $PSScriptRoot -B $build -G 'Visual Studio 17 2022' -A x64 "-DGY_VERSION=$Version"
@@ -32,25 +37,31 @@ if (-not (Test-Path -LiteralPath $notesSource)) { throw "Release notes are missi
 Copy-Item -LiteralPath $notesSource -Destination (Join-Path $payloadRoot 'release-notes.txt')
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime.dll') -Destination (Join-Path $payloadRoot 'rime.dll')
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'rime-data') -Destination (Join-Path $payloadRoot 'rime-data') -Recurse
+Copy-Item -LiteralPath (Join-Path $binaryRoot 'english-lexicon') -Destination (Join-Path $payloadRoot 'english-lexicon') -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Install-GYInput.ps1') -Destination (Join-Path $packageRoot 'Install-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Set-GYKeyboard.ps1') -Destination (Join-Path $packageRoot 'Set-GYKeyboard.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Validate-GYInput.ps1') -Destination (Join-Path $packageRoot 'Validate-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Get-GYLoadedClientState.ps1') -Destination (Join-Path $packageRoot 'Get-GYLoadedClientState.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Get-GYKeepHealth.ps1') -Destination (Join-Path $packageRoot 'Get-GYKeepHealth.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Rollback-GYInput.ps1') -Destination (Join-Path $packageRoot 'Rollback-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Repair-GYInput.ps1') -Destination (Join-Path $packageRoot 'Repair-GYInput.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\AutoUpdate-GYInput.ps1') -Destination (Join-Path $packageRoot 'AutoUpdate-GYInput.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Sync-GYEnglishLexicon.ps1') -Destination (Join-Path $packageRoot 'Sync-GYEnglishLexicon.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientReload.ps1') -Destination (Join-Path $packageRoot 'Finalize-GYClientReload.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Prune-GYOldVersions.ps1') -Destination (Join-Path $packageRoot 'Prune-GYOldVersions.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Migrate-GYLegacyInstallEntries.ps1') -Destination (Join-Path $packageRoot 'Migrate-GYLegacyInstallEntries.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Register-GYInputActivationTasks.ps1') -Destination (Join-Path $packageRoot 'Register-GYInputActivationTasks.ps1')
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'LICENSES') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer/GYInputTransaction.ps1') -Destination (Join-Path $packageRoot 'GYInputTransaction.ps1')
 Copy-Item -LiteralPath (Get-GYReleaseManifestPath) -Destination (Join-Path $packageRoot 'release.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $packageRoot 'LICENSES\librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $packageRoot 'LICENSES\rime-data-license.txt')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\english\LICENSE.frequency-words.txt') -Destination (Join-Path $packageRoot 'LICENSES\english-frequency-words-CC-BY-SA-4.0.txt')
 Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $Version -NoNewline -Encoding utf8
 
 $hashLines = Get-ChildItem -LiteralPath $payloadRoot -File -Recurse | ForEach-Object {
   $relative = $_.FullName.Substring($payloadRoot.Length + 1)
-  "{0}  {1}" -f (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $relative
+  "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $relative
 }
 Set-Content -LiteralPath (Join-Path $payloadRoot 'SHA256SUMS.txt') -Value $hashLines -Encoding utf8
 

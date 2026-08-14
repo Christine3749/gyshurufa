@@ -5,7 +5,8 @@ param(
   [string]$BucketName = 'gy-shurufa-releases',
   [switch]$AllowUnsignedCandidate,
   [switch]$CandidateOnly,
-  [switch]$Resume
+  [switch]$Resume,
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +25,13 @@ Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $manifest = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
+if ($CandidateOnly) {
+  if ($ApprovalPath) { $approval = Assert-GYCandidateDistributionApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYCandidateDistributionApproval -Manifest $manifest -Version $Version }
+} else {
+  if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version }
+}
 
 if ([string]$manifest.windows.state -eq 'draft') { throw 'Draft Windows releases must be finalized before publishing.' }
 $requireSignature = [string]$manifest.channel -eq 'stable'
@@ -34,7 +42,7 @@ if ($CandidateOnly -and [string]$manifest.channel -eq 'stable') {
   throw 'CandidateOnly cannot publish a stable release. Use the normal signed publication path instead.'
 }
 
-& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature:$requireSignature
+& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature:$requireSignature -CandidateDistribution:$CandidateOnly -ApprovalPath $ApprovalPath
 
 $setup = Join-Path $ReleaseRoot $manifest.windows.setupFile
 $zip = Join-Path $ReleaseRoot $manifest.windows.zipFile
@@ -114,7 +122,15 @@ try {
     }
   }
   if ($CandidateOnly) {
-    Write-Host "Published isolated candidate Windows release $Version. releases/latest.json was not changed." -ForegroundColor Green
+    # The candidate manifest above is immutable and tied to its version. This
+    # pointer is intentionally the only mutable candidate object: the website
+    # and test download endpoint can always discover the newest candidate
+    # without a source-code change or a hard-coded version.
+    if ($PSCmdlet.ShouldProcess("$BucketName/candidates/windows/latest.json", 'Advance latest public Windows candidate pointer')) {
+      Invoke-ReleaseNative { & npx wrangler r2 object put "$BucketName/candidates/windows/latest.json" --file "$packageManifest" --content-type 'application/json; charset=utf-8' --remote }
+      if ($LASTEXITCODE -ne 0) { throw 'Unable to advance candidates/windows/latest.json.' }
+    }
+    Write-Host "Published public Windows candidate $Version and advanced candidates/windows/latest.json. releases/latest.json (stable) was not changed." -ForegroundColor Green
     return
   }
   if ($PSCmdlet.ShouldProcess("$BucketName/releases/latest.json", 'Atomically advance verified cross-platform latest pointer')) {
@@ -126,5 +142,3 @@ try {
 finally {
   Remove-Item -LiteralPath $tempRoot -Force -Recurse -ErrorAction SilentlyContinue
 }
-
-

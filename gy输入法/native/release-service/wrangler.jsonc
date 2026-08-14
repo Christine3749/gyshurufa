@@ -14,6 +14,14 @@
       "zone_name": "shurufa.wang"
     },
     {
+      "pattern": "shurufa.wang/api/ciku/*",
+      "zone_name": "shurufa.wang"
+    },
+    {
+      "pattern": "www.shurufa.wang/api/ciku/*",
+      "zone_name": "shurufa.wang"
+    },
+    {
       "pattern": "shurufa.wang/download/*",
       "zone_name": "shurufa.wang"
     },

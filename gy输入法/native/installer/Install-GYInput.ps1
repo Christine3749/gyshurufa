@@ -24,6 +24,10 @@ $installedIcon = Join-Path $tsfRoot 'gy.ico'
 $installedHostIcon = Join-Path $versionRoot 'gy.ico'
 $installedSharedIcon = Join-Path $installRoot 'gy.ico'
 $installedNotes = Join-Path $versionRoot 'RELEASE-NOTES.txt'
+$legacyMigrationSource = Join-Path $packageRoot 'Migrate-GYLegacyInstallEntries.ps1'
+$legacyMigrationPath = Join-Path $installRoot 'Migrate-GYLegacyInstallEntries.ps1'
+$keyboardSource = Join-Path $packageRoot 'Set-GYKeyboard.ps1'
+$keyboardPath = Join-Path $installRoot 'Set-GYKeyboard.ps1'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $statePath = Join-Path $installRoot 'install-state.json'
 $commonDataRoot = Join-Path $env:ProgramData 'GYInput'
@@ -33,7 +37,7 @@ $taskRegistrarSource = Join-Path $packageRoot 'Register-GYInputActivationTasks.p
 $commonFinalizer = Join-Path $commonDataRoot 'Finalize-GYClientReload.ps1'
 $commonPrune = Join-Path $commonDataRoot 'Prune-GYOldVersions.ps1'
 $pendingTaskName = 'GYInput\ActivatePending'
-$pendingTaskNameLogon = 'GYInput\ActivatePendingLogon'
+$legacyPendingTaskNameLogon = 'GYInput\ActivatePendingLogon'
 
 function Get-X64RegSvr32 {
   if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { return Join-Path $env:WINDIR 'Sysnative\regsvr32.exe' }
@@ -82,9 +86,15 @@ function Install-PendingActivationAssets {
 }
 
 function Save-PendingActivation([object]$PreviousState) {
+  $bootKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters')
+  if (-not $bootKey) { throw 'Windows BootId is unavailable; refusing to stage an activation that cannot prove a reboot.' }
+  try { $stagedBootId = $bootKey.GetValue('BootId', $null) } finally { $bootKey.Dispose() }
+  if ($null -eq $stagedBootId) { throw 'Windows BootId is unavailable; refusing to stage an activation that cannot prove a reboot.' }
+  $firstInstall = [string]::IsNullOrWhiteSpace([string]$PreviousState.version)
   $pending = [ordered]@{
     activationState = 'pending'
-    schemaVersion = 1
+    schemaVersion = 2
     version = $version
     dll = $installedDll
     host = $installedHost
@@ -93,6 +103,8 @@ function Save-PendingActivation([object]$PreviousState) {
     previousHost = [string]$PreviousState.host
     previousHealth = [string]$PreviousState.health
     previousVersion = [string]$PreviousState.version
+    firstInstall = $firstInstall
+    stagedBootId = [uint32]$stagedBootId
   }
 
   Write-GyStateAtomically $pending $pendingPath
@@ -114,27 +126,10 @@ function Test-ScheduledTaskExists([string]$TaskName) {
   return $probe.ExitCode -eq 0
 }
 
-function Register-PendingActivationTask([string]$TaskName, [string]$Schedule) {
-  $schtasks = Join-Path $env:WINDIR 'System32\schtasks.exe'
-  $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $taskArgs = '/Create /TN "' + $TaskName +
-              '" /SC ' + $Schedule + ' /RU SYSTEM /RL HIGHEST /F /TR "' +
-              $powershell + ' -NoProfile -ExecutionPolicy Bypass -File ' + $commonFinalizer + '"'
-  $result = Start-Process -FilePath $schtasks -ArgumentList $taskArgs -Wait -PassThru
-  if ($result.ExitCode -ne 0) { throw "Unable to schedule pending GY activation via $Schedule (schtasks exit code: $($result.ExitCode))." }
-  # schtasks has been observed to report success while the task fails to
-  # persist (the exact failure mode that left a previous release stuck on
-  # its old DLL forever). Read the task back before trusting it.
-  if (-not (Wait-GYInputScheduledTask $TaskName)) { throw "Scheduled activation task '$TaskName' did not persist after creation." }
-}
-
 function Schedule-PendingActivation {
   try {
-    # ONSTART is the primary trigger. ONLOGON is a redundant fallback: with
-    # Windows Fast Startup enabled, a plain shutdown-then-power-on resumes a
-    # hibernated kernel session instead of a full boot, and ONSTART triggers
-    # can silently fail to fire. Both run the same idempotent finalizer;
-    # whichever runs first wins and the other becomes a no-op.
+    # Activation is boot-only. The shared registrar creates one ONSTART task,
+    # and the Finalizer also verifies that Windows BootId changed.
     if (-not (Test-Path -LiteralPath $taskRegistrarSource -PathType Leaf)) {
       throw 'Pending activation task registrar is missing from the ZIP package.'
     }
@@ -151,43 +146,25 @@ function Schedule-PendingActivation {
 function Cancel-PendingActivation {
   $schtasks = Join-Path $env:WINDIR 'System32\schtasks.exe'
   Remove-GYInputScheduledTask $pendingTaskName | Out-Null
-  Remove-GYInputScheduledTask $pendingTaskNameLogon | Out-Null
+  Remove-GYInputScheduledTask $legacyPendingTaskNameLogon | Out-Null
   Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
 }
 
-function Repair-PendingActivation {
+function Require-PendingActivationComplete {
   if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { return }
-  # A previously staged upgrade never got applied — its ONSTART/ONLOGON tasks
-  # may have been skipped (Fast Startup) or gone missing. Rather than leaving
-  # the machine stuck on the old DLL forever, apply it now using the same
-  # finalizer the scheduled tasks would have run, before continuing with
-  # whatever this invocation of the installer was asked to do.
-  if (-not (Test-Path -LiteralPath $finalizerSource -PathType Leaf)) {
-    throw 'Existing pending activation cannot be repaired because the finalizer is missing from this package.'
-  }
-  $repair = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$finalizerSource,'-LockAlreadyHeld') -Wait -PassThru -WindowStyle Hidden
-  if ($repair.ExitCode -ne 0 -or (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
-    throw 'Existing pending activation could not be completed; the current installation was not changed.'
-  }
+  throw '已有 GY 版本等待激活。为保护当前会话中的办公软件，请先正常重启 Windows，再重新运行安装程序。'
 }
 
-function Try-FinalizePendingActivation {
-  if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { return $true }
-  if (-not (Test-Path -LiteralPath $finalizerSource -PathType Leaf)) {
-    Write-Warning 'GY Finalizer is unavailable; the registered startup/logon fallback will complete activation.'
-    return $false
-  }
-  # The installer already owns the shared transaction mutex. Passing
-  # -LockAlreadyHeld prevents a second process from racing this transaction.
-  $finalizer = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', $finalizerSource, '-LockAlreadyHeld'
-  ) -Wait -PassThru -WindowStyle Hidden
-  if ($finalizer.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
-    return $true
-  }
-  Write-Warning 'GY activation could not finish in the installer; the registered startup/logon fallback will retry automatically.'
-  return $false
+function Schedule-CurrentUserKeyboardCompletion {
+  $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $command = '"' + $powershell + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+             $keyboardPath + '" -Add -RequireActiveVersion "' + $version +
+             '" -RetryAtNextLogon -WaitForActivationSeconds 60'
+  # Keep this completion entry until Set-GYKeyboard verifies that Windows has
+  # retained the GY TIP. A one-shot RunOnce can be consumed before the boot
+  # finalizer finishes and leave the current account permanently on ENG.
+  $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+  try { $key.SetValue('GYInputCompleteKeyboard', $command, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
 }
 function Test-SameFile([string]$Source, [string]$Destination) {
   if (-not (Test-Path -LiteralPath $Source) -or -not (Test-Path -LiteralPath $Destination)) { return $false }
@@ -195,6 +172,17 @@ function Test-SameFile([string]$Source, [string]$Destination) {
   $destinationItem = Get-Item -LiteralPath $Destination
   if ($sourceItem.Length -ne $destinationItem.Length) { return $false }
   return (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+}
+
+function Invoke-LegacyInstallMigration {
+  if (-not (Test-Path -LiteralPath $legacyMigrationPath -PathType Leaf)) {
+    throw 'Legacy installed-app migration helper is missing from the current GY package.'
+  }
+  $result = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $legacyMigrationPath,
+    '-InstallRoot', $installRoot, '-CurrentVersion', $version
+  ) -Wait -PassThru -WindowStyle Hidden
+  if ($result.ExitCode -ne 0) { throw "Legacy installed-app migration failed (exit code: $($result.ExitCode))." }
 }
 
 function Test-SameTree([string]$Source, [string]$Destination) {
@@ -214,7 +202,8 @@ function Test-ThisReleaseInstalled {
          (Test-SameFile (Join-Path $payloadRoot 'gy.ico') $installedHostIcon) -and
          (Test-SameFile (Join-Path $payloadRoot 'release-notes.txt') $installedNotes) -and
          (Test-SameFile (Join-Path $payloadRoot 'rime.dll') (Join-Path $versionRoot 'rime.dll')) -and
-         (Test-SameTree (Join-Path $payloadRoot 'rime-data') (Join-Path $versionRoot 'rime-data'))
+         (Test-SameTree (Join-Path $payloadRoot 'rime-data') (Join-Path $versionRoot 'rime-data')) -and
+         (Test-SameTree (Join-Path $payloadRoot 'english-lexicon') (Join-Path $versionRoot 'english-lexicon'))
 }
 
 function Update-CurrentUserKeyboardList {
@@ -222,9 +211,11 @@ function Update-CurrentUserKeyboardList {
   $chinese = $languages | Where-Object LanguageTag -eq 'zh-Hans-CN' | Select-Object -First 1
   if (-not $chinese) { throw '找不到“中文（简体，中国）”。请先在 Windows 设置中添加该语言。' }
   if ($Uninstall) {
-    foreach ($language in $languages) { [void]$language.InputMethodTips.Remove($tipId) }
+    foreach ($language in $languages) {
+      while ($language.InputMethodTips.Remove($tipId)) {}
+    }
   } else {
-    if ($chinese.InputMethodTips -contains $tipId) { [void]$chinese.InputMethodTips.Remove($tipId) }
+    while ($chinese.InputMethodTips.Remove($tipId)) {}
     # Insert at the front, not appended: Windows treats a language's first tip
     # as its preferred one, and a competing IME (e.g. Tencent WeType) installed
     # either before or after GY would otherwise keep that position indefinitely.
@@ -247,31 +238,10 @@ function Update-CurrentUserKeyboardList {
     try { Set-WinDefaultInputMethodOverride -InputTip $tipId } catch {}
   }
 
-  # Keep the current language-bar session in sync with the refreshed TSF
-  # profile. This script reaches this function from the original interactive
-  # user process after any administrator work has completed.
-  try {
-    if ([Environment]::UserInteractive) {
-      $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-      if ($sessionId -ne 0) {
-        $ctfmon = @(Get-Process -Name 'ctfmon' -ErrorAction SilentlyContinue |
-          Where-Object { $_.SessionId -eq $sessionId })
-        foreach ($process in $ctfmon) {
-          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-        }
-        if ($ctfmon.Count -gt 0) {
-          Start-Sleep -Milliseconds 250
-          $ctfmonPath = Join-Path $env:WINDIR 'System32\ctfmon.exe'
-          if (Test-Path -LiteralPath $ctfmonPath -PathType Leaf) {
-            Start-Process -FilePath $ctfmonPath -WindowStyle Hidden | Out-Null
-          }
-        }
-      }
-    }
-  } catch {
-    # Input-indicator refresh is best effort; it must not invalidate a
-    # verified installation or rollback.
-  }
+  # Never terminate ctfmon during an upgrade. It owns the current session's
+  # text-service state and killing it can interrupt active applications or
+  # change their transient input profile. New applications see the verified
+  # registration immediately; existing applications are told to reopen.
 }
 
 function Invoke-InstalledValidation {
@@ -337,7 +307,11 @@ function Get-ActiveGyState {
     version = $hostVersion
     coreVersion = Get-CoreVersionFromDllPath $dll
     health = $health
-    activationState = 'captured-active-registry'
+    # A snapshot is eligible for rollback only when it explicitly satisfies
+    # the same verified-active contract the rollback tool enforces.
+    activationState = 'active'
+    registryVerified = $true
+    requiresClientReload = $false
     capturedAtUtc = [DateTime]::UtcNow.ToString('o')
   }
 }
@@ -488,7 +462,10 @@ if (-not $Elevated) {
     if ($Rollback) { $arguments += ' -Rollback' }
     $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "GY 系统安装操作失败；管理员 PowerShell 返回 $($process.ExitCode)。" }
-    Update-CurrentUserKeyboardList
+    if ($Uninstall) { Update-CurrentUserKeyboardList }
+    elseif ($Rollback) { Update-CurrentUserKeyboardList }
+    elseif (Test-Path -LiteralPath $pendingPath -PathType Leaf) { Schedule-CurrentUserKeyboardCompletion }
+    else { Update-CurrentUserKeyboardList }
     if (-not $Uninstall -and -not $Rollback -and -not (Test-Path -LiteralPath $pendingPath -PathType Leaf) -and -not (Invoke-InstalledValidation)) { Write-Warning '安装后自动校验未通过，请运行 Validate-GYInput.ps1 查看具体项。' }
     if ($Uninstall) { Write-Host 'GY 输入法已从当前账户的键盘列表移除。' }
     elseif ($Rollback) { Write-Host 'GY 输入法已回滚到上一个已验证版本。关闭并重新打开正在输入的应用即可生效。' }
@@ -537,8 +514,14 @@ if ($Uninstall) {
   return
 }
 
-Repair-PendingActivation
+Require-PendingActivationComplete
 Assert-Payload
+if (-not (Test-Path -LiteralPath $legacyMigrationSource -PathType Leaf)) {
+  throw 'Legacy installed-app migration helper is missing from the package.'
+}
+if (-not (Test-Path -LiteralPath $keyboardSource -PathType Leaf)) {
+  throw 'Keyboard completion helper is missing from the package.'
+}
 New-Item -ItemType Directory -Path $versionRoot, $tsfRoot -Force | Out-Null
 $payloadDll = Join-Path $payloadRoot ("GyIme-$version.dll")
 $payloadHost = Join-Path $payloadRoot ("GyImeHost-$version.exe")
@@ -547,7 +530,14 @@ $payloadIcon = Join-Path $payloadRoot 'gy.ico'
 $payloadNotes = Join-Path $payloadRoot 'release-notes.txt'
 $payloadRime = Join-Path $payloadRoot 'rime.dll'
 $payloadData = Join-Path $payloadRoot 'rime-data'
+$payloadEnglish = Join-Path $payloadRoot 'english-lexicon'
 if (-not (Test-Path -LiteralPath $installedDll)) { Copy-Item -LiteralPath $payloadDll -Destination $installedDll -Force }
+if (-not (Test-SameFile $legacyMigrationSource $legacyMigrationPath)) {
+  Copy-Item -LiteralPath $legacyMigrationSource -Destination $legacyMigrationPath -Force
+}
+if (-not (Test-SameFile $keyboardSource $keyboardPath)) {
+  Copy-Item -LiteralPath $keyboardSource -Destination $keyboardPath -Force
+}
 if (-not (Test-SameFile $payloadHost $installedHost)) { Copy-Item -LiteralPath $payloadHost -Destination $installedHost -Force }
 if (-not (Test-SameFile $payloadHealth $installedHealth)) { Copy-Item -LiteralPath $payloadHealth -Destination $installedHealth -Force }
 if (-not (Test-Path -LiteralPath $installedIcon)) { Copy-Item -LiteralPath $payloadIcon -Destination $installedIcon -Force }
@@ -559,6 +549,10 @@ if (-not (Test-SameTree $payloadData (Join-Path $versionRoot 'rime-data'))) {
   if (Test-Path -LiteralPath (Join-Path $versionRoot 'rime-data')) { Remove-Item -LiteralPath (Join-Path $versionRoot 'rime-data') -Recurse -Force }
   Copy-Item -LiteralPath $payloadData -Destination (Join-Path $versionRoot 'rime-data') -Recurse -Force
 }
+if (-not (Test-SameTree $payloadEnglish (Join-Path $versionRoot 'english-lexicon'))) {
+  if (Test-Path -LiteralPath (Join-Path $versionRoot 'english-lexicon')) { Remove-Item -LiteralPath (Join-Path $versionRoot 'english-lexicon') -Recurse -Force }
+  Copy-Item -LiteralPath $payloadEnglish -Destination (Join-Path $versionRoot 'english-lexicon') -Recurse -Force
+}
 $health = Start-Process -FilePath $installedHealth -WorkingDirectory $versionRoot -Wait -PassThru
 if ($health.ExitCode -ne 0) { throw "GY 输入法离线引擎自检失败；退出码：$($health.ExitCode)。旧版本保持不变。" }
 $previousState = Get-ActiveGyState
@@ -567,12 +561,24 @@ $previousCoreVersion = [string]$previousState.coreVersion
 if ([string]::IsNullOrWhiteSpace($previousCoreVersion)) {
   $previousCoreVersion = Get-CoreVersionFromDllPath ([string]$previousState.dll)
 }
-$coreActivationPending = -not [string]::IsNullOrWhiteSpace($previousCoreVersion) -and $previousCoreVersion -ne $tsfVersion
 $previousInstallStatePath = Join-Path $installRoot 'install-state.json'
 $previousInstallState = if (Test-Path -LiteralPath $previousInstallStatePath -PathType Leaf) {
   Get-Content -LiteralPath $previousInstallStatePath -Raw | ConvertFrom-Json
 } else { $null }
-if ($coreActivationPending) {
+try {
+  $hasAnyPreviousRegistration = -not [string]::IsNullOrWhiteSpace([string]$previousState.dll) -or
+                                -not [string]::IsNullOrWhiteSpace([string]$previousState.host) -or
+                                -not [string]::IsNullOrWhiteSpace([string]$previousState.version)
+  $hasCompletePreviousRegistration = (Test-ManagedGyPath ([string]$previousState.dll)) -and
+                                     (Test-ManagedGyPath ([string]$previousState.host)) -and
+                                     (Test-ManagedGyPath ([string]$previousState.health)) -and
+                                     (Test-Path -LiteralPath ([string]$previousState.dll) -PathType Leaf) -and
+                                     (Test-Path -LiteralPath ([string]$previousState.host) -PathType Leaf) -and
+                                     (Test-Path -LiteralPath ([string]$previousState.health) -PathType Leaf) -and
+                                     -not [string]::IsNullOrWhiteSpace([string]$previousState.version)
+  if ($hasAnyPreviousRegistration -and -not $hasCompletePreviousRegistration) {
+    throw '检测到不完整的 GY 注册状态；没有可验证的回退快照，拒绝暂存新版本。'
+  }
   try {
     Install-PendingActivationAssets
     Save-PreviousGyState $previousState
@@ -580,7 +586,6 @@ if ($coreActivationPending) {
     Save-PendingActivation $previousState
     Schedule-PendingActivation
     Write-GyActivationState 'pending' $previousCoreVersion
-    [void](Try-FinalizePendingActivation)
     return
   } catch {
     Cancel-PendingActivation
@@ -591,26 +596,11 @@ if ($coreActivationPending) {
     }
     throw
   }
-}
-$process = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $installedDll) -Wait -PassThru
-if ($process.ExitCode -ne 0) { throw "GY 输入法注册失败；regsvr32 返回 $($process.ExitCode)。" }
-try {
-  Set-ActiveGyHost
-  if (-not (Test-ThisReleaseActive)) { throw 'GY activation verification failed: registry does not point to the staged DLL and Host.' }
-  $activationState = if ($coreActivationPending) { 'registered-pending-client-reload' } else { 'active' }
-  $state = [ordered]@{
-    schemaVersion = 2; version = $version; hostVersion = $version; coreVersion = $tsfVersion
-    installedAtUtc = [DateTime]::UtcNow.ToString('o'); dll = $installedDll; host = $installedHost; health = $installedHealth
-    updateModel = 'versioned-tsf-host'; activationState = $activationState; registryVerified = $true
-    requiresClientReload = $coreActivationPending; previousCoreVersion = $previousCoreVersion
-  }
-  Write-GyStateAtomically $state (Join-Path $installRoot 'install-state.json')
-  Save-PreviousGyState $previousState
 } catch {
-  if ((Test-ManagedGyPath ([string]$previousState.dll)) -and (Test-ManagedGyPath ([string]$previousState.host)) -and $previousState.version) {
-    $null = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $previousState.dll) -Wait -PassThru
-    Set-ActiveGyHostValue ([string]$previousState.host) ([string]$previousState.version)
-  }
-}
   throw
+}
+}
+
+if (-not $Uninstall -and -not $Rollback -and (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
+  Schedule-CurrentUserKeyboardCompletion
 }

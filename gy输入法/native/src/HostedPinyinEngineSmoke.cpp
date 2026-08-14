@@ -74,6 +74,22 @@ bool Send(gy::host::MessageType type, std::wstring* response = nullptr) {
   if (ok && response) *response = std::move(payload);
   return ok;
 }
+
+std::vector<std::wstring> LookupAfterPrewarm(HostedPinyinEngine* engine, const std::wstring& pinyin,
+                                             int input_mode, std::uint64_t mode_generation) {
+  if (!engine) return {};
+  // Host creation belongs to activation/prewarm, never inside a keystroke.
+  // This test gives that activation a private bounded settle window, then
+  // exercises the normal fast lookup path.
+  engine->Prewarm();
+  const ULONGLONG deadline = GetTickCount64() + 4000;
+  do {
+    const auto candidates = engine->Lookup(pinyin, input_mode, mode_generation);
+    if (!candidates.empty()) return candidates;
+    Sleep(20);
+  } while (GetTickCount64() < deadline);
+  return {};
+}
 }  // namespace
 
 int wmain() {
@@ -84,27 +100,35 @@ int wmain() {
   }
   const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
   HostedPinyinEngine engine(directory);
-  const auto first = engine.Lookup(L"nihao");
+  const auto first = LookupAfterPrewarm(&engine, L"nihao", gy::input_mode::kSimplified, 1);
   if (first.empty()) {
-    std::wcerr << L"The DLL-side Host bootstrap did not return candidates: " << engine.Diagnostic() << L"\n";
+    std::wstring status;
+    const bool status_ok = Send(gy::host::MessageType::Status, &status);
+    std::wcerr << L"The activation-prewarmed Host did not return candidates: " << engine.Diagnostic()
+               << L" endpoint=" << gy::host::HostPipeName()
+               << L" directStatus=" << (status_ok ? status : L"unavailable")
+               << L" lastError=" << GetLastError() << L"\n";
+    Send(gy::host::MessageType::Shutdown);
     return 2;
   }
   // This crosses the same DLL -> Host IPC boundary as the user-facing IME.
   // A local-engine-only test is insufficient: a stale Host must never publish
   // a sparse 3-column panel as though the 5x5 release rule had passed.
-  const auto expanded = engine.Lookup(L"wo");
+  const auto expanded = engine.Lookup(L"wo", gy::input_mode::kSimplified, 1);
   if (expanded.size() < 20 || !IsHanOnly(expanded)) {
     std::wcerr << L"Hosted candidate pool cannot support a 5x5 grid: "
                << expanded.size() << L" qualified candidates.\n";
     return 5;
   }
-  const auto remaining = engine.RemainingPinyin(L"lihouyi", L"李");
+  const auto remaining = engine.RemainingPinyin(
+      L"lihouyi", L"李", gy::input_mode::kSimplified, 1);
   if (remaining != L"houyi") {
     std::wcerr << L"Prefix candidate resolution swallowed or mis-sized the remaining pinyin: " << remaining << L"\n";
     Send(gy::host::MessageType::Shutdown);
     return 6;
   }
-  const auto chained_remaining = engine.RemainingPinyin(L"houyi", L"厚");
+  const auto chained_remaining = engine.RemainingPinyin(
+      L"houyi", L"厚", gy::input_mode::kSimplified, 1);
   if (chained_remaining != L"yi") {
     std::wcerr << L"Chained prefix candidate resolution swallowed or mis-sized the remaining pinyin: "
                << chained_remaining << L"\n";
@@ -116,9 +140,12 @@ int wmain() {
     return 3;
   }
   Sleep(80);
-  const auto recovered = engine.Lookup(L"nihao");
+  const auto recovered = LookupAfterPrewarm(&engine, L"nihao", gy::input_mode::kSimplified, 2);
   std::wstring version;
-  const bool version_ok = Send(gy::host::MessageType::Status, &version) && version == GY_SMOKE_WIDEN(GY_HOST_VERSION);
+  gy::host::HostStatus status{};
+  const bool version_ok = Send(gy::host::MessageType::Status, &version) &&
+      gy::host::DecodeStatus(version, &status) && status.host_version == GY_SMOKE_WIDEN(GY_HOST_VERSION) &&
+      status.protocol_version == gy::host::kProtocolVersion;
   Send(gy::host::MessageType::Shutdown);
   if (recovered.empty() || !version_ok) {
     std::wcerr << L"The DLL-side Host recovery failed: " << engine.Diagnostic() << L"\n";

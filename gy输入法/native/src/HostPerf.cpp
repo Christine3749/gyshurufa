@@ -128,6 +128,7 @@ int wmain() {
     return 4;
   }
   const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
+  const std::wstring lookup_payload = gy::host::EncodeLookupRequest({L"nihao", 0, 1});
   const std::wstring directory = ModuleDirectory();
   PROCESS_INFORMATION host = StartHost(directory);
   if (!host.hProcess) {
@@ -152,7 +153,7 @@ int wmain() {
   // Warm-up: let rime finish lazy-loading tables so we measure steady state.
   for (int i = 0; i < 30; ++i) {
     double open_us = 0, request_us = 0;
-    Roundtrip(gy::host::MessageType::Lookup, L"nihao", &open_us, &request_us);
+    Roundtrip(gy::host::MessageType::Lookup, lookup_payload, &open_us, &request_us);
   }
 
   constexpr int kIterations = 300;
@@ -170,7 +171,7 @@ int wmain() {
   ui.selected = 0;
   ui.page_start = 0;
   ui.input_mode = 0;
-  ui.expanded = false;
+  ui.chinese_grid_open = false;
   ui.callback_pipe = L"";
   const std::wstring show_payload = gy::host::EncodeCandidateUi(ui);
 
@@ -185,7 +186,7 @@ int wmain() {
       total += open_us + request_us;
     }
     // 2) Lookup.
-    if (Roundtrip(gy::host::MessageType::Lookup, L"nihao", &open_us, &request_us)) {
+    if (Roundtrip(gy::host::MessageType::Lookup, lookup_payload, &open_us, &request_us)) {
       lookup_open.samples.push_back(open_us);
       lookup_req.samples.push_back(request_us);
       total += open_us + request_us;
@@ -203,7 +204,7 @@ int wmain() {
 
     // Estimate of the fused path: a single connect + a single request whose
     // payload does lookup+show work inside the Host.
-    if (Roundtrip(gy::host::MessageType::Lookup, L"nihao", &open_us, &request_us)) {
+    if (Roundtrip(gy::host::MessageType::Lookup, lookup_payload, &open_us, &request_us)) {
       fused.samples.push_back(open_us + request_us);
     }
   }

@@ -1,7 +1,9 @@
 #include "CandidateWindow.h"
 #include "ClipboardHistory.h"
+#include "EnglishLexicon.h"
 #include "GyKeepSync.h"
 #include "HostProtocol.h"
+#include "InputScopeProbe.h"
 #include "PerformanceSettings.h"
 #include "PinyinEngine.h"
 #include "SettingsWindow.h"
@@ -320,15 +322,19 @@ bool SendCandidateSelection(const std::wstring& callback_pipe, unsigned index) {
   // per-session endpoint and commits on its own editor thread.
   if (!IsSelectionEndpoint(callback_pipe) || !WaitNamedPipeW(callback_pipe.c_str(), 150)) return false;
   HANDLE pipe = CreateFileW(callback_pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
   if (pipe == INVALID_HANDLE_VALUE) return false;
   gy::host::MessageType response_type{};
   std::wstring response;
-  const bool sent = gy::host::WriteMessage(pipe, gy::host::MessageType::SelectCandidate,
-                                           std::to_wstring(index)) &&
-                    gy::host::ReadMessage(pipe, &response_type, &response);
+  const ULONGLONG deadline = GetTickCount64() + 250;
+  const bool sent = gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::SelectCandidate,
+                                                       std::to_wstring(index), deadline) &&
+                    gy::host::ReadMessageWithDeadline(pipe, &response_type, &response, deadline);
+  const bool acknowledged = sent && response_type == gy::host::MessageType::SelectCandidate && response == L"ok" &&
+      gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::AcknowledgeCandidateSelection,
+                                         L"received", GetTickCount64() + 250);
   CloseHandle(pipe);
-  return sent && response_type == gy::host::MessageType::SelectCandidate && response == L"ok";
+  return acknowledged;
 }
 
 class HostUi final {
@@ -340,11 +346,14 @@ public:
     switch (command->kind) {
       case UiCommandKind::ShowCandidates:
         callback_pipe_ = command->state.callback_pipe;
-        // Preedit is already rendered by the focused app through TSF. The Host
-        // deliberately draws only the horizontal candidate strip below it.
-        candidates_.Show(command->state.caret, L"", command->state.candidates,
+        // Preedit is already rendered by the focused app through TSF.  The
+        // Host draws only the strip, except that EN may tint the untyped suffix
+        // of its first local suggestion as an inline completion cue.
+        candidates_.Show(command->state.caret, command->state.composition, command->state.candidates,
                          command->state.selected, command->state.page_start, static_cast<int>(command->state.input_mode),
-                         command->state.expanded);
+                         command->state.candidate_purpose, command->state.chinese_grid_open,
+                         command->state.english_list_open, command->state.english_candidate_focus,
+                         command->state.correction_indices);
         break;
       case UiCommandKind::HideCandidates:
         callback_pipe_.clear();
@@ -380,11 +389,26 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
                              PinyinEngine* engine, DWORD ui_thread_id, std::atomic_bool* running) {
   std::wstring response = L"ok";
   if (type == gy::host::MessageType::Lookup) {
-    response = gy::host::EncodeCandidates(engine->Lookup(request));
+    gy::host::LookupRequest lookup{};
+    if (!gy::host::DecodeLookupRequest(request, &lookup)) {
+      response = L"error";
+    } else {
+      response = gy::host::EncodeLookupResponse({
+          engine->Lookup(lookup.text, static_cast<int>(lookup.input_mode)),
+          lookup.input_mode, lookup.mode_generation});
+    }
   } else if (type == gy::host::MessageType::LookupExact) {
-    response = gy::host::EncodeCandidates(engine->LookupExact(request));
+    gy::host::LookupRequest lookup{};
+    if (!gy::host::DecodeLookupRequest(request, &lookup)) {
+      response = L"error";
+    } else {
+      response = gy::host::EncodeLookupResponse({
+          engine->LookupExact(lookup.text, static_cast<int>(lookup.input_mode)),
+          lookup.input_mode, lookup.mode_generation});
+    }
   } else if (type == gy::host::MessageType::Status) {
-    response = GY_WIDEN(GY_HOST_VERSION);
+    response = gy::host::EncodeStatus({GY_WIDEN(GY_HOST_VERSION),
+        gy::host::kProtocolVersion, GY_WIDEN(GY_HOST_VERSION)});
   } else if (type == gy::host::MessageType::ShowCandidates) {
     auto* command = new UiCommand{};
     command->kind = UiCommandKind::ShowCandidates;
@@ -404,10 +428,20 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
   } else if (type == gy::host::MessageType::LearnCandidate) {
     std::wstring pinyin;
     std::wstring candidate;
-    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate)) {
+    int input_mode = -1;
+    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate, &input_mode)) {
       response = L"error";
     } else {
-      engine->Learn(pinyin, candidate);
+      engine->Learn(pinyin, candidate, input_mode);
+    }
+  } else if (type == gy::host::MessageType::UndoLearnCandidate) {
+    std::wstring pinyin;
+    std::wstring candidate;
+    int input_mode = -1;
+    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate, &input_mode)) {
+      response = L"error";
+    } else {
+      engine->UndoLastLearn(pinyin, candidate, input_mode);
     }
   } else if (type == gy::host::MessageType::Shutdown) {
     running->store(false);
@@ -540,9 +574,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   DebugStep(L"step: before engine");
   PinyinEngine engine(ModuleDirectory());
   DebugStep(L"step: engine ready");
+  StartAsyncInputScopeProbe();
   StartAutomaticUpdateCheck(ModuleDirectory());
   std::atomic_bool running{true};
   HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  // The updater writes only a verified, atomically activated English snapshot.
+  // This low-frequency Host worker observes that file outside the input path;
+  // Pinyin/EN lookups therefore only consult the in-memory word set.
+  std::thread english_lexicon_refresh;
+#ifndef GY_TESTING
+  if (stop_event) {
+    english_lexicon_refresh = std::thread([stop_event] {
+      gy::english_lexicon::RefreshVerifiedSnapshot();
+      while (WaitForSingleObject(stop_event, 5000) == WAIT_TIMEOUT) {
+        gy::english_lexicon::RefreshVerifiedSnapshot();
+      }
+    });
+  }
+#endif
   std::thread server(ServeRequests, &engine, &running, ui_thread_id, stop_event);
   DebugStep(L"step: server spawned");
   HostUi ui;
@@ -575,6 +624,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   // server is never forcibly terminated, so no user process is touched.
   if (stop_event) SetEvent(stop_event);
   if (server.joinable()) server.join();
+  if (english_lexicon_refresh.joinable()) english_lexicon_refresh.join();
   if (stop_event) CloseHandle(stop_event);
   if (show_tray) tray.Stop();
   CloseHandle(single_instance);

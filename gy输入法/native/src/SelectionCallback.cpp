@@ -14,6 +14,7 @@
 namespace {
 constexpr wchar_t kCallbackClass[] = L"GyImeSelectionCallback";
 constexpr UINT kSelectMessage = WM_APP + 73;
+constexpr DWORD kCallbackTransferBudgetMs = 250;
 
 ATOM RegisterCallbackClass(HINSTANCE module) {
   static const ATOM atom = [module] {
@@ -43,7 +44,7 @@ HANDLE CreateCallbackPipe(const std::wstring& endpoint) {
     return INVALID_HANDLE_VALUE;
   }
   SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
-  HANDLE pipe = CreateNamedPipeW(endpoint.c_str(), PIPE_ACCESS_DUPLEX,
+  HANDLE pipe = CreateNamedPipeW(endpoint.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
       1, gy::host::kMaxPayloadBytes, gy::host::kMaxPayloadBytes, 0, &attributes);
   LocalFree(descriptor);
@@ -121,12 +122,33 @@ void SelectionCallback::Run() {
     }
     if (ready_event_) SetEvent(ready_event_);
     if (!running_.load()) { CloseHandle(pipe); return; }
-    const BOOL connected = ConnectNamedPipe(pipe, nullptr) ? TRUE : GetLastError() == ERROR_PIPE_CONNECTED;
+    HANDLE connect_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!connect_event) { CloseHandle(pipe); return; }
+    OVERLAPPED connect{};
+    connect.hEvent = connect_event;
+    bool connected = ConnectNamedPipe(pipe, &connect) != FALSE;
+    if (!connected && GetLastError() == ERROR_PIPE_CONNECTED) {
+      connected = true;
+    } else if (!connected && GetLastError() == ERROR_IO_PENDING) {
+      // This worker is allowed to wait for a click, but Stop() always wakes it
+      // through the same private pipe.  A client that connects and then sends
+      // nothing is bounded below by the transfer deadline.
+      while (running_.load() && WaitForSingleObject(connect_event, 100) == WAIT_TIMEOUT) {}
+      DWORD transferred = 0;
+      connected = running_.load() &&
+          GetOverlappedResult(pipe, &connect, &transferred, FALSE) != FALSE;
+      if (!connected && !running_.load()) {
+        CancelIoEx(pipe, &connect);
+      }
+    }
+    CloseHandle(connect_event);
     if (connected) {
       gy::host::MessageType type{};
       std::wstring payload;
       std::wstring response = L"error";
-      if (gy::host::ReadMessage(pipe, &type, &payload) && type == gy::host::MessageType::SelectCandidate) {
+      const ULONGLONG deadline = GetTickCount64() + kCallbackTransferBudgetMs;
+      const bool received = gy::host::ReadMessageWithDeadline(pipe, &type, &payload, deadline);
+      if (received && type == gy::host::MessageType::SelectCandidate) {
         unsigned index = 0;
         if (ParseIndex(payload, &index) && hwnd_) {
           DWORD_PTR handled = 0;
@@ -135,8 +157,18 @@ void SelectionCallback::Run() {
           if (delivered != 0 && handled != 0) response = L"ok";
         }
       }
-      gy::host::WriteMessage(pipe, gy::host::MessageType::SelectCandidate, response);
-      FlushFileBuffers(pipe);
+      const bool responded = gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::SelectCandidate, response,
+                                                                GetTickCount64() + kCallbackTransferBudgetMs);
+      // Disconnecting immediately after WriteFile can discard the final bytes
+      // before a fast Host/UI client has read them.  This ACK is bounded and
+      // runs on the callback worker, never on the target application's input
+      // thread. A missing/broken client costs at most one short timeout.
+      if (responded) {
+        gy::host::MessageType acknowledgement{};
+        std::wstring acknowledgement_payload;
+        gy::host::ReadMessageWithDeadline(pipe, &acknowledgement, &acknowledgement_payload,
+                                          GetTickCount64() + kCallbackTransferBudgetMs);
+      }
     }
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);

@@ -21,6 +21,10 @@ bool IsSuppressedRemoteText(const std::wstring& text, DWORD clipboard_sequence);
 void SuppressRemoteImage(DWORD clipboard_sequence);
 bool TakeSuppressedRemoteImage(DWORD clipboard_sequence);
 
+// Exercises the durable local-image capture path without opening or changing
+// the user's real system clipboard.
+bool AppendPngForTesting(const std::string& png, DWORD clipboard_sequence);
+
 }  // namespace gy::clipboard_history::testing
 
 #endif  // GY_TESTING

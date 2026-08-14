@@ -1,0 +1,33 @@
+0.12.3 — ThinkPad English interaction candidate
+
+This unsigned build is for Ethan's private ThinkPad acceptance only. It is
+version-pinned and does not replace the stable or shared candidate pointer.
+
+Corrections under test:
+- The complete ThinkPad input-method interface is calibrated to 95% of the
+  27-inch reference: candidate window, settings shell, fonts, spacing, cards,
+  and controls scale together. The 100% option remains available in settings.
+- Pure EN starts with a passive horizontal strip of at most five suggestions;
+  no candidate is silently selected before the user navigates.
+- Down opens a separate single-column English list of at most eight real
+  suggestions. It never enters the Chinese 5 x 5 grid or paging path.
+- Left, Right, Up, and Down only move focus. Tab accepts a completion. Space
+  keeps literal typed text in passive state, or accepts the explicitly focused
+  candidate and adds one trailing space.
+- Digits remain literal input, including woman5, GPT-5, Windows 11, and
+  ThinkPad X1. English suggestions have no numeric shortcuts.
+- Shift-letter capture and completion preserve typed casing for Today, GPT,
+  MacBook, iPhone, and other mixed-case text.
+- Mixed Chinese/English candidates are off by default. Explicit user settings
+  remain respected outside this private ThinkPad appearance calibration.
+
+Acceptance focus:
+- Confirm the candidate window and settings shell both look exactly 5% smaller
+  than the 27-inch reference, without isolated font shrinking or clipping.
+- Hand-type the 50-word paragraph in GY_ENGLISH_50_WORD_ACCEPTANCE.txt.
+- Confirm all digits, hyphens, punctuation, capitalization, and original
+  letters are preserved.
+- Type wo: verify five horizontal completions, Down for the vertical list,
+  arrow-only focus, Tab acceptance, focused Space acceptance, and Escape hide.
+- In Simplified and Traditional modes, confirm ordinary pinyin never opens the
+  pure-English candidate surface when mixed input is disabled.

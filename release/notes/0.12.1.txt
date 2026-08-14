@@ -1,0 +1,22 @@
+0.12.1 — ThinkPad English layout candidate
+
+This unsigned build is for Ethan's private ThinkPad acceptance only. It is
+version-pinned and does not replace the stable release pointer.
+
+Corrections under test:
+- English candidate chips use balanced left/right padding and wider gaps so
+  final letters such as d, k, n, and r are never visually clipped.
+- The first English candidates retain the approved order while the offline
+  baseline expands from 70 emergency words to 20,000 frequency-ranked words.
+- The verified English lexicon updater uses the official shurufa.wang R2
+  endpoint; a failed update always leaves the bundled offline baseline usable.
+- The Settings window no longer caps a 150% display at 136 DPI (about 94.4%).
+  It uses the display scale unless the complete window genuinely cannot fit.
+- Input-page cards have enough height for both explanation lines, and the
+  duplicated “输入语言” line has been removed.
+
+Acceptance focus:
+- In EN mode test: wo, word, english, en, lik, and a.
+- Confirm every English candidate has visible separation and complete letters.
+- Open Settings > 输入 and confirm all three cards and their two text lines are
+  fully visible at the normal ThinkPad display scale.

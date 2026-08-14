@@ -3,6 +3,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/ciku/:path*",
+      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/ciku/:path*"
+    },
+    {
       "source": "/api/releases/:path*",
       "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/:path*"
     },
