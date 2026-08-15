@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "releaseId": "gy-2026.08.16-windows-0.12.6-firefox-candidate",
+  "releaseId": "gy-2026.08.15-windows-0.12.6-thinkpad-test",
   "channel": "candidate",
   "windows": {
     "version": "0.12.6",
@@ -9,14 +9,21 @@
     "architecture": "x64",
     "setupFile": "GYInputSetup-0.12.6.exe",
     "zipFile": "GYInput-0.12.6.zip",
-    "sha256": "PENDING-PACKAGE-VERIFICATION",
-    "bytes": 0,
-    "state": "draft"
+    "sha256": "83113E485797868D7E293378EF441A54CAF3396B019225BDC30567B65159A457",
+    "bytes": 7957535,
+    "state": "candidate"
   },
   "macos": {
     "version": "2.0.0",
     "architecture": "arm64",
     "state": "verification-required"
   },
-  "testBoundary": "thinkpad-firefox-address-bar-acceptance"
+  "publishedAtUtc": "2026-08-15T23:30:35.4748506Z",
+  "internalTest": {
+    "audience": "Ethan private ThinkPad",
+    "signed": false,
+    "tsfLifecycleTrace": true,
+    "realApplications": "pending",
+    "pointerPolicy": "version-pinned-only"
+  }
 }
