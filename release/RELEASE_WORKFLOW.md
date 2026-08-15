@@ -29,6 +29,7 @@ Existing Chrome, WeChat, ChatGPT, VS Code, and other input processes may keep th
 ## Prohibited actions
 
 - Reusing a released version number.
+- Rebuilding the same version after any candidate artifact has been produced. A version number is burned by its first binary hash, even when it was never public; fix the problem under the next version.
 - Manually editing a platform `latest.json` to bypass validation.
 - Hard-coding a version, hash, file name or download URL in the website or Worker.
 - Publishing an unsigned Windows stable package or an unsigned/unnotarized macOS package.

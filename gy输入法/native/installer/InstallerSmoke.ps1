@@ -264,6 +264,7 @@ Assert-Contains $finalize 'Copy-Item -LiteralPath $manifestPath -Destination $pa
 $manifestModule = Assert-ScriptParses (Join-Path $PSScriptRoot '..\ReleaseManifest.psm1')
 Assert-Contains $manifestModule 'Windows setupFile does not match its version.' 'Release manifest does not enforce versioned installer naming.'
 Assert-Contains $manifestModule 'PENDING-PACKAGE-VERIFICATION' 'Release manifest does not distinguish an unfinished draft from a publishable artifact.'
+Assert-Contains $manifestModule "'0.12.6'" 'Withdrawn 0.12.6 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule 'Release approval is missing' 'Release approval boundary does not fail closed when the approval record is absent.'
 Assert-Contains $manifestModule 'target-test-distribution' 'Release manifest module cannot represent an approved candidate awaiting target-machine acceptance.'
 Assert-Contains $manifestModule 'pending-on-target' 'Candidate distribution approval cannot honestly retain pending target acceptance.'

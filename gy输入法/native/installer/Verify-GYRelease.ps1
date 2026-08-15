@@ -64,10 +64,17 @@ $sourceNotes = Join-Path (Split-Path -Parent $manifestPath) "notes\\$Version.txt
 $packagedNotes = Join-Path $payloadRoot 'release-notes.txt'
 if (-not (Test-Path -LiteralPath $sourceNotes -PathType Leaf) -or -not (Test-Path -LiteralPath $packagedNotes -PathType Leaf)) {
   Fail 'Release notes are missing from the canonical source or package.'
-} elseif ((Get-FileHash -LiteralPath $sourceNotes -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $packagedNotes -Algorithm SHA256).Hash) {
-  Fail 'Packaged release notes differ from the canonical release notes.'
 } else {
-  Pass "Packaged release notes match canonical release/notes/$Version.txt."
+  # GitHub's Windows checkout writes CRLF while a local checkout may retain LF.
+  # Normalize only this UTF-8 text comparison. Binary artifacts and every
+  # payload file remain protected by the byte-exact SHA-256 checks above.
+  $sourceNotesText = [IO.File]::ReadAllText($sourceNotes).Replace("`r`n", "`n").Replace("`r", "`n")
+  $packagedNotesText = [IO.File]::ReadAllText($packagedNotes).Replace("`r`n", "`n").Replace("`r", "`n")
+  if ($sourceNotesText -cne $packagedNotesText) {
+    Fail 'Packaged release notes differ from the canonical release notes.'
+  } else {
+    Pass "Packaged release notes match canonical release/notes/$Version.txt."
+  }
 }
 
 $sourceInstallerRoot = $PSScriptRoot
