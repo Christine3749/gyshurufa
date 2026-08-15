@@ -14,6 +14,12 @@
 #include <utility>
 #include <vector>
 
+#ifndef GY_HOST_VERSION
+#define GY_HOST_VERSION ""
+#endif
+#define GY_HOSTED_WIDEN_INNER(value) L##value
+#define GY_HOSTED_WIDEN(value) GY_HOSTED_WIDEN_INNER(value)
+
 namespace {
 
 // How long a successful Host verification stays trusted. Within an active
@@ -187,8 +193,7 @@ bool StartHost(const std::wstring& path) {
 bool IsExpectedHostStatus(const std::wstring& payload, const std::wstring& expected_version) {
   gy::host::HostStatus status{};
   if (!gy::host::DecodeStatus(payload, &status)) return false;
-  return (expected_version.empty() || status.host_version == expected_version) &&
-      status.protocol_version == gy::host::kProtocolVersion;
+  return gy::host::MatchesHostIdentity(status, expected_version);
 }
 
 }  // namespace
@@ -202,7 +207,12 @@ struct HostedPinyinEngine::Impl {
     return JoinPath(module_directory, L"GyImeHost.exe");
   }
 
-  std::wstring HostVersion() const { return ReadMachineValue(L"HostVersion"); }
+  std::wstring HostVersion() const {
+    // Bind each in-process TSF DLL to the Host built from the same release.
+    // The machine registry selects which Host is active, but it must not change
+    // the identity expected by an older DLL still loaded in an application.
+    return GY_HOSTED_WIDEN(GY_HOST_VERSION);
+  }
 
   bool EnsureHost() {
     // Fast path: a Host verified moments ago is almost certainly still alive.
@@ -235,6 +245,7 @@ struct HostedPinyinEngine::Impl {
   }
 
   bool SendUi(gy::host::MessageType type, const std::wstring& payload) {
+    if (!EnsureHost()) return false;
     std::wstring ignored;
     return SendRequest(type, payload, &ignored);
   }
@@ -350,7 +361,14 @@ void HostedPinyinEngine::Prewarm() {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);
   std::wstring status;
-  if (SendRequest(gy::host::MessageType::Status, L"", &status)) return;
+  if (SendRequest(gy::host::MessageType::Status, L"", &status)) {
+    if (IsExpectedHostStatus(status, impl_->HostVersion())) {
+      impl_->last_verified_tick = GetTickCount64();
+      return;
+    }
+    impl_->diagnostic = L"GY Host version does not match this TSF core";
+    return;
+  }
   if (!StartHost(impl_->HostPath())) impl_->diagnostic = L"GY Host could not be prewarmed";
 }
 std::wstring HostedPinyinEngine::Diagnostic() const {
