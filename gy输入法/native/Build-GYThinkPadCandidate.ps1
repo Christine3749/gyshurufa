@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$Version = '',
-  [string]$OutputRoot = ''
+  [string]$OutputRoot = '',
+  [switch]$EnableTsfTrace
 )
 
 # This creates an unsigned, production-mode, version-pinned package for one
@@ -25,9 +26,10 @@ foreach ($path in $packageRoot, $setup, $zip) {
 }
 
 $build = Join-Path $PSScriptRoot "build-thinkpad-$Version"
+$traceOption = if ($EnableTsfTrace) { '-DGY_IME_TRACE=ON' } else { '-DGY_IME_TRACE=OFF' }
 cmake -S $PSScriptRoot -B $build -G 'Visual Studio 17 2022' -A x64 `
   "-DGY_VERSION=$Version" '-DGY_BUILD_HOST_SMOKE=OFF' '-DGY_BUILD_CANDIDATE_LAB=OFF' `
-  '-DGY_IME_TRACE=OFF' '-DGY_REGISTRATION_TRACE=OFF'
+  $traceOption '-DGY_REGISTRATION_TRACE=OFF'
 if ($LASTEXITCODE -ne 0) { throw 'ThinkPad production-mode configuration failed.' }
 cmake --build $build --config Release --target GyIme GyImeHost GyImeHealth --parallel 2
 if ($LASTEXITCODE -ne 0) { throw 'ThinkPad production-mode build failed.' }
@@ -104,6 +106,7 @@ $candidateManifest = [ordered]@{
   internalTest = [ordered]@{
     audience = 'Ethan private ThinkPad'
     signed = $false
+    tsfLifecycleTrace = [bool]$EnableTsfTrace
     realApplications = 'pending'
     pointerPolicy = 'version-pinned-only'
   }
