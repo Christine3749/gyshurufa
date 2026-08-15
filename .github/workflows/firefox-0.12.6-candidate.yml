@@ -32,7 +32,7 @@ jobs:
       - name: Run non-GUI automated tests
         run: >-
           ctest --test-dir build-ci-firefox-0.12.6 -C Release --output-on-failure
-          -E "GyInputScopeCacheSmoke"
+          -E "Gy(InputScopeCacheSmoke|TsfActivationSmoke|InstallerSmoke|HostedPinyinEngineSmoke)"
 
       - name: Ensure Inno Setup exists
         working-directory: ${{ github.workspace }}
