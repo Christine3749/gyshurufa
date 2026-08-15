@@ -23,7 +23,7 @@ jobs:
       - name: Configure trace and tests
         run: >-
           cmake -S . -B build-ci-firefox-0.12.6 -G "Visual Studio 17 2022" -A x64
-          -DGY_VERSION=0.12.6 -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
+          "-DGY_VERSION=0.12.6" -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
           -DGY_BUILD_HOST_SMOKE=ON
 
       - name: Build trace candidate and tests
