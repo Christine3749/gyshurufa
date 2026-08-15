@@ -45,14 +45,30 @@ bool Send(gy::host::MessageType type, const std::wstring& payload, std::vector<s
   }
   gy::host::MessageType response_type{};
   std::wstring response_payload;
-  const bool ok = gy::host::WriteMessage(pipe, type, payload) &&
+  bool ok = gy::host::WriteMessage(pipe, type, payload) &&
                   gy::host::ReadMessage(pipe, &response_type, &response_payload) &&
                   response_type == type;
   if (!ok) std::wcerr << L"IPC request failed, error=" << GetLastError() << L" response="
                        << static_cast<unsigned int>(response_type) << L" bytes=" << response_payload.size() << L"\n";
   CloseHandle(pipe);
-  if (ok && result) *result = gy::host::DecodeCandidates(response_payload);
+  if (ok && result) {
+    if (type == gy::host::MessageType::Lookup || type == gy::host::MessageType::LookupExact) {
+      gy::host::LookupRequest request{};
+      gy::host::LookupResponse response{};
+      ok = gy::host::DecodeLookupRequest(payload, &request) &&
+          gy::host::DecodeLookupResponse(response_payload, &response) &&
+          gy::host::MatchesLookupSnapshot(request, response);
+      if (ok) *result = std::move(response.candidates);
+    } else {
+      *result = gy::host::DecodeCandidates(response_payload);
+    }
+  }
   return ok;
+}
+
+std::wstring LookupPayload(const std::wstring& text, unsigned input_mode,
+                           std::uint64_t mode_generation) {
+  return gy::host::EncodeLookupRequest({text, input_mode, mode_generation});
 }
 }  // namespace
 
@@ -87,18 +103,40 @@ CloseHandle(process.hThread);
   std::vector<std::wstring> status;
   std::vector<std::wstring> candidates;
   const bool status_ok = Send(gy::host::MessageType::Status, L"", &status);
-  const bool lookup_ok = Send(gy::host::MessageType::Lookup, L"nihao", &candidates);
-  const std::wstring learned = candidates.empty() ? L"" : candidates.back();
-  const bool learn_ok = !learned.empty() && Send(gy::host::MessageType::LearnCandidate,
-      gy::host::EncodeLearningEvent(L"nihao", learned), nullptr);
+  const bool lookup_ok = Send(gy::host::MessageType::Lookup, LookupPayload(L"nihao", 0, 1), &candidates);
+  // Pick a non-default real Han candidate so the test can prove that a
+  // preference changes only after three explicit selections.
+  const std::wstring learned = candidates.size() > 1 ? candidates.back() : L"";
+  const std::wstring learning_event = gy::host::EncodeLearningEvent(L"nihao", learned, 0);
+  const bool learn_ok = !learned.empty() && Send(gy::host::MessageType::LearnCandidate, learning_event, nullptr);
+  const bool repeated_learn_ok = learn_ok && Send(gy::host::MessageType::LearnCandidate, learning_event, nullptr);
+  std::vector<std::wstring> twice_candidates;
+  const bool twice_lookup_ok = Send(
+      gy::host::MessageType::Lookup, LookupPayload(L"nihao", 0, 1), &twice_candidates);
+  const bool third_learn_ok = repeated_learn_ok && Send(gy::host::MessageType::LearnCandidate, learning_event, nullptr);
   std::vector<std::wstring> learned_candidates;
-  const bool learned_lookup_ok = Send(gy::host::MessageType::Lookup, L"nihao", &learned_candidates);
+  const bool learned_lookup_ok = Send(
+      gy::host::MessageType::Lookup, LookupPayload(L"nihao", 0, 1), &learned_candidates);
+  // Persistence deliberately remains Chinese. The immutable request snapshot
+  // must still route EN to the English engine.
+  std::vector<std::wstring> english_candidates;
+  const bool english_lookup_ok = Send(
+      gy::host::MessageType::Lookup, LookupPayload(L"wo", 2, 2), &english_candidates);
+  std::vector<std::wstring> english_nonprefix_candidates;
+  const bool english_nonprefix_ok = Send(
+      gy::host::MessageType::Lookup, LookupPayload(L"zhongw", 2, 2), &english_nonprefix_candidates);
   if (status_ok && !status.empty()) std::wcerr << L"Host status: " << status.front() << L"\n";
   Send(gy::host::MessageType::Shutdown, L"", nullptr);
   WaitForSingleObject(process.hProcess, 5000);
   CloseHandle(process.hProcess);
-  if (!lookup_ok || !learn_ok || !learned_lookup_ok || candidates.empty() || learned_candidates.empty() ||
-      learned_candidates.front() != learned) {
+  if (!lookup_ok || !repeated_learn_ok || !twice_lookup_ok || !third_learn_ok || !learned_lookup_ok ||
+      !english_lookup_ok || !english_nonprefix_ok ||
+      candidates.size() < 2 || twice_candidates.empty() || learned_candidates.empty() ||
+      twice_candidates.front() == learned || learned_candidates.front() != learned || english_candidates.size() < 5 ||
+      !english_nonprefix_candidates.empty() ||
+      english_candidates[0] != L"word" || english_candidates[1] != L"work" ||
+      english_candidates[2] != L"world" || english_candidates[3] != L"would" ||
+      english_candidates[4] != L"woman") {
     std::wcerr << L"Host learning integration failed. lookup=" << lookup_ok << L" learn=" << learn_ok << L" learnedLookup=" << learned_lookup_ok << L" initialCount=" << candidates.size() << L" learnedCount=" << learned_candidates.size() << L" expectedLength=" << learned.size() << L" firstLength=" << (learned_candidates.empty() ? 0 : learned_candidates.front().size()) << L"\n";
     return 2;
   }

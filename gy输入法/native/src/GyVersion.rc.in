@@ -1,0 +1,33 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @GY_VERSION_RESOURCE_COMMAS@
+ PRODUCTVERSION @GY_VERSION_RESOURCE_COMMAS@
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS__WINDOWS32
+ FILETYPE @GY_VERSION_FILE_TYPE@
+ FILESUBTYPE 0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "GY Input Method\0"
+      VALUE "FileDescription", "@GY_VERSION_FILE_DESCRIPTION@\0"
+      VALUE "FileVersion", "@GY_VERSION@\0"
+      VALUE "InternalName", "@GY_VERSION_INTERNAL_NAME@\0"
+      VALUE "OriginalFilename", "@GY_VERSION_INTERNAL_NAME@\0"
+      VALUE "ProductName", "GY Input Method\0"
+      VALUE "ProductVersion", "@GY_VERSION@\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

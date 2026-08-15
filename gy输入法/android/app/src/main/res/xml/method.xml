@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  输入法子类型声明。settingsActivity 指向 SetupActivity（v0.1 无设置四页，
+  引导页兼作系统入口）。zh_CN 为主子类型；en_US 标 auxiliary，不单独出现在选择器。
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="wang.shurufa.inputmethod.android.SetupActivity">
+
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="zh_CN"
+        android:imeSubtypeMode="keyboard"
+        android:imeSubtypeExtraValue="KeyboardLayoutSet=QWERTY"
+        android:isAsciiCapable="true"
+        android:isAuxiliary="false"
+        android:label="@string/subtype_label_pinyin"
+        android:overridesImplicitlyEnabledSubtype="false" />
+
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="en_US"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:isAuxiliary="true"
+        android:label="@string/subtype_label_en" />
+
+</input-method>

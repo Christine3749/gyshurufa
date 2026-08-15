@@ -33,12 +33,28 @@ const release = {
 function env(overrides = {}) {
   const windows = new Uint8Array([1, 2, 3]);
   const macos = new Uint8Array([4, 5, 6, 7]);
+  const lexicon = new TextEncoder().encode("about\naccount\nagent\n");
+  const lexiconManifest = {
+    schemaVersion: 1,
+    id: "gy-ime-english-mixed",
+    format: "gy-ime-english-v1",
+    version: "2026.08.13.1",
+    sha256: "A6AA4780DE766E97875456D7AB1D5E95B7AADB601133387C76F4D9BE840F94D8",
+    bytes: lexicon.byteLength,
+    entryCount: 3,
+    downloadUrl: "/api/ciku/ime/lexicon/2026.08.13.1"
+  };
   const selected = overrides.release ?? release;
+  const candidate = overrides.candidate ?? release;
   return {
     RELEASE_STATUS: "candidate",
     RELEASES: {
       async get(key) {
         if (key === "releases/latest.json") return { async json() { return selected; } };
+        if (key === "lexicons/english-mixed/manifest.json") return { async json() { return overrides.lexiconManifest ?? lexiconManifest; } };
+        if (key === "lexicons/english-mixed/2026.08.13.1/english.tsv") return object(lexicon, overrides.lexiconSize);
+        if (key === "candidates/windows/latest.json") return { async json() { return candidate; } };
+        if (key === "candidates/windows/0.9.29/release.json") return { async json() { return candidate; } };
         if (key === "releases/0.9.29/windows/GYInputSetup-0.9.29.exe") return object(windows, overrides.windowsSize);
         if (key === "releases/0.9.29/windows/GYInput-0.9.29.zip") return object(new Uint8Array([8, 9, 10]));
         if (key === "releases/0.9.29/macos/GYInput-0.9.29-arm64.pkg") return object(macos, overrides.macosSize);
@@ -99,4 +115,52 @@ test("unverified Mac assets do not block Windows delivery from latest metadata",
   assert.equal(payload.platforms.windows.available, true);
   assert.equal(payload.platforms.macos.version, "0.9.29");
   assert.equal(payload.platforms.macos.available, false);
+});
+
+test("candidate Windows download is version-pinned and never reads latest.json", async () => {
+  const response = await worker.fetch(new Request("https://example.test/download/candidate/windows/0.9.29"), env());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="GYInputSetup-0.9.29.exe"');
+  assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable");
+
+  const info = await worker.fetch(new Request("https://example.test/api/releases/candidate/windows/0.9.29"), env());
+  assert.equal(info.status, 200);
+  assert.equal((await info.json()).downloadUrl, "/download/candidate/windows/0.9.29");
+});
+
+test("latest candidate is a mutable pointer to an immutable versioned release", async () => {
+  const info = await worker.fetch(new Request("https://example.test/api/releases/candidate/windows/latest"), env());
+  assert.equal(info.status, 200);
+  const payload = await info.json();
+  assert.equal(payload.version, "0.9.29");
+  assert.equal(payload.downloadUrl, "/download/candidate/windows/0.9.29");
+  assert.equal(payload.zipDownloadUrl, "/download/candidate/windows/0.9.29/zip");
+  assert.equal(payload.sha256Url, "/download/candidate/windows/0.9.29/sha256");
+
+  const download = await worker.fetch(new Request("https://example.test/download/candidate/windows/latest"), env());
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="GYInputSetup-0.9.29.exe"');
+  assert.equal(download.headers.get("cache-control"), "no-store");
+});
+
+test("English lexicon manifest and immutable TSV share one validated R2 contract", async () => {
+  const manifestResponse = await worker.fetch(new Request("https://example.test/api/ciku/ime/manifest"), env());
+  assert.equal(manifestResponse.status, 200);
+  const manifest = await manifestResponse.json();
+  assert.equal(manifest.version, "2026.08.13.1");
+  assert.equal(manifest.downloadUrl, "/api/ciku/ime/lexicon/2026.08.13.1");
+
+  const lexicon = await worker.fetch(new Request("https://example.test/api/ciku/ime/lexicon/2026.08.13.1"), env());
+  assert.equal(lexicon.status, 200);
+  assert.equal(lexicon.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.equal(await lexicon.text(), "about\naccount\nagent\n");
+});
+
+test("English lexicon download fails closed when R2 bytes differ from the manifest", async () => {
+  const response = await worker.fetch(
+    new Request("https://example.test/api/ciku/ime/lexicon/2026.08.13.1"),
+    env({ lexiconSize: 99 })
+  );
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "invalid_english_lexicon");
 });

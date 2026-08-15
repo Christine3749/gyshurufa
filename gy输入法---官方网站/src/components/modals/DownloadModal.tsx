@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Download, ShieldCheck, Check, Copy, Laptop, FileText, ExternalLink } from 'lucide-react';
 import { BRAND_INFO } from '../../data/content';
 import { formatReleaseBytes, formatReleaseDate, useReleaseStatus } from '../../hooks/useReleaseStatus';
@@ -12,14 +12,22 @@ interface DownloadModalProps {
 export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const [downloadStarted, setDownloadStarted] = useState(false);
+  const [windowsChannel, setWindowsChannel] = useState<'candidate' | 'stable'>('candidate');
   const { release, loading } = useReleaseStatus();
   // 平台感知：Mac 访客看到的是 Mac 包的地址与校验，不再是 Windows 包。
   const platform = useUserPlatform();
   const isMac = platform === 'macos';
   const windows = release?.platforms.windows;
+  const windowsCandidate = release?.windowsCandidate;
   const macos = release?.platforms.macos;
-  const current = isMac ? macos : windows;
+  const useCandidate = !isMac && windowsChannel === 'candidate' && Boolean(windowsCandidate?.available);
+  const current = isMac ? macos : useCandidate ? windowsCandidate : windows;
   const ready = Boolean(current?.available);
+  const isCandidate = useCandidate;
+
+  useEffect(() => {
+    if (windowsCandidate?.available) setWindowsChannel('candidate');
+  }, [windowsCandidate?.available, windowsCandidate?.version]);
 
   if (!isOpen) return null;
 
@@ -39,7 +47,9 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const title = isMac ? 'GY输入法 for Mac' : 'GY输入法 for Windows';
   const subtitle = isMac
     ? '官方预览安装包 · macOS · Apple Silicon (M1 / M2 / M3 / M4)'
-    : '官方预览安装包 · Windows 10 / 11 (64-bit)';
+    : isCandidate
+      ? '公开公测候选版 · Windows 10 / 11 (64-bit)'
+      : '稳定版 · Windows 10 / 11 (64-bit)';
   const osRequirement = isMac
     ? 'macOS 13 (Ventura) 或更高版本\nApple Silicon 芯片（M1 及更新）'
     : 'Windows 11 (22H2 / 23H2)\nWindows 10 (21H2 或更高版本)';
@@ -77,6 +87,32 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
         {/* Content Body */}
         <div className="p-6 space-y-6">
+          {!isMac && windowsCandidate?.available && windows?.available && (
+            <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1.5 text-sm font-semibold">
+              <button
+                type="button"
+                onClick={() => { setWindowsChannel('candidate'); setDownloadStarted(false); }}
+                className={`rounded-lg px-3 py-2 transition-colors ${isCandidate ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+              >
+                最新内测 · v{windowsCandidate.version}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setWindowsChannel('stable'); setDownloadStarted(false); }}
+                className={`rounded-lg px-3 py-2 transition-colors ${!isCandidate ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+              >
+                稳定版 · v{windows.version}
+              </button>
+            </div>
+          )}
+
+          {isCandidate && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
+              <span className="font-semibold">最新内测版：</span>
+              新的中英混打、英文候选与候选窗体验在此版本测试。它不会自动覆盖稳定版；因尚未代码签名，Windows 可能显示发布者提示。
+            </div>
+          )}
+
           {/* Download Box */}
           <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -95,7 +131,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 className="inline-flex items-center justify-center px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed text-white font-medium text-sm transition-all shadow-lg shadow-blue-600/20 gap-2 shrink-0"
               >
                 <Download className="w-4 h-4" />
-                {ready ? (downloadStarted ? '重新下载' : '立即免费下载') : '安装包验证中'}
+                {ready ? (downloadStarted ? '重新下载' : isCandidate ? `下载 v${current?.version} 内测版` : '下载稳定版') : '安装包验证中'}
               </button>
             </div>
 

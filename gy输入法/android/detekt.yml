@@ -1,0 +1,20 @@
+# detekt 门禁：buildUponDefaultConfig 之上收紧。
+# 规则调优只允许在本文件留痕，禁止在源码里大面积 @Suppress。
+build:
+  maxIssues: 0
+
+style:
+  active: true
+
+comments:
+  active: true
+
+complexity:
+  active: true
+  LongMethod:
+    threshold: 80
+  CyclomaticComplexMethod:
+    threshold: 20
+
+naming:
+  active: true

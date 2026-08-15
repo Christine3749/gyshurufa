@@ -3,8 +3,9 @@ param([switch]$Elevated)
 
 # Repair-GYInput.ps1 — the installed, one-click repair path used by the
 # Settings > 更新 page.  It only repairs an existing, fully versioned GY
-# installation; it never downloads a package and never touches per-user input
-# data, clipboard history, image assets, or the DPAPI-protected account session.
+# installation; it never downloads a package, terminates client applications,
+# or touches per-user input data, clipboard history, image assets, or the
+# DPAPI-protected account session.
 
 $ErrorActionPreference = 'Stop'
 $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
@@ -94,17 +95,9 @@ function Read-RegisteredString([string]$SubKey, [string]$ValueName) {
   try { return [string]$key.GetValue($ValueName) } finally { $key.Dispose() }
 }
 
-function Complete-PendingActivation {
+function Require-PendingActivationComplete {
   if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { return }
-  if (-not (Test-Path -LiteralPath $finalizerPath -PathType Leaf)) {
-    throw '检测到待激活版本，但缺少 Finalizer；请重新运行同版本或更高版本安装包。'
-  }
-  $result = Start-Process -FilePath $powershell -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $finalizerPath, '-LockAlreadyHeld'
-  ) -Wait -PassThru -WindowStyle Hidden
-  if ($result.ExitCode -ne 0 -or (Test-Path -LiteralPath $pendingPath -PathType Leaf)) {
-    throw '待激活版本未能完成；当前活动版本与诊断文件已保留。'
-  }
+  throw '检测到待激活版本。整备工具不会在当前会话中切换输入法 DLL；请正常重启 Windows 完成激活。'
 }
 
 function Remove-StaleTransientHelpers {
@@ -127,7 +120,11 @@ $script:cleanupCompleted = $false
 
 if (-not (Test-IsAdministrator)) {
   $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
-  $elevated = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+  try {
+    $elevated = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+  } catch {
+    throw "请在管理员 PowerShell 中运行本命令：$PSCommandPath -Elevated。当前环境无法自动拉起 UAC：$($_.Exception.Message)"
+  }
   exit $elevated.ExitCode
 }
 
@@ -141,7 +138,7 @@ try {
   . $transactionHelper
 
   Invoke-WithGYInputTransaction {
-    Complete-PendingActivation
+    Require-PendingActivationComplete
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
       throw '未找到已安装版本状态；请重新运行同版本或更高版本安装包。'
     }
@@ -221,11 +218,38 @@ try {
     $script:cleanupCompleted = $prune.ExitCode -eq 0
     Remove-StaleTransientHelpers
     $reportMessage = if ($script:cleanupCompleted) {
-      '已核验当前安装；旧版本与失效临时文件已清理。'
+      '已核验当前安装；旧版本与失效临时文件已清理。已打开的办公软件保持运行。'
     } else {
-      '当前安装已核验；部分旧版本清理将于下次整备继续。'
+      '当前安装已核验；部分旧版本清理将于下次整备继续。已打开的办公软件保持运行。'
     }
     Write-RecoveryReport 'succeeded' $version $reportMessage $script:cleanupCompleted
+  }
+
+  try {
+    $healthScript = Join-Path $installRoot 'Get-GYKeepHealth.ps1'
+    if (-not (Test-Path -LiteralPath $healthScript -PathType Leaf)) {
+      $healthScript = Join-Path $PSScriptRoot 'Get-GYKeepHealth.ps1'
+    }
+    if (Test-Path -LiteralPath $healthScript -PathType Leaf) {
+      Write-Host 'GY Keep 健康检查：执行中...'
+      $keepHealthRaw = & $powershell -NoProfile -ExecutionPolicy Bypass -File $healthScript -Json
+      try {
+        $keepHealth = $keepHealthRaw | ConvertFrom-Json
+        if ($keepHealth.overall -eq 'fail') {
+          Write-Host 'Keep 体检未通过：请检查上方提示项。' -ForegroundColor Yellow
+        } elseif ($keepHealth.overall -eq 'warn') {
+          Write-Host 'Keep 体检有告警，建议处理建议项。' -ForegroundColor Yellow
+        } else {
+          Write-Host 'Keep 体检通过。'
+        }
+      } catch {
+        # 某些环境下 ConvertFrom-Json 会失败（非标准输出），不影响整备主流程。
+      }
+    } else {
+      Write-Host '未检测到 Get-GYKeepHealth.ps1：本次整备仅完成安装核验。' -ForegroundColor Yellow
+    }
+  } catch {
+    Write-Host "Keep 体检执行失败：$($_.Exception.Message)" -ForegroundColor Yellow
   }
 
   Remove-Item -LiteralPath $repairErrorPath -Force -ErrorAction SilentlyContinue

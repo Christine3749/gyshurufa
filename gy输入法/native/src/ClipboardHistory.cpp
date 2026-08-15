@@ -1,6 +1,7 @@
 #include "ClipboardHistory.h"
 
 #include <windows.h>
+#include <wincrypt.h>
 #include <objbase.h>
 #include <objidl.h>
 #include <gdiplus.h>
@@ -21,6 +22,11 @@ namespace {
 constexpr ULONGLONG kMaxOutboxManifestBytes = 128ULL * 1024ULL * 1024ULL;
 
 std::mutex g_suppression_mutex;
+// The Host and its Settings window both receive WM_CLIPBOARDUPDATE.  One
+// clipboard sequence must therefore be claimed by exactly one listener in this
+// process; otherwise one user copy can become two independently synced notes.
+std::mutex g_capture_mutex;
+DWORD g_last_claimed_clipboard_sequence = 0;
 std::wstring g_remote_clipboard_text;
 bool g_remote_clipboard_image = false;
 DWORD g_remote_clipboard_sequence = 0;
@@ -62,6 +68,30 @@ void ClearRemoteClipboardSuppressionLocked() {
   g_remote_clipboard_until = 0;
 }
 
+std::wstring SkippedOutboxArchivePath(unsigned long long unix_time) {
+  const std::wstring root = RootDirectory();
+  return root.empty() ? std::wstring{} : root + L"\\clipboard-outbox-skipped-" +
+      std::to_wstring(unix_time) + L".tsv";
+}
+
+std::wstring SkipAuditPath() {
+  const std::wstring root = RootDirectory();
+  return root.empty() ? std::wstring{} : root + L"\\clipboard-sync-skip-audit.tsv";
+}
+
+bool AppendSkipAudit(unsigned long long unix_time, size_t skipped_count) {
+  const std::wstring path = SkipAuditPath();
+  if (path.empty()) return false;
+  const std::string row = std::to_string(unix_time) + "\t" + std::to_string(skipped_count) + "\tpre-onboarding\n";
+  HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, row.data(), static_cast<DWORD>(row.size()), &written, nullptr) && written == row.size();
+  CloseHandle(file);
+  return ok;
+}
+
 bool IsCurrentRemoteClipboardWriteLocked(DWORD clipboard_sequence) {
   if (GetTickCount64() > g_remote_clipboard_until || clipboard_sequence != g_remote_clipboard_sequence) {
     ClearRemoteClipboardSuppressionLocked();
@@ -85,6 +115,16 @@ bool TakeSuppressedRemoteImage(DWORD clipboard_sequence) {
     return false;
   }
   ClearRemoteClipboardSuppressionLocked();
+  return true;
+}
+
+bool ClaimClipboardSequence(DWORD clipboard_sequence) {
+  // A zero sequence is only expected during very early clipboard startup. Do
+  // not drop a legitimate first capture merely because Windows has no usable
+  // sequence value yet; normal notifications always use the durable guard.
+  if (clipboard_sequence == 0) return true;
+  if (clipboard_sequence == g_last_claimed_clipboard_sequence) return false;
+  g_last_claimed_clipboard_sequence = clipboard_sequence;
   return true;
 }
 
@@ -288,6 +328,61 @@ bool WriteOutbox(const std::vector<Entry>& entries) {
   return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
+bool ComputePngSha256(const std::string& png, std::wstring* output) {
+  if (!output || png.empty() || png.size() > kMaxImageBytes) return false;
+  output->clear();
+  HCRYPTPROV provider = 0;
+  HCRYPTHASH hash = 0;
+  BYTE digest[32]{};
+  DWORD digest_size = sizeof(digest);
+  const bool ok = CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
+                  CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash) &&
+                  CryptHashData(hash, reinterpret_cast<const BYTE*>(png.data()), static_cast<DWORD>(png.size()), 0) &&
+                  CryptGetHashParam(hash, HP_HASHVAL, digest, &digest_size, 0) && digest_size == sizeof(digest);
+  if (hash) CryptDestroyHash(hash);
+  if (provider) CryptReleaseContext(provider, 0);
+  if (!ok) return false;
+
+  static constexpr wchar_t kHex[] = L"0123456789abcdef";
+  output->reserve(sizeof(digest) * 2);
+  for (const BYTE value : digest) {
+    output->push_back(kHex[value >> 4]);
+    output->push_back(kHex[value & 0x0f]);
+  }
+  return true;
+}
+
+bool IsImmediateDuplicateImage(const std::vector<Entry>& entries, const std::wstring& sha256,
+                               const std::string& png) {
+  if (entries.empty() || entries.front().kind != EntryKind::PngImage) return false;
+  const Entry& latest = entries.front();
+  if (!latest.image_sha256.empty()) return latest.image_sha256 == sha256;
+
+  // Old local rows predate the SHA-256 column.  Compare their asset once so a
+  // legacy entry cannot be re-uploaded merely because it has no stored hash.
+  std::string existing_png;
+  return ReadImagePng(latest, &existing_png) && existing_png == png;
+}
+
+bool AppendPngCapture(const std::string& png, DWORD clipboard_sequence) {
+  if (png.empty() || png.size() > kMaxImageBytes || TakeSuppressedRemoteImage(clipboard_sequence)) return false;
+  std::wstring sha256;
+  if (!ComputePngSha256(png, &sha256)) return false;
+  std::vector<Entry> entries = ReadAll();
+  if (IsImmediateDuplicateImage(entries, sha256, png)) return false;
+
+  const std::wstring id = CreateEntryId();
+  if (id.empty() || !WriteBytesAtomically(ImagePath(id), png)) return false;
+  const Entry captured{id, static_cast<unsigned long long>(std::time(nullptr)), L"[图片]", true,
+                       EntryKind::PngImage, sha256};
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  outbox.push_back(captured);  // outbox is oldest first
+  if (!WriteOutbox(outbox)) return false;
+  entries.insert(entries.begin(), captured);
+  if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
+  return WriteAll(entries);
+}
+
 }  // namespace
 
 #ifdef GY_TESTING
@@ -311,6 +406,12 @@ void SuppressRemoteImage(DWORD clipboard_sequence) {
 
 bool TakeSuppressedRemoteImage(DWORD clipboard_sequence) {
   return ::gy::clipboard_history::TakeSuppressedRemoteImage(clipboard_sequence);
+}
+
+bool AppendPngForTesting(const std::string& png, DWORD clipboard_sequence) {
+  std::lock_guard<std::mutex> lock(::gy::clipboard_history::g_capture_mutex);
+  if (!::gy::clipboard_history::ClaimClipboardSequence(clipboard_sequence)) return false;
+  return ::gy::clipboard_history::AppendPngCapture(png, clipboard_sequence);
 }
 
 }  // namespace testing
@@ -477,6 +578,45 @@ bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequenc
   return outbox.size() == before || WriteOutbox(outbox);
 }
 
+bool SkipPendingUploads(size_t* skipped_count) {
+  if (!skipped_count) return false;
+  *skipped_count = 0;
+  const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
+  std::vector<Entry> outbox = ReadPendingOutbox();
+  std::vector<Entry> retained;
+  retained.reserve(outbox.size());
+  for (const auto& entry : outbox) {
+    if (entry.unix_time > now) retained.push_back(entry);
+    else ++*skipped_count;
+  }
+
+  // Archive before replacing the retry manifest.  The archive remains local
+  // and gives the user an auditable recovery point without contacting Keep.
+  if (*skipped_count > 0) {
+    const std::wstring source = OutboxPath();
+    const std::wstring archive = SkippedOutboxArchivePath(now);
+    if (source.empty() || archive.empty() || !CopyFileW(source.c_str(), archive.c_str(), TRUE)) return false;
+  }
+  if (!WriteOutbox(retained)) return false;
+
+  std::vector<Entry> history = ReadAll();
+  bool changed = false;
+  for (auto& entry : history) {
+    if (entry.pending_upload && entry.unix_time <= now) {
+      entry.pending_upload = false;
+      entry.sync_sequence = 0;  // local-only, never accepted by Keep
+      changed = true;
+    }
+  }
+  if (changed && !WriteAll(history)) return false;
+  if (*skipped_count > 0 && !AppendSkipAudit(now, *skipped_count)) return false;
+  return true;
+}
+
+size_t PendingUploadCount() {
+  return ReadPendingOutbox().size();
+}
+
 bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes) {
   std::vector<Entry> merged = ReadAll();
   for (const auto& change : changes) {
@@ -534,12 +674,17 @@ bool ReplaceConfirmedSnapshot(const std::vector<Entry>& confirmed) {
 }
 
 bool AppendFromClipboard() {
+  std::lock_guard<std::mutex> capture_lock(g_capture_mutex);
   const UINT exclude = ExcludeFormat();
   if (exclude != 0 && IsClipboardFormatAvailable(exclude)) return false;
   bool opened = false;
   for (int attempt = 0; attempt < 5 && !opened; ++attempt) { opened = OpenClipboard(nullptr) != 0; if (!opened) Sleep(10); }
   if (!opened) return false;
   const DWORD clipboard_sequence = GetClipboardSequenceNumber();
+  // Claim after opening the clipboard so a temporarily locked clipboard can
+  // still be retried.  Once claimed, all listeners must observe the same
+  // at-most-once result, including a deliberately suppressed remote update.
+  if (!ClaimClipboardSequence(clipboard_sequence)) { CloseClipboard(); return false; }
 
   bool allowed = true;
   const UINT opt_in = HistoryOptInFormat();
@@ -579,17 +724,7 @@ bool AppendFromClipboard() {
     return WriteAll(entries);
   }
 
-  if (png.empty() || png.size() > kMaxImageBytes || TakeSuppressedRemoteImage(clipboard_sequence)) return false;
-  const std::wstring id = CreateEntryId();
-  if (id.empty() || !WriteBytesAtomically(ImagePath(id), png)) return false;
-  std::vector<Entry> entries = ReadAll();
-  const Entry captured{id, static_cast<unsigned long long>(std::time(nullptr)), L"[图片]", true, EntryKind::PngImage};
-  std::vector<Entry> outbox = ReadPendingOutbox();
-  outbox.push_back(captured);  // outbox is oldest first
-  if (!WriteOutbox(outbox)) return false;
-  entries.insert(entries.begin(), captured);
-  if (entries.size() > kMaxEntries) entries.resize(kMaxEntries);
-  return WriteAll(entries);
+  return AppendPngCapture(png, clipboard_sequence);
 }
 
 bool ReplaceAll(const std::vector<Entry>& entries) {

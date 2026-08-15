@@ -1,11 +1,14 @@
 #include "CandidateWindow.h"
 #include "ClipboardHistory.h"
+#include "EnglishLexicon.h"
 #include "GyKeepSync.h"
 #include "HostProtocol.h"
+#include "InputScopeProbe.h"
 #include "PerformanceSettings.h"
 #include "PinyinEngine.h"
 #include "SettingsWindow.h"
 #include "TrayController.h"
+#include "UpdateNotification.h"
 
 #include <windows.h>
 #include <sddl.h>
@@ -14,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <iterator>
+#include <vector>
 
 #ifndef GY_HOST_VERSION
 #define GY_HOST_VERSION "dev"
@@ -91,6 +95,160 @@ std::wstring ModuleDirectory() {
   return slash == std::wstring::npos ? L"." : directory.substr(0, slash);
 }
 
+std::wstring ParentDirectory(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+}
+
+std::wstring ReadUtf8TextFile(const std::wstring& path) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024) {
+    CloseHandle(file);
+    return {};
+  }
+  std::vector<char> bytes(static_cast<size_t>(size.QuadPart));
+  DWORD read = 0;
+  const bool ok = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) != FALSE;
+  CloseHandle(file);
+  if (!ok || read == 0) return {};
+  size_t offset = 0;
+  if (read >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
+      static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF) {
+    offset = 3;
+  }
+  const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data() + offset,
+                                         static_cast<int>(read - offset), nullptr, 0);
+  if (length <= 0) return {};
+  std::wstring result(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data() + offset,
+                      static_cast<int>(read - offset), result.data(), length);
+  return result;
+}
+
+std::wstring ReadUpdateStateValue(const wchar_t* name) {
+  wchar_t local_app_data[MAX_PATH]{};
+  const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data,
+                                                static_cast<DWORD>(std::size(local_app_data)));
+  if (length == 0 || length >= std::size(local_app_data)) return {};
+  const std::wstring raw = ReadUtf8TextFile(std::wstring(local_app_data, length) + L"\\GYInput\\update-state.ini");
+  const std::wstring prefix = std::wstring(name) + L"=";
+  size_t begin = 0;
+  while (begin <= raw.size()) {
+    const size_t end = raw.find_first_of(L"\r\n", begin);
+    const std::wstring line = raw.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
+    if (line.rfind(prefix, 0) == 0) return line.substr(prefix.size());
+    if (end == std::wstring::npos) break;
+    begin = raw.find_first_not_of(L"\r\n", end);
+    if (begin == std::wstring::npos) break;
+  }
+  return {};
+}
+
+std::wstring UpdateNotificationMarkerPath() {
+  wchar_t local_app_data[MAX_PATH]{};
+  const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data,
+                                                static_cast<DWORD>(std::size(local_app_data)));
+  if (length == 0 || length >= std::size(local_app_data)) return {};
+  return std::wstring(local_app_data, length) + L"\\GYInput\\update-notified.txt";
+}
+
+bool UpdateNotificationAlreadyShown(const std::wstring& version) {
+  return !version.empty() && ReadUtf8TextFile(UpdateNotificationMarkerPath()) == version;
+}
+
+void MarkUpdateNotificationShown(const std::wstring& version) {
+  const std::wstring path = UpdateNotificationMarkerPath();
+  if (path.empty() || version.empty()) return;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_HIDDEN, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  std::string ascii;
+  ascii.reserve(version.size());
+  for (const wchar_t character : version) {
+    if (character > 0x7F) {
+      CloseHandle(file);
+      return;
+    }
+    ascii.push_back(static_cast<char>(character));
+  }
+  DWORD written = 0;
+  WriteFile(file, ascii.data(), static_cast<DWORD>(ascii.size()), &written, nullptr);
+  CloseHandle(file);
+}
+
+bool SetCurrentUserRegistryString(const wchar_t* subkey, const wchar_t* value_name,
+                                  const std::wstring& value) {
+  HKEY key = nullptr;
+  DWORD disposition = 0;
+  const LONG open_result = RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0,
+                                           KEY_SET_VALUE, nullptr, &key, &disposition);
+  if (open_result != ERROR_SUCCESS || !key) return false;
+  const BYTE* data = reinterpret_cast<const BYTE*>(value.c_str());
+  const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+  const LONG write_result = RegSetValueExW(key, value_name, 0, REG_SZ, data, bytes);
+  RegCloseKey(key);
+  return write_result == ERROR_SUCCESS;
+}
+
+void RegisterGyInputProtocol(const std::wstring& powershell, const std::wstring& script) {
+  // Register per-user so the toast action works without an additional UAC
+  // prompt and an older version's uninstaller cannot remove this protocol.
+  const std::wstring command = L"\"" + powershell +
+      L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script +
+      L"\" -ToastActionUri \"%1\"";
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput", nullptr,
+                               L"URL:GY Input Update");
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput", L"URL Protocol", L"");
+  SetCurrentUserRegistryString(L"Software\\Classes\\gyinput\\shell\\open\\command", nullptr,
+                               command);
+}
+
+void MaybeShowUpdateNotification() {
+  const std::wstring status = ReadUpdateStateValue(L"status");
+  const std::wstring version = ReadUpdateStateValue(L"version");
+  if ((status != L"update-available" && status != L"ready-to-install") || version.empty() || UpdateNotificationAlreadyShown(version)) return;
+  if (ShowGyUpdateNotification(version)) MarkUpdateNotificationShown(version);
+}
+
+void StartAutomaticUpdateCheck(const std::wstring& module_directory) {
+#ifdef GY_TESTING
+  // Unit/smoke Hosts must never make network requests or create user state.
+  (void)module_directory;
+#else
+  if (GetEnvironmentVariableW(L"GYINPUT_DISABLE_UPDATE_CHECK", nullptr, 0) > 0) return;
+  const std::wstring version_root = module_directory;
+  const std::wstring versions_root = ParentDirectory(version_root);
+  const std::wstring install_root = ParentDirectory(versions_root);
+  if (install_root.empty()) return;
+  const std::wstring script = install_root + L"\\AutoUpdate-GYInput.ps1";
+  if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+
+  wchar_t windows_directory[MAX_PATH]{};
+  const UINT length = GetWindowsDirectoryW(windows_directory, static_cast<UINT>(std::size(windows_directory)));
+  if (length == 0 || length >= std::size(windows_directory)) return;
+  const std::wstring powershell = std::wstring(windows_directory, length) +
+      L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  RegisterGyInputProtocol(powershell, script);
+  std::thread([powershell, script]() {
+    std::wstring command = L"\"" + powershell + L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script + L"\" -Action Check";
+    std::vector<wchar_t> mutable_command(command.begin(), command.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr,
+                        &startup, &process)) return;
+    const DWORD wait = WaitForSingleObject(process.hProcess, 60000);
+    if (wait == WAIT_OBJECT_0) MaybeShowUpdateNotification();
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  }).detach();
+#endif
+}
+
 constexpr DWORD kPipeInstanceCount = 8;
 
 SECURITY_ATTRIBUTES* PipeSecurityAttributes() {
@@ -164,15 +322,19 @@ bool SendCandidateSelection(const std::wstring& callback_pipe, unsigned index) {
   // per-session endpoint and commits on its own editor thread.
   if (!IsSelectionEndpoint(callback_pipe) || !WaitNamedPipeW(callback_pipe.c_str(), 150)) return false;
   HANDLE pipe = CreateFileW(callback_pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
   if (pipe == INVALID_HANDLE_VALUE) return false;
   gy::host::MessageType response_type{};
   std::wstring response;
-  const bool sent = gy::host::WriteMessage(pipe, gy::host::MessageType::SelectCandidate,
-                                           std::to_wstring(index)) &&
-                    gy::host::ReadMessage(pipe, &response_type, &response);
+  const ULONGLONG deadline = GetTickCount64() + 250;
+  const bool sent = gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::SelectCandidate,
+                                                       std::to_wstring(index), deadline) &&
+                    gy::host::ReadMessageWithDeadline(pipe, &response_type, &response, deadline);
+  const bool acknowledged = sent && response_type == gy::host::MessageType::SelectCandidate && response == L"ok" &&
+      gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::AcknowledgeCandidateSelection,
+                                         L"received", GetTickCount64() + 250);
   CloseHandle(pipe);
-  return sent && response_type == gy::host::MessageType::SelectCandidate && response == L"ok";
+  return acknowledged;
 }
 
 class HostUi final {
@@ -184,11 +346,14 @@ public:
     switch (command->kind) {
       case UiCommandKind::ShowCandidates:
         callback_pipe_ = command->state.callback_pipe;
-        // Preedit is already rendered by the focused app through TSF. The Host
-        // deliberately draws only the horizontal candidate strip below it.
-        candidates_.Show(command->state.caret, L"", command->state.candidates,
+        // Preedit is already rendered by the focused app through TSF.  The
+        // Host draws only the strip, except that EN may tint the untyped suffix
+        // of its first local suggestion as an inline completion cue.
+        candidates_.Show(command->state.caret, command->state.composition, command->state.candidates,
                          command->state.selected, command->state.page_start, static_cast<int>(command->state.input_mode),
-                         command->state.expanded);
+                         command->state.candidate_purpose, command->state.chinese_grid_open,
+                         command->state.english_list_open, command->state.english_candidate_focus,
+                         command->state.correction_indices);
         break;
       case UiCommandKind::HideCandidates:
         callback_pipe_.clear();
@@ -224,9 +389,26 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
                              PinyinEngine* engine, DWORD ui_thread_id, std::atomic_bool* running) {
   std::wstring response = L"ok";
   if (type == gy::host::MessageType::Lookup) {
-    response = gy::host::EncodeCandidates(engine->Lookup(request));
+    gy::host::LookupRequest lookup{};
+    if (!gy::host::DecodeLookupRequest(request, &lookup)) {
+      response = L"error";
+    } else {
+      response = gy::host::EncodeLookupResponse({
+          engine->Lookup(lookup.text, static_cast<int>(lookup.input_mode)),
+          lookup.input_mode, lookup.mode_generation});
+    }
+  } else if (type == gy::host::MessageType::LookupExact) {
+    gy::host::LookupRequest lookup{};
+    if (!gy::host::DecodeLookupRequest(request, &lookup)) {
+      response = L"error";
+    } else {
+      response = gy::host::EncodeLookupResponse({
+          engine->LookupExact(lookup.text, static_cast<int>(lookup.input_mode)),
+          lookup.input_mode, lookup.mode_generation});
+    }
   } else if (type == gy::host::MessageType::Status) {
-    response = GY_WIDEN(GY_HOST_VERSION);
+    response = gy::host::EncodeStatus({GY_WIDEN(GY_HOST_VERSION),
+        gy::host::kProtocolVersion, GY_WIDEN(GY_HOST_VERSION)});
   } else if (type == gy::host::MessageType::ShowCandidates) {
     auto* command = new UiCommand{};
     command->kind = UiCommandKind::ShowCandidates;
@@ -246,10 +428,20 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
   } else if (type == gy::host::MessageType::LearnCandidate) {
     std::wstring pinyin;
     std::wstring candidate;
-    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate)) {
+    int input_mode = -1;
+    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate, &input_mode)) {
       response = L"error";
     } else {
-      engine->Learn(pinyin, candidate);
+      engine->Learn(pinyin, candidate, input_mode);
+    }
+  } else if (type == gy::host::MessageType::UndoLearnCandidate) {
+    std::wstring pinyin;
+    std::wstring candidate;
+    int input_mode = -1;
+    if (!gy::host::DecodeLearningEvent(request, &pinyin, &candidate, &input_mode)) {
+      response = L"error";
+    } else {
+      engine->UndoLastLearn(pinyin, candidate, input_mode);
     }
   } else if (type == gy::host::MessageType::Shutdown) {
     running->store(false);
@@ -382,8 +574,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   DebugStep(L"step: before engine");
   PinyinEngine engine(ModuleDirectory());
   DebugStep(L"step: engine ready");
+  StartAsyncInputScopeProbe();
+  StartAutomaticUpdateCheck(ModuleDirectory());
   std::atomic_bool running{true};
   HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  // The updater writes only a verified, atomically activated English snapshot.
+  // This low-frequency Host worker observes that file outside the input path;
+  // Pinyin/EN lookups therefore only consult the in-memory word set.
+  std::thread english_lexicon_refresh;
+#ifndef GY_TESTING
+  if (stop_event) {
+    english_lexicon_refresh = std::thread([stop_event] {
+      gy::english_lexicon::RefreshVerifiedSnapshot();
+      while (WaitForSingleObject(stop_event, 5000) == WAIT_TIMEOUT) {
+        gy::english_lexicon::RefreshVerifiedSnapshot();
+      }
+    });
+  }
+#endif
   std::thread server(ServeRequests, &engine, &running, ui_thread_id, stop_event);
   DebugStep(L"step: server spawned");
   HostUi ui;
@@ -416,6 +624,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   // server is never forcibly terminated, so no user process is touched.
   if (stop_event) SetEvent(stop_event);
   if (server.joinable()) server.join();
+  if (english_lexicon_refresh.joinable()) english_lexicon_refresh.join();
   if (stop_event) CloseHandle(stop_event);
   if (show_tray) tray.Stop();
   CloseHandle(single_instance);

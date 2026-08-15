@@ -19,6 +19,14 @@ constexpr bool ShouldToggleMode(bool shift_down, bool shift_used, bool has_short
   return shift_down && !shift_used && !has_shortcut_modifier;
 }
 
+// Switching from Chinese composition to EN must preserve the literal ASCII
+// text already being edited. Switching into EN discards only unconfirmed
+// pinyin: GY never silently commits raw text or a Chinese candidate as a side
+// effect of changing modes.
+constexpr bool ShouldCancelCompositionBeforeModeSwitch(bool has_composition, bool next_english) {
+  return has_composition && next_english;
+}
+
 // TSF may not call OnKeyDown for a key that we deliberately pass to the app.
 // Mark the pending Shift as used during the Test phase, so Shift+Tab,
 // Shift+letter and Shift+Ctrl cannot become a mode toggle when Shift is released.
@@ -40,4 +48,17 @@ constexpr bool ShouldCommitSelectedCandidate(WPARAM key, bool expanded_candidate
   return IsCandidateCommitKey(key) || (expanded_candidates && key == VK_RETURN);
 }
 constexpr bool IsCommitKey(WPARAM key) { return IsCandidateCommitKey(key) || IsRawTextCommitKey(key); }
+
+// Punctuation is a word boundary, not an implicit completion command. In EN
+// it preserves the literal token, just like Space and Enter.
+constexpr bool ShouldCommitRawBeforeBoundary(bool english_mode) noexcept {
+  return english_mode;
+}
+
+// Space remains literal in the passive EN strip. After the user deliberately
+// focuses candidates with an arrow, it accepts that highlighted completion
+// and adds the normal word-boundary space.
+constexpr bool ShouldAcceptEnglishWithSpace(bool candidate_focus) noexcept {
+  return candidate_focus;
+}
 }  // namespace gy::keys

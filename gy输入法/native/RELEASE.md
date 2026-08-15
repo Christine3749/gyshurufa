@@ -13,9 +13,14 @@
 
 在项目根目录执行：
 
+先完成安全、回退、隐私边界和真实应用验收，并将四项结论写入
+`release\approvals\<version>.json`。没有这份人工验收单，任何打包、签名、
+最终封包、上传命令都会拒绝执行。
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\native\package.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\native\build-installer.ps1
+$approval = '.\release\approvals\<version>.json'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\native\package.ps1 -ApprovalPath $approval
+powershell -NoProfile -ExecutionPolicy Bypass -File .\native\build-installer.ps1 -ApprovalPath $approval
 ```
 
 安装器采用版本并存目录：`C:\Program Files\GYInput\versions\<version>`。升级会注册新版本 DLL，而不会覆盖已被微信、Chrome、ChatGPT、Office 等进程加载的旧 DLL。首次升级到 Host 架构时，已打开的应用关闭后重新打开一次即可使用新兼容层；以后仅词库/算法 Host 更新会在下一次输入时自动切换，无需重启电脑或关闭应用。
@@ -32,3 +37,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\native\build-installer.ps1
 - 在新的 Windows 用户账户测试首次安装、修复和卸载。
 - 生成并发布 EXE 和 ZIP 的 SHA-256 文件。
 - 使用 Authenticode 证书签名 DLL 与 EXE；未签名版本仍会触发 Windows 发布者警告。
+- 验收单必须明确记录：源码／自动测试、回退演练、真实应用、隐私边界四项均已通过；
+  0.10.96 与 0.10.97 永久拒绝进入任何发布链路。

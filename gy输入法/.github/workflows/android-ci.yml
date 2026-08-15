@@ -1,0 +1,59 @@
+name: android-ci
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android-ci.yml"
+  pull_request:
+    paths:
+      - "android/**"
+
+jobs:
+  gate-build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 第一门禁：身份契约 + 零权限隐私红线。先跑，失败即阻断。
+      - name: Identity contract gate
+        run: python scripts/verify_identity.py
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # wrapper jar 由本步骤在 CI 生成；本地开发首次构建同样执行此命令（见 README）。
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.9 --distribution-type bin
+
+      - name: ktlint
+        run: ./gradlew ktlintCheck --no-configuration-cache
+
+      - name: detekt
+        run: ./gradlew detekt
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gyinput-android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

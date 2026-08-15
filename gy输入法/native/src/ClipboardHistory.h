@@ -54,6 +54,12 @@ std::vector<Entry> ReadPendingOutbox();
 bool MigratePendingHistoryToOutbox();
 bool AcknowledgeUploaded(const std::wstring& id, unsigned long long sync_sequence);
 
+// Keeps pre-onboarding captures on this computer without sending them to Keep.
+// The durable outbox is archived locally for audit, while the visible history
+// stays available and is marked as local-only (sync_sequence == 0).
+bool SkipPendingUploads(size_t* skipped_count);
+size_t PendingUploadCount();
+
 // Merge ordered confirmed Keep deltas into the local 20-entry projection.
 // Pending local copies stay visible immediately until their ACK arrives.
 bool ApplyConfirmedChanges(const std::vector<RemoteChange>& changes);

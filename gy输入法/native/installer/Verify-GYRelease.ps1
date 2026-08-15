@@ -2,7 +2,9 @@
 param(
   [string]$Version,
   [string]$ReleaseRoot,
-  [switch]$RequireSignature
+  [switch]$RequireSignature,
+  [switch]$CandidateDistribution,
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +15,13 @@ Import-Module (Join-Path $PSScriptRoot '..\ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $releaseDefinition = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $releaseDefinition -RequestedVersion $Version
+if ($CandidateDistribution) {
+  if ($ApprovalPath) { $approval = Assert-GYCandidateDistributionApproval -Manifest $releaseDefinition -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYCandidateDistributionApproval -Manifest $releaseDefinition -Version $Version }
+} else {
+  if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $releaseDefinition -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYReleaseApproval -Manifest $releaseDefinition -Version $Version }
+}
 $packageRoot = Join-Path $ReleaseRoot "GYInput-$Version"
 $payloadRoot = Join-Path $packageRoot 'payload'
 $setup = Join-Path $ReleaseRoot "GYInputSetup-$Version.exe"
@@ -64,11 +73,17 @@ if (-not (Test-Path -LiteralPath $sourceNotes -PathType Leaf) -or -not (Test-Pat
 $sourceInstallerRoot = $PSScriptRoot
 $sourceScripts = @(
   'Install-GYInput.ps1',
+  'Set-GYKeyboard.ps1',
   'Validate-GYInput.ps1',
+  'Get-GYLoadedClientState.ps1',
+  'Get-GYKeepHealth.ps1',
   'Rollback-GYInput.ps1',
   'Repair-GYInput.ps1',
+  'AutoUpdate-GYInput.ps1',
+  'Sync-GYEnglishLexicon.ps1',
   'Finalize-GYClientReload.ps1',
   'Prune-GYOldVersions.ps1',
+  'Migrate-GYLegacyInstallEntries.ps1',
   'Register-GYInputActivationTasks.ps1',
   'GYInputTransaction.ps1'
 )

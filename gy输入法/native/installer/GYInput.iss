@@ -6,6 +6,7 @@
 #endif
 #define MyAppName "GY 输入法"
 #define MyAppPublisher "GY Input Method"
+#define MyAppId "GYInput"
 #define MyPayloadDir AddBackslash(SourcePath) + "..\release\GYInput-" + MyAppVersion + "\payload"
 #define MyLicenseDir AddBackslash(SourcePath) + "..\release\GYInput-" + MyAppVersion + "\LICENSES"
 #define MyClassId "{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}"
@@ -13,8 +14,10 @@
 #define MyTsfRoot "{app}\tsf-" + MyTsfVersion
 
 [Setup]
-AppId=GYInput-{#MyAppVersion}
-UninstallFilesDir={app}\uninstall-{#MyAppVersion}
+; Product identity must remain stable across upgrades.  The previous
+; version-qualified AppId made every update appear as a separate installed app.
+AppId={#MyAppId}
+UninstallFilesDir={app}\uninstall
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName=GY 输入法 {#MyAppVersion}
@@ -82,13 +85,22 @@ Source: "{#MyPayloadDir}\GyImeHealth-{#MyAppVersion}.exe"; DestDir: "{#MyVersion
 
 Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyTsfRoot}"; Flags: onlyifdoesntexist
 Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
+; Keep the TSF profile icon at a stable path so Windows' language-bar cache
+; never points at a removed version directory after an upgrade.
+Source: "{#SourcePath}\assets\gy.ico"; DestDir: "{app}"; DestName: "gy.ico"; Flags: ignoreversion uninsneveruninstall onlyifdoesntexist; Check: ShouldInstallSharedHelpers
 Source: "{#MyPayloadDir}\release-notes.txt"; DestDir: "{#MyVersionRoot}"; DestName: "RELEASE-NOTES.txt"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime.dll"; DestDir: "{#MyVersionRoot}"; Flags: onlyifdoesntexist
 Source: "{#MyPayloadDir}\rime-data\*"; DestDir: "{#MyVersionRoot}\rime-data"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
+Source: "{#MyPayloadDir}\english-lexicon\*"; DestDir: "{#MyVersionRoot}\english-lexicon"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: "{#SourcePath}\Set-GYKeyboard.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Migrate-GYLegacyInstallEntries.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Validate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Get-GYLoadedClientState.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Get-GYKeepHealth.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Rollback-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Repair-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\AutoUpdate-GYInput.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Sync-GYEnglishLexicon.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\GYInputTransaction.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Finalize-GYClientReload.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
@@ -100,6 +112,7 @@ Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion rec
 
 [Icons]
 Name: "{group}\Windows 输入法设置"; Filename: "{sys}\explorer.exe"; Parameters: "ms-settings:regionlanguage"
+Name: "{group}\GY 输入法"; Filename: "{app}\versions\{#MyAppVersion}\GyImeHost-{#MyAppVersion}.exe"; WorkingDir: "{app}"; IconFilename: "{app}\gy.ico"; AppUserModelID: "GYInput.Desktop"
 Name: "{group}\验证 GY 输入法安装"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Validate-GYInput.ps1"""
 Name: "{group}\整备 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Repair-GYInput.ps1"""
 Name: "{group}\回退到上一版 GY 输入法"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Rollback-GYInput.ps1"""
@@ -113,8 +126,6 @@ function GYGetLastError(): Integer;
 function GYCloseHandle(hObject: Integer): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 var
-  KeyboardAdded: Boolean;
-  CoreConnectorIsNew: Boolean;
   ActivationPending: Boolean;
   PreviousDll: String;
   PreviousHost: String;
@@ -180,7 +191,7 @@ begin
   Result := 'GYInput\ActivatePending';
 end;
 
-function PendingTaskNameLogon(): String;
+function LegacyPendingTaskNameLogon(): String;
 begin
   Result := 'GYInput\ActivatePendingLogon';
 end;
@@ -326,17 +337,6 @@ begin
   Result := Comparison <= 0;
 end;
 
-function RegisterGyTextService(): Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec(ExpandConstant('{sys}\regsvr32.exe'), '/s "' + StableDllPath() + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if (not Result) or (ResultCode <> 0) then begin
-    MsgBox('GY 输入法无法完成系统注册（错误代码：' + IntToStr(ResultCode) + '）。安装已停止，现有输入法不会受到影响。', mbError, MB_OK);
-    Result := False;
-  end;
-end;
-
 function VerifyNewHost(): Boolean;
 var
   ResultCode: Integer;
@@ -351,11 +351,6 @@ begin
            '）。当前正在使用的版本保持不变；请保留此安装包并反馈该错误代码。', mbError, MB_OK);
   end;
 end;
-procedure RegisterGyHost();
-begin
-  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', VersionHostPath());
-  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', '{#MyAppVersion}');
-end;
 
 function JsonEscape(const Value: String): String;
 begin
@@ -367,14 +362,21 @@ end;
 function SavePendingActivation(): Boolean;
 var
   Json: String;
+  BootId: Cardinal;
 begin
-  Json := '{"schemaVersion":1,"activationState":"pending","version":"{#MyAppVersion}","dll":"' +
+  Result := RegQueryDWordValue(HKLM64,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters',
+    'BootId', BootId);
+  if not Result then Exit;
+  Json := '{"schemaVersion":2,"activationState":"pending","version":"{#MyAppVersion}","dll":"' +
           JsonEscape(StableDllPath()) + '","host":"' + JsonEscape(VersionHostPath()) +
           '","health":"' + JsonEscape(VersionHealthPath()) +
           '","previousDll":"' + JsonEscape(PreviousDll) +
           '","previousHost":"' + JsonEscape(PreviousHost) +
           '","previousHealth":"' + JsonEscape(PreviousHealth) +
-          '","previousVersion":"' + JsonEscape(PreviousHostVersion) + '"}';
+          '","previousVersion":"' + JsonEscape(PreviousHostVersion) + '","firstInstall":';
+  if PreviousStateAvailable then Json := Json + 'false' else Json := Json + 'true';
+  Json := Json + ',"stagedBootId":' + IntToStr(BootId) + '}';
   Result := SaveStringToFile(PendingActivationPath(), Json, False);
 end;
 
@@ -408,8 +410,7 @@ begin
   PrimaryCreated := Exec(GYWindowsPowerShellPath(), Args, '', SW_HIDE,
                          ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   Result := PrimaryCreated and
-            PendingTaskExists(PendingTaskName()) and
-            PendingTaskExists(PendingTaskNameLogon());
+            PendingTaskExists(PendingTaskName());
 end;
 
 procedure CancelPendingActivation();
@@ -420,7 +421,7 @@ begin
        '/Delete /TN "' + PendingTaskName() + '" /F', '', SW_HIDE,
        ewWaitUntilTerminated, ResultCode);
   Exec(GYSchtasksPath(),
-       '/Delete /TN "' + PendingTaskNameLogon() + '" /F', '', SW_HIDE,
+       '/Delete /TN "' + LegacyPendingTaskNameLogon() + '" /F', '', SW_HIDE,
        ewWaitUntilTerminated, ResultCode);
   DeleteFile(PendingActivationPath());
 end;
@@ -509,50 +510,10 @@ begin
             RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost);
 end;
 
-procedure PruneOldVersions();
-var
-  ResultCode: Integer;
-  Args: String;
-begin
-  // Every release keeps its own versioned directory; without pruning they
-  // accumulate forever. Keep exactly N (this release) and N-1 (the rollback
-  // target captured before activation), sweep anything older, and defer
-  // locked files to the next install via pending-prune.txt. Best-effort:
-  // pruning must never abort or roll back a successful activation.
-  Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Prune-GYOldVersions.ps1') +
-          '" -InstallRoot "' + ExpandConstant('{app}') + '" -KeepVersions "{#MyAppVersion}';
-  if PreviousStateAvailable and (PreviousHostVersion <> '') and (CompareText(PreviousHostVersion, '{#MyAppVersion}') <> 0) then
-    Args := Args + ',' + PreviousHostVersion;
-  Args := Args + '"';
-  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure SaveActiveGyState();
-var
-  ActivationState: String;
-begin
-  ActivationState := 'active';
-  if ActivationPending then ActivationState := 'registered-pending-client-reload';
-  SaveStringToFile(ExpandConstant('{app}\install-state.json'),
-                    GyStateJson(StableDllPath(), VersionHostPath(), '{#MyAppVersion}', '{#MyTsfVersion}', VersionHealthPath(), ActivationState), False);
-end;
 procedure SaveTransactionGyState(const ActivationState: String);
 begin
   SaveStringToFile(ExpandConstant('{app}\install-state.json'),
                    GyStateJson(StableDllPath(), VersionHostPath(), '{#MyAppVersion}', '{#MyTsfVersion}', VersionHealthPath(), ActivationState), False);
-end;
-
-function UpdateKeyboardList(Add: Boolean): Boolean;
-var
-  ResultCode: Integer;
-  Args: String;
-begin
-  if Add then
-    Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Set-GYKeyboard.ps1') + '" -Add'
-  else
-    Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Set-GYKeyboard.ps1') + '" -Remove';
-  Result := ExecAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := Result and (ResultCode = 0);
 end;
 
 function RemoveKeyboardListForUninstall(): Boolean;
@@ -600,68 +561,21 @@ begin
     end;
   end;
 end;
-function VerifyActivatedRelease(): Boolean;
-var
-  ActiveDll: String;
-  ActiveHost: String;
-  ActiveVersion: String;
+procedure RestoreCapturedPreviousStateFile();
 begin
-  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Classes\CLSID\{#MyClassId}\InprocServer32', '', ActiveDll) and
-            RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost) and
-            RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', ActiveVersion) and
-            (CompareText(ActiveDll, StableDllPath()) = 0) and
-            (CompareText(ActiveHost, VersionHostPath()) = 0) and
-            (CompareText(ActiveVersion, '{#MyAppVersion}') = 0) and
-            FileExists(ActiveDll) and FileExists(ActiveHost);
-end;
-
-function RunPostInstallValidation(): Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-                 '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Validate-GYInput.ps1') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
-             (ResultCode = 0);
-end;
-
-procedure RestoreCapturedPreviousGyState();
-var
-  ResultCode: Integer;
-begin
-  if not PreviousStateAvailable then Exit;
-  Exec(ExpandConstant('{sys}\regsvr32.exe'), '/s "' + PreviousDll + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if ResultCode <> 0 then begin
+  if PreviousStateAvailable then begin
     SaveStringToFile(ExpandConstant('{app}\install-state.json'),
-                      GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'rolled-back-pending-client-reload'), False);
-    Exit;
+                      GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'active'), False);
+  end else begin
+    DeleteFile(ExpandConstant('{app}\install-state.json'));
   end;
-  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', PreviousHost);
-  RegWriteStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostVersion', PreviousHostVersion);
-  SaveStringToFile(ExpandConstant('{app}\install-state.json'),
-                    GyStateJson(PreviousDll, PreviousHost, PreviousHostVersion, PreviousHostVersion, PreviousHealth, 'active'), False);
 end;
-function RepairPendingActivation(): Boolean;
-var
-  ResultCode: Integer;
+function RequirePendingActivationComplete(): Boolean;
 begin
   Result := True;
   if not FileExists(PendingActivationPath()) then Exit;
-  if not FileExists(CommonFinalizerPath()) then begin
-    MsgBox('检测到上一次升级尚未完成，但缺少激活组件。请重新运行安装程序。', mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
-  ReleaseActivationMutex();
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-                 '-NoProfile -ExecutionPolicy Bypass -File "' + CommonFinalizerPath() + '"',
-                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
-            (ResultCode = 0) and (not FileExists(PendingActivationPath()));
-  if not AcquireActivationMutex() then begin
-    Result := False;
-    Exit;
-  end;
-  if not Result then
-    MsgBox('检测到上一次升级尚未完成，自动修复失败；本次安装已停止，当前版本保持不变。', mbError, MB_OK);
+  MsgBox('检测到已有待激活版本。为保护正在运行的办公软件，本次安装不会在当前会话中切换 DLL。请先正常重启 Windows；重启完成后再运行安装程序。', mbInformation, MB_OK);
+  Result := False;
 end;
 
 function InitializeSetup(): Boolean;
@@ -672,18 +586,17 @@ begin
     Exit;
   end;
   try
-    if not RepairPendingActivation() then begin
+    if not RequirePendingActivationComplete() then begin
       Result := False;
       Exit;
     end;
   finally
     ReleaseActivationMutex();
   end;
-  CoreConnectorIsNew := not FileExists(InstalledStableDllPath());
   if ReleaseIsComplete() then begin
     if WizardSilent then begin
       Result := True;
-    end else if MsgBox('GY 输入法 {#MyAppVersion} 已安装。'#13#10#13#10'选择“是”可重新注册并修复键盘列表；选择“否”将保持当前状态。', mbConfirmation, MB_YESNO) = IDYES then begin
+    end else if MsgBox('GY 输入法 {#MyAppVersion} 的文件已存在。'#13#10#13#10'选择“是”可重新核验并安排重启激活；选择“否”将保持当前状态。', mbConfirmation, MB_YESNO) = IDYES then begin
       Result := True;
     end else begin
       Result := False;
@@ -694,6 +607,9 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ThinkPadSettingsDirectory: String;
+  ThinkPadSettingsPath: String;
 begin
   if CurStep = ssPostInstall then begin
     if not AcquireActivationMutex() then begin
@@ -711,42 +627,39 @@ begin
       MsgBox('检测到已有 GY 注册状态，但无法建立完整回退快照。为避免丢失可恢复版本，本次安装未作任何切换。', mbError, MB_OK);
       Abort;
     end;
-    if PreviousStateAvailable then begin
-      // Core DLLs are loaded inside already-running TSF clients. Keep the old
-      // registration active until the next boot, then let the SYSTEM
-      // finalizer register and verify this staged version before pruning old
-      // directories. This prevents a new registry + old client mix.
-      ActivationPending := True;
-      SaveCapturedPreviousGyState();
-      SaveTransactionGyState('staged');
-      if (not SavePendingActivation()) or (not SchedulePendingActivation()) then begin
-        CancelPendingActivation();
-        RestoreCapturedPreviousGyState();
-        MsgBox('GY 输入法已暂存新版核心，但无法安排重启后的自动激活。当前版本保持不变；请重启后重新运行安装程序。', mbError, MB_OK);
-        Abort;
-      end;
-      SaveTransactionGyState('pending');
-      KeyboardAdded := UpdateKeyboardList(True);
-      if not KeyboardAdded then
-        MsgBox('GY 输入法新版已暂存，但未能自动更新当前账户的键盘列表。重启后请在 Windows 输入法设置中重新选择 GY 输入法。', mbInformation, MB_OK);
-      Exit;
-    end;
-    if not RegisterGyTextService() then Abort;
-    RegisterGyHost();
-    if not VerifyActivatedRelease() then begin
-      RestoreCapturedPreviousGyState();
-      MsgBox('GY 输入法升级未能通过 DLL / Host 版本激活校验，已安全恢复上一版。请关闭正在输入的应用后重试；若这是首次安装，请重启 Windows 后重试。', mbError, MB_OK);
+#ifdef MyThinkPadCandidate
+    // Calibrate only after both the new payload and rollback state pass their
+    // checks, but before creating any pending activation state.  Auto follows
+    // the physical monitor: the notebook panel resolves to 95%, while an
+    // external desktop display can retain the 100% composition.
+    ThinkPadSettingsDirectory := ExpandConstant('{localappdata}\GYInput');
+    ThinkPadSettingsPath := AddBackslash(ThinkPadSettingsDirectory) + 'settings.ini';
+    if not ForceDirectories(ThinkPadSettingsDirectory) or
+       not SetIniString('Appearance', 'CandidateScale', '0', ThinkPadSettingsPath) then begin
+      MsgBox('ThinkPad 屏幕自动比例未能写入。安装已安全停止，当前输入法保持不变。', mbError, MB_OK);
       Abort;
     end;
-    SaveActiveGyState();
+#endif
+    // Every install is stage-only, including a first install. Neither the
+    // installer nor a logon event may switch the TSF DLL in a live session.
+    // The boot task verifies BootId changed before registering this release.
+    ActivationPending := True;
     SaveCapturedPreviousGyState();
-    PruneOldVersions();
-    KeyboardAdded := UpdateKeyboardList(True);
-    if not KeyboardAdded then begin
-      MsgBox('GY 输入法已安装，但未能自动加入当前账户的键盘列表。请在随后打开的 Windows 输入法设置中添加“GY 输入法（拼音）”。', mbInformation, MB_OK);
+    SaveTransactionGyState('staged');
+    if (not SavePendingActivation()) or (not SchedulePendingActivation()) then begin
+      CancelPendingActivation();
+      RestoreCapturedPreviousStateFile();
+      MsgBox('GY 输入法文件已暂存，但无法安排重启后的自动激活。当前输入法保持不变；请重新运行安装程序。', mbError, MB_OK);
+      Abort;
     end;
-    if not RunPostInstallValidation() then
-      MsgBox('安装后自动校验未通过。请使用“验证 GY 输入法安装”快捷方式查看具体项；当前安装不会自动覆盖旧版本。', mbError, MB_OK);
+    SaveTransactionGyState('pending');
+    { Persist until Set-GYKeyboard reads back the GY TIP successfully. }
+    RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+      'GYInputCompleteKeyboard',
+      '"' + ExpandConstant('{win}\System32\WindowsPowerShell\v1.0\powershell.exe') + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+      ExpandConstant('{app}\Set-GYKeyboard.ps1') + '" -Add -RequireActiveVersion "{#MyAppVersion}" -RetryAtNextLogon -WaitForActivationSeconds 60');
+    MsgBox('GY 输入法测试版已暂存。请正常重启 Windows；新版只会在重启时激活，不会关闭任何正在运行的办公软件。', mbInformation, MB_OK);
+    Exit;
     finally
       ReleaseActivationMutex();
     end;
@@ -758,10 +671,6 @@ begin
   if CurPageID = wpFinished then begin
     if ActivationPending then begin
       WizardForm.FinishedLabel.Caption := 'GY 输入法新版核心已暂存。'#13#10#13#10'请现在重启 Windows，重启时会自动完成新版 DLL 激活并清理旧版本。'#13#10#13#10'在重启前继续使用当前版本，避免新旧 DLL 混合运行。';
-    end else if CoreConnectorIsNew then begin
-      WizardForm.FinishedLabel.Caption := 'GY 输入法已准备就绪。'#13#10#13#10'现在按 Win + Space，选择“GY 输入法（拼音）”。'#13#10#13#10'这是一次核心兼容更新：无需重启 Windows。已打开的微信、Chrome、Office 等应用会继续安全使用旧 DLL；关闭后重新打开即可使用新版。';
-    end else begin
-      WizardForm.FinishedLabel.Caption := 'GY 输入法已准备就绪。'#13#10#13#10'这是一次 Host、词库与候选窗更新：无需关闭应用或重启 Windows；下一次输入将自动连接新版 Host。'#13#10#13#10'如需回退，可在开始菜单的“GY 输入法”中选择“回退到上一版”。';
     end;
   end;
 end;

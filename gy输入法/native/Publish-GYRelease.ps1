@@ -4,7 +4,9 @@ param(
   [string]$ReleaseRoot = '',
   [string]$BucketName = 'gy-shurufa-releases',
   [switch]$AllowUnsignedCandidate,
-  [switch]$Resume
+  [switch]$CandidateOnly,
+  [switch]$Resume,
+  [string]$ApprovalPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,14 +25,24 @@ Import-Module (Join-Path $PSScriptRoot 'ReleaseManifest.psm1') -Force
 $manifestPath = Get-GYReleaseManifestPath
 $manifest = Get-GYReleaseManifest
 $Version = Assert-GYReleaseVersion -Manifest $manifest -RequestedVersion $Version
+if ($CandidateOnly) {
+  if ($ApprovalPath) { $approval = Assert-GYCandidateDistributionApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYCandidateDistributionApproval -Manifest $manifest -Version $Version }
+} else {
+  if ($ApprovalPath) { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version -ApprovalPath $ApprovalPath }
+  else { $approval = Assert-GYReleaseApproval -Manifest $manifest -Version $Version }
+}
 
 if ([string]$manifest.windows.state -eq 'draft') { throw 'Draft Windows releases must be finalized before publishing.' }
 $requireSignature = [string]$manifest.channel -eq 'stable'
 if (-not $requireSignature -and -not $AllowUnsignedCandidate) {
   throw 'This pipeline requires Authenticode for all published builds by default; use -AllowUnsignedCandidate only for temporary internal candidate publishing.'
 }
+if ($CandidateOnly -and [string]$manifest.channel -eq 'stable') {
+  throw 'CandidateOnly cannot publish a stable release. Use the normal signed publication path instead.'
+}
 
-& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature:$requireSignature
+& (Join-Path $PSScriptRoot 'installer\Verify-GYRelease.ps1') -Version $Version -ReleaseRoot $ReleaseRoot -RequireSignature:$requireSignature -CandidateDistribution:$CandidateOnly -ApprovalPath $ApprovalPath
 
 $setup = Join-Path $ReleaseRoot $manifest.windows.setupFile
 $zip = Join-Path $ReleaseRoot $manifest.windows.zipFile
@@ -97,7 +109,8 @@ try {
   Put-Immutable $setup "$prefix/$($manifest.windows.setupFile)" 'application/vnd.microsoft.portable-executable'
   Put-Immutable $zip "$prefix/$($manifest.windows.zipFile)" 'application/zip'
   Put-Immutable $setupHash "$prefix/$($manifest.windows.setupFile).sha256" 'text/plain; charset=utf-8'
-  Put-Immutable $packageManifest "releases/$Version/release.json" 'application/json; charset=utf-8'
+  $manifestObjectKey = if ($CandidateOnly) { "candidates/windows/$Version/release.json" } else { "releases/$Version/release.json" }
+  Put-Immutable $packageManifest $manifestObjectKey 'application/json; charset=utf-8'
   if ($PSCmdlet.ShouldProcess("$BucketName/$prefix/$($manifest.windows.setupFile)", 'Download and hash-verify uploaded Windows release')) {
     $remoteWindows = Join-Path $tempRoot $manifest.windows.setupFile
     if (-not (Get-R2ObjectWithRetry "$prefix/$($manifest.windows.setupFile)" $remoteWindows 8)) {
@@ -108,6 +121,18 @@ try {
       throw 'R2 Windows package hash/size does not match canonical release.json; latest remains unchanged.'
     }
   }
+  if ($CandidateOnly) {
+    # The candidate manifest above is immutable and tied to its version. This
+    # pointer is intentionally the only mutable candidate object: the website
+    # and test download endpoint can always discover the newest candidate
+    # without a source-code change or a hard-coded version.
+    if ($PSCmdlet.ShouldProcess("$BucketName/candidates/windows/latest.json", 'Advance latest public Windows candidate pointer')) {
+      Invoke-ReleaseNative { & npx wrangler r2 object put "$BucketName/candidates/windows/latest.json" --file "$packageManifest" --content-type 'application/json; charset=utf-8' --remote }
+      if ($LASTEXITCODE -ne 0) { throw 'Unable to advance candidates/windows/latest.json.' }
+    }
+    Write-Host "Published public Windows candidate $Version and advanced candidates/windows/latest.json. releases/latest.json (stable) was not changed." -ForegroundColor Green
+    return
+  }
   if ($PSCmdlet.ShouldProcess("$BucketName/releases/latest.json", 'Atomically advance verified cross-platform latest pointer')) {
     Invoke-ReleaseNative { & npx wrangler r2 object put "$BucketName/releases/latest.json" --file "$manifestPath" --content-type 'application/json; charset=utf-8' --remote }
     if ($LASTEXITCODE -ne 0) { throw 'Unable to advance releases/latest.json.' }
@@ -117,6 +142,3 @@ try {
 finally {
   Remove-Item -LiteralPath $tempRoot -Force -Recurse -ErrorAction SilentlyContinue
 }
-
-
-

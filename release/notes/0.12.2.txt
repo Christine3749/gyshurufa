@@ -1,0 +1,27 @@
+0.12.2 — ThinkPad English architecture candidate
+
+This unsigned build is for Ethan's private ThinkPad acceptance only. It is
+version-pinned and does not replace the stable or shared candidate pointer.
+
+Corrections under test:
+- EN candidate UI is one horizontal strip with at most five suggestions. It
+  has no disclosure arrow, grid, page indicator, or vertical navigation path.
+- English digits remain literal input in every candidate state, including
+  woman5, GPT-5, Windows 11, and ThinkPad X1.
+- Space, Enter, and punctuation preserve the word the user actually typed;
+  Tab is the explicit completion action.
+- English chips have 12-DIP side padding, an 8-DIP inter-candidate gap, and a
+  dedicated final-glyph overhang guard so d, n, r, and similar endings are not
+  clipped by the next chip.
+- Candidate objects now carry completion/correction/next-word semantics,
+  replacement range, confidence, source, and an input-generation snapshot.
+- Stale prediction results are discarded, and user navigation locks the
+  current candidate ordering through submission.
+
+Acceptance focus:
+- Hand-type the 50-word paragraph in GY_ENGLISH_50_WORD_ACCEPTANCE.txt.
+- Confirm all digits and hyphens are preserved exactly.
+- Type wo and confirm word/work/world/would/woman are complete, clearly
+  separated, and followed directly by EN with no arrow.
+- Confirm Space, Enter, period, and hyphen keep the literal typed word.
+- Confirm Tab accepts a completion and Escape only hides suggestions.

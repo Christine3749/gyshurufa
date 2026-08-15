@@ -72,6 +72,32 @@ int main() {
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after ACK test");
 
+  // First-login onboarding must be able to retain local captures without
+  // replaying an offline backlog into Keep.  The retry manifest is archived,
+  // the visible entry stays local-only, and later migration must not recreate it.
+  {
+    HANDLE file = CreateFileW(gy::clipboard_history::HistoryPath().c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return Fail("could not seed skip-history fixture");
+    DWORD written = 0;
+    const bool wrote = WriteFile(file, pending_row.data(), static_cast<DWORD>(pending_row.size()), &written, nullptr) &&
+        written == pending_row.size();
+    CloseHandle(file);
+    if (!wrote || !gy::clipboard_history::MigratePendingHistoryToOutbox()) return Fail("could not seed skip outbox");
+  }
+  size_t skipped = 0;
+  if (!gy::clipboard_history::SkipPendingUploads(&skipped) || skipped != 1 ||
+      !gy::clipboard_history::ReadPendingOutbox().empty() ||
+      !gy::clipboard_history::MigratePendingHistoryToOutbox() ||
+      !gy::clipboard_history::ReadPendingOutbox().empty()) {
+    return Fail("skipped onboarding records were queued for upload");
+  }
+  const std::vector<Entry> after_skip = gy::clipboard_history::ReadAll();
+  if (after_skip.size() != 1 || after_skip.front().pending_upload || after_skip.front().sync_sequence != 0) {
+    return Fail("skip did not retain a local-only history entry");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after skip test");
+
   // This exercises the production screenshot conversion path without opening
   // the real clipboard: an off-screen bitmap becomes PNG, is stored exactly
   // as a screenshot asset, and remains readable from the confirmed HEAD.
@@ -98,6 +124,29 @@ int main() {
     return Fail("screenshot PNG asset did not survive the local projection round trip");
   }
   if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after image test");
+
+  // The hidden Host listener and the Settings window can both receive the
+  // same clipboard notification.  A single image must create exactly one
+  // durable history/outbox record; a fresh notification with identical PNG
+  // bytes must not create another note either.
+  if (!gy::clipboard_history::testing::AppendPngForTesting(png, 700) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 700) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 701)) {
+    return Fail("one local image capture was accepted more than once");
+  }
+  const std::vector<Entry> deduped_images = gy::clipboard_history::ReadAll();
+  if (deduped_images.size() != 1 || deduped_images.front().kind != EntryKind::PngImage ||
+      deduped_images.front().image_sha256.size() != 64 ||
+      gy::clipboard_history::ReadPendingOutbox().size() != 1) {
+    return Fail("deduplicated image capture did not persist one hashed retry record");
+  }
+  gy::clipboard_history::testing::SuppressRemoteImage(702);
+  if (gy::clipboard_history::testing::AppendPngForTesting(png, 702) ||
+      gy::clipboard_history::testing::AppendPngForTesting(png, 702) ||
+      gy::clipboard_history::ReadAll().size() != 1) {
+    return Fail("a remote image update escaped the one-event capture guard");
+  }
+  if (!gy::clipboard_history::Clear()) return Fail("could not reset isolated history after capture de-duplication test");
 
   // A remote write must be ignored exactly once, and only for the Windows
   // clipboard sequence it created.  A user who copies immediately afterwards

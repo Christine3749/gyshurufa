@@ -9,6 +9,8 @@ int main() {
   static_assert(CandidateWindow::kCandidatesPerPage == 5);
   static_assert(CandidateWindow::kExpandedColumns == 5);
   static_assert(CandidateWindow::kExpandedMaxRows == 5);
+  static_assert(CandidateWindow::kEnglishCandidates == 5);
+  static_assert(CandidateWindow::kExpandedEnglishCandidates == 8);
 
   constexpr unsigned kExpandedCapacity =
       CandidateWindow::kExpandedColumns * CandidateWindow::kExpandedMaxRows;

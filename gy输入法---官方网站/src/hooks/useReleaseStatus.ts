@@ -33,6 +33,7 @@ export type ReleaseStatus = {
     windows: ReleasePlatform;
     macos: ReleasePlatform;
   };
+  windowsCandidate?: ReleasePlatform;
 };
 
 function resolveReleaseUrl(value?: string): string {
@@ -113,14 +114,24 @@ export function useReleaseStatus() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch('/api/releases/latest', {
-      headers: { accept: 'application/json' },
-      cache: 'no-store',
-      signal: controller.signal
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`release status ${response.status}`);
-        const value = (await response.json()) as LegacyPayload;
+    void Promise.all([
+      fetch('/api/releases/latest', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal
+      }),
+      fetch('/api/releases/candidate/windows/latest', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal
+      }).catch(() => null),
+    ])
+      .then(async ([latestResponse, candidateResponse]) => {
+        if (!latestResponse.ok) throw new Error(`release status ${latestResponse.status}`);
+        const value = (await latestResponse.json()) as LegacyPayload;
+        const candidate = candidateResponse?.ok
+          ? (await candidateResponse.json()) as RawReleasePlatform
+          : undefined;
 
         const platforms = value.platforms;
         const candidateWindows = platforms?.windows || value.windows;
@@ -151,6 +162,12 @@ export function useReleaseStatus() {
               effectiveMacosVersion
             ),
           },
+          // Candidates are deliberately separate from latest. The website may
+          // present one as an opt-in public test, but it must never make a
+          // candidate silently replace the stable release metadata.
+          windowsCandidate: candidate
+            ? sanitizePlatform(candidate, 'windows', candidate.version ?? '0.0.0')
+            : undefined,
         });
       })
       .catch(() => setRelease(null))

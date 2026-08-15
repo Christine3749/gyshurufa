@@ -1,0 +1,49 @@
+GY 输入法内置英文候选词库
+
+数据来源：FrequencyWords / OpenSubtitles 2018 English frequency list
+上游项目：https://github.com/hermitdave/FrequencyWords
+固定来源：https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt
+源文件 SHA-256：5351FF405B1126EF555791DD4D9798A48E3E9A501A9FC481A9DA957752CFB458
+
+GY 输入法使用前 20,000 个通过以下产品安全格式校验的词条，并转为小写、去重的
+一行一词离线快照：^[a-z][a-z0-9+._'-]{2,63}$。末尾连字符和双连字符词条被排除。
+程序代码的 MIT 许可与数据内容的 CC BY-SA 4.0 许可按上游 README 声明保留。
+随安装包分发的派生数据文件 english.tsv 采用 CC BY-SA 4.0 许可。
+
+Attribution
+
+FrequencyWords, Copyright (c) 2016 Hermit Dave.
+English frequency data derived from the OpenSubtitles 2018 corpus.
+
+Content license: Creative Commons Attribution-ShareAlike 4.0 International
+https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+You are free to share and adapt the material for any purpose, including
+commercially, provided that you give appropriate credit, indicate changes,
+and distribute adaptations under the same license. No additional restrictions
+may be applied. The complete and controlling license text is available at the
+URL above.
+
+Code license from the upstream repository
+
+MIT License
+
+Copyright (c) 2016 Hermit Dave
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

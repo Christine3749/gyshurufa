@@ -4,7 +4,6 @@
 #include <string>
 
 #include "PinyinEngine.h"
-#include "NativeTestInputMode.h"
 
 namespace {
 std::wstring ModuleDirectory() {
@@ -29,8 +28,7 @@ bool UseIsolatedLocalAppData() {
 
 int main() {
   if (!UseIsolatedLocalAppData()) return 9;
-  const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
   PinyinEngine engine(ModuleDirectory());
   if (!engine.IsReady()) { std::wcerr << engine.Diagnostic() << L"\n"; return 10; }
-  return engine.Lookup(L"nihao").empty() ? 11 : 0;
+  return engine.Lookup(L"nihao", 0).empty() ? 11 : 0;
 }

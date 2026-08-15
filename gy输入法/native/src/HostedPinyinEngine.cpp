@@ -5,11 +5,20 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <cwchar>
+#include <cwctype>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef GY_HOST_VERSION
+#define GY_HOST_VERSION ""
+#endif
+#define GY_HOSTED_WIDEN_INNER(value) L##value
+#define GY_HOSTED_WIDEN(value) GY_HOSTED_WIDEN_INNER(value)
 
 namespace {
 
@@ -17,6 +26,11 @@ namespace {
 // typing burst this removes the per-keystroke Status round trips entirely;
 // a failed request always clears the stamp and forces a fresh handshake.
 constexpr ULONGLONG kVerifiedHostTtlMs = 1500;
+// This is the absolute budget for a DLL -> Host request made while the user
+// is typing.  Missing candidates are recoverable; a stalled target app is
+// not.  Open, write and read all share this one deadline.
+constexpr DWORD kInputRequestBudgetMs = 35;
+constexpr DWORD kLearningWriteBudgetMs = 12;
 
 constexpr wchar_t kHostRegistryKey[] = L"SOFTWARE\\GYInput";
 
@@ -28,6 +42,71 @@ std::wstring JoinPath(const std::wstring& root, const wchar_t* child) {
 bool FileExists(const std::wstring& path) {
   const DWORD attributes = GetFileAttributesW(path.c_str());
   return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool IsKnownPinyinSyllable(const std::wstring& value) {
+  // Rime accepts incomplete/fuzzy prefixes such as "ho" and may return a
+  // one-character result for a longer query. RemainingPinyin is a parser, so
+  // it needs the Mandarin syllable alphabet rather than a last-letter guess.
+  // v is the conventional keyboard spelling of ü (lv, lve, nv, ...).
+  static constexpr wchar_t kSyllables[] =
+      L"|a|ai|an|ang|ao|ba|bai|ban|bang|bao|bei|ben|beng|bi|bian|biao|bie|bin|bing|bo|bu|"
+      L"ca|cai|can|cang|cao|ce|cei|cen|ceng|cha|chai|chan|chang|chao|che|chen|cheng|chi|"
+      L"chong|chou|chu|chua|chuai|chuan|chuang|chui|chun|chuo|ci|cong|cou|cu|cua|cuai|"
+      L"cuan|cui|cun|cuo|da|dai|dan|dang|dao|de|dei|den|deng|di|dia|dian|diao|die|ding|"
+      L"diu|dong|dou|du|dua|duan|dui|dun|duo|e|ei|en|eng|er|fa|fan|fang|fei|fen|feng|"
+      L"fo|fou|fu|ga|gai|gan|gang|gao|ge|gei|gen|geng|gong|gou|gu|gua|guai|guan|gui|"
+      L"gun|guo|ha|hai|han|hang|hao|he|hei|hen|heng|hong|hou|hu|hua|huai|huan|hui|hun|"
+      L"huo|ji|jia|jian|jiang|jiao|jie|jin|jing|jiong|jiu|ju|juan|jue|jun|ka|kai|kan|"
+      L"kang|kao|ke|kei|ken|keng|kong|kou|ku|kua|kuai|kuan|kui|kun|kuo|la|lai|lan|lang|"
+      L"lao|le|lei|leng|li|lia|lian|liang|liao|lie|lin|ling|liu|long|lou|lu|lua|luan|lue|"
+      L"lui|lun|luo|lv|lvan|lve|ma|mai|man|mang|mao|me|mei|men|meng|mi|mian|miao|mie|min|"
+      L"ming|miu|mo|mou|mu|na|nai|nan|nang|nao|ne|nei|nen|neng|ni|nian|niang|niao|nie|"
+      L"nin|ning|niu|nong|nou|nu|nuan|nuo|nv|nve|o|ou|pa|pai|pan|pang|pao|pei|pen|peng|"
+      L"pi|pian|piao|pie|pin|ping|po|pou|pu|qi|qia|qian|qiang|qiao|qie|qin|qing|qiong|"
+      L"qiu|qu|quan|que|qun|ran|rang|rao|re|ren|reng|ri|rong|rou|ru|rua|ruan|rui|run|"
+      L"ruo|sa|sai|san|sang|sao|se|sei|sen|seng|sha|shai|shan|shang|shao|she|shei|shen|"
+      L"sheng|shi|shou|shu|shua|shuai|shuan|shui|shun|shuo|si|song|sou|su|suan|sui|sun|"
+      L"suo|ta|tai|tan|tang|tao|te|teng|ti|tian|tiao|tie|ting|tong|tou|tu|tuan|tui|tun|"
+      L"tuo|wa|wai|wan|wang|wei|wen|weng|wo|wu|xi|xia|xian|xiang|xiao|xie|xin|xing|"
+      L"xiong|xiu|xu|xuan|xue|xun|ya|yan|yang|yao|ye|yi|yin|ying|yo|yong|you|yu|yuan|"
+      L"yue|yun|za|zai|zan|zang|zao|ze|zei|zen|zeng|zha|zhai|zhan|zhang|zhao|zhe|zhei|"
+      L"zhen|zheng|zhi|zhong|zhou|zhu|zhua|zhuai|zhuan|zhui|zhun|zhuo|zi|zong|zou|zu|"
+      L"zuan|zui|zun|zuo|";
+  std::wstring normalized = value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(towlower(ch));
+  });
+  const std::wstring needle = L"|" + normalized + L"|";
+  return wcsstr(kSyllables, needle.c_str()) != nullptr;
+}
+
+bool CanParsePinyinPrefix(const std::wstring& value, size_t syllable_count) {
+  if (value.empty() || syllable_count == 0) return false;
+  std::wstring normalized;
+  normalized.reserve(value.size());
+  for (const wchar_t character : value) {
+    if (character == L'\'') continue;
+    normalized.push_back(static_cast<wchar_t>(towlower(character)));
+  }
+  if (normalized.empty()) return false;
+
+  // Dynamic programming handles ambiguous spellings such as xian (xian or
+  // xi-an) and selects the interpretation matching the selected Han text.
+  std::vector<std::vector<bool>> reachable(
+      normalized.size() + 1, std::vector<bool>(syllable_count + 1, false));
+  reachable[0][0] = true;
+  for (size_t offset = 0; offset < normalized.size(); ++offset) {
+    for (size_t count = 0; count < syllable_count; ++count) {
+      if (!reachable[offset][count]) continue;
+      for (size_t length = 1; length <= 6 && offset + length <= normalized.size(); ++length) {
+        if (IsKnownPinyinSyllable(normalized.substr(offset, length))) {
+          reachable[offset + length][count + 1] = true;
+        }
+      }
+    }
+  }
+  return reachable[normalized.size()][syllable_count];
 }
 
 std::wstring ReadMachineValue(const wchar_t* name) {
@@ -53,22 +132,27 @@ std::wstring ReadMachineValue(const wchar_t* name) {
 HANDLE OpenHostPipe(DWORD timeout_ms) {
   const ULONGLONG deadline = GetTickCount64() + timeout_ms;
   do {
-    if (WaitNamedPipeW(gy::host::HostPipeName().c_str(), 25)) {
+    const DWORD remaining = gy::host::RemainingDeadlineMs(deadline);
+    if (remaining == 0) break;
+    if (WaitNamedPipeW(gy::host::HostPipeName().c_str(), remaining > 5 ? 5 : remaining)) {
       HANDLE pipe = CreateFileW(gy::host::HostPipeName().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
       if (pipe != INVALID_HANDLE_VALUE) return pipe;
     }
-    Sleep(5);
+    Sleep(1);
   } while (GetTickCount64() < deadline);
   return INVALID_HANDLE_VALUE;
 }
 
-bool SendRequest(gy::host::MessageType type, const std::wstring& payload, std::wstring* response) {
-  HANDLE pipe = OpenHostPipe(120);
+bool SendRequest(gy::host::MessageType type, const std::wstring& payload, std::wstring* response,
+                 DWORD timeout_ms = kInputRequestBudgetMs) {
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+  HANDLE pipe = OpenHostPipe(gy::host::RemainingDeadlineMs(deadline));
   if (pipe == INVALID_HANDLE_VALUE) return false;
-  const bool written = gy::host::WriteMessage(pipe, type, payload);
+  const bool written = gy::host::WriteMessageWithDeadline(pipe, type, payload, deadline);
   gy::host::MessageType response_type{};
-  const bool read = written && gy::host::ReadMessage(pipe, &response_type, response) && response_type == type;
+  const bool read = written && gy::host::ReadMessageWithDeadline(pipe, &response_type, response, deadline) &&
+      response_type == type;
   CloseHandle(pipe);
   return read;
 }
@@ -109,30 +193,9 @@ bool StartHost(const std::wstring& path) {
 bool IsExpectedHostStatus(const std::wstring& payload, const std::wstring& expected_version) {
   gy::host::HostStatus status{};
   if (!gy::host::DecodeStatus(payload, &status)) return false;
-  return (expected_version.empty() || status.host_version == expected_version) &&
-      status.protocol_version == gy::host::kProtocolVersion;
+  return gy::host::MatchesHostIdentity(status, expected_version);
 }
 
-bool WaitForHostVersion(const std::wstring& expected_version, DWORD timeout_ms) {
-  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
-  do {
-    std::wstring status;
-    if (SendRequest(gy::host::MessageType::Status, L"", &status) &&
-        IsExpectedHostStatus(status, expected_version)) return true;
-    Sleep(15);
-  } while (GetTickCount64() < deadline);
-  return false;
-}
-
-bool WaitForHostExit(DWORD timeout_ms) {
-  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
-  do {
-    std::wstring ignored;
-    if (!SendRequest(gy::host::MessageType::Status, L"", &ignored)) return true;
-    Sleep(15);
-  } while (GetTickCount64() < deadline);
-  return false;
-}
 }  // namespace
 
 struct HostedPinyinEngine::Impl {
@@ -144,7 +207,12 @@ struct HostedPinyinEngine::Impl {
     return JoinPath(module_directory, L"GyImeHost.exe");
   }
 
-  std::wstring HostVersion() const { return ReadMachineValue(L"HostVersion"); }
+  std::wstring HostVersion() const {
+    // Bind each in-process TSF DLL to the Host built from the same release.
+    // The machine registry selects which Host is active, but it must not change
+    // the identity expected by an older DLL still loaded in an application.
+    return GY_HOSTED_WIDEN(GY_HOST_VERSION);
+  }
 
   bool EnsureHost() {
     // Fast path: a Host verified moments ago is almost certainly still alive.
@@ -163,38 +231,21 @@ struct HostedPinyinEngine::Impl {
         last_verified_tick = now;
         return true;
       }
-      // A versioned Host is single-instance. During a Host-only update, wait
-      // until the old owner has really released the pipe before starting the
-      // new binary; otherwise the first composition can race the old mutex.
-      std::wstring ignored;
-      SendRequest(gy::host::MessageType::Shutdown, L"", &ignored);
-      if (!WaitForHostExit(900)) {
-        diagnostic = L"GY Host did not exit for an update";
-        return false;
-      }
-    }
-    if (!StartHost(HostPath())) {
-      diagnostic = L"GY Host could not be started";
+      // Never coordinate an update from a text-service callback.  An
+      // installer or activation prewarm owns lifecycle changes; the active
+      // input path simply declines candidates until the expected Host is up.
+      diagnostic = L"GY Host version is changing";
       return false;
     }
-    // The initial lookup is allowed a short, bounded launch window. No text
-    // is ever injected while the Host is unavailable; the TSF preedit remains
-    // local and the next key retries this handshake.
-    if (WaitForHostVersion(expected_version, 900)) {
-      last_verified_tick = GetTickCount64();
-      return true;
-    }
-    diagnostic = L"GY Host is starting or has a mismatched version";
+    // Process creation and version hand-off are intentionally kept out of a
+    // keystroke.  Prewarm() starts the Host on activation; a key during that
+    // small window keeps its local preedit and retries next time.
+    diagnostic = L"GY Host is unavailable or starting";
     return false;
   }
 
-  bool SendUi(gy::host::MessageType type, const std::wstring& payload, bool start_if_needed) {
-    if (start_if_needed) {
-      if (!EnsureHost()) return false;
-    } else {
-      std::wstring status;
-      if (!SendRequest(gy::host::MessageType::Status, L"", &status)) return false;
-    }
+  bool SendUi(gy::host::MessageType type, const std::wstring& payload) {
+    if (!EnsureHost()) return false;
     std::wstring ignored;
     return SendRequest(type, payload, &ignored);
   }
@@ -209,25 +260,76 @@ HostedPinyinEngine::HostedPinyinEngine(std::wstring module_directory)
     : impl_(std::make_unique<Impl>(std::move(module_directory))) {}
 HostedPinyinEngine::~HostedPinyinEngine() = default;
 
-std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin) {
-  if (!impl_ || pinyin.empty()) return {};
+std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin, int input_mode,
+                                                      std::uint64_t mode_generation) {
+  if (!impl_ || pinyin.empty() || input_mode < 0 || input_mode > 2) return {};
   std::scoped_lock lock(impl_->mutex);
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!impl_->EnsureHost()) break;
+  if (impl_->EnsureHost()) {
+    const gy::host::LookupRequest request{pinyin, static_cast<unsigned>(input_mode), mode_generation};
     std::wstring encoded;
-    if (SendRequest(gy::host::MessageType::Lookup, pinyin, &encoded)) {
+    gy::host::LookupResponse response{};
+    if (SendRequest(gy::host::MessageType::Lookup, gy::host::EncodeLookupRequest(request), &encoded) &&
+        gy::host::DecodeLookupResponse(encoded, &response) &&
+        gy::host::MatchesLookupSnapshot(request, response)) {
+      impl_->last_verified_tick = GetTickCount64();
+      impl_->diagnostic = L"using versioned GY Host; mode=" + std::to_wstring(request.input_mode) +
+          L"; generation=" + std::to_wstring(request.mode_generation) +
+          (request.input_mode == 2 ? L"; enginePath=english" : L"; enginePath=chinese");
+      return response.candidates;
+    }
+    impl_->last_verified_tick = 0;
+  }
+  impl_->diagnostic = L"GY Host unavailable or lookup snapshot mismatch";
+  return {};
+}
+std::vector<std::wstring> HostedPinyinEngine::LookupExact(const std::wstring& pinyin, int input_mode,
+                                                           std::uint64_t mode_generation) {
+  if (!impl_ || pinyin.empty() || input_mode < 0 || input_mode > 2) return {};
+  std::scoped_lock lock(impl_->mutex);
+  if (impl_->EnsureHost()) {
+    const gy::host::LookupRequest request{pinyin, static_cast<unsigned>(input_mode), mode_generation};
+    std::wstring encoded;
+    gy::host::LookupResponse response{};
+    if (SendRequest(gy::host::MessageType::LookupExact, gy::host::EncodeLookupRequest(request), &encoded) &&
+        gy::host::DecodeLookupResponse(encoded, &response) &&
+        gy::host::MatchesLookupSnapshot(request, response)) {
       impl_->last_verified_tick = GetTickCount64();
       impl_->diagnostic = L"using versioned GY Host";
-      return gy::host::DecodeCandidates(encoded);
+      return response.candidates;
     }
-    // The cached verification was stale (Host died between keystrokes): drop
-    // it and retry once with a fresh handshake before giving up this key.
     impl_->last_verified_tick = 0;
   }
   impl_->diagnostic = L"GY Host unavailable";
   return {};
 }
-void HostedPinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candidate) {
+std::wstring HostedPinyinEngine::RemainingPinyin(const std::wstring& pinyin,
+                                                 const std::wstring& candidate, int input_mode,
+                                                 std::uint64_t mode_generation) {
+  if (!impl_ || pinyin.empty() || candidate.empty()) return {};
+  // Query complete prefixes from longest to shortest. Rime accepts some
+  // incomplete syllables (for example "ho" as a usable prefix for 厚), so a
+  // shortest-first search would consume too little and turn houyi into uyi.
+  // The longest exact match preserves the whole syllable whenever Rime can
+  // resolve it. Apostrophes are separators, not part of the suffix presented
+  // to the next composition.
+  for (size_t prefix_end = pinyin.size() - 1; prefix_end > 0; --prefix_end) {
+    if (pinyin[prefix_end - 1] == L'\'') continue;
+    if (!CanParsePinyinPrefix(pinyin.substr(0, prefix_end), candidate.size())) continue;
+    const size_t remainder_start =
+        prefix_end < pinyin.size() && pinyin[prefix_end] == L'\'' ? prefix_end + 1 : prefix_end;
+    if (remainder_start >= pinyin.size()) continue;
+    // Lookup() intentionally appends shorter-prefix fallback candidates to
+    // fill the 5x5 panel. That is useful for UI density but unsafe here: a
+    // fallback candidate must not make us consume an incomplete syllable such
+    // as "ho" from "houyi". Use the exact Host query for segmentation.
+    const auto prefix_candidates = LookupExact(pinyin.substr(0, prefix_end), input_mode, mode_generation);
+    if (std::find(prefix_candidates.begin(), prefix_candidates.end(), candidate) != prefix_candidates.end()) {
+      return pinyin.substr(remainder_start);
+    }
+  }
+  return {};
+}
+void HostedPinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& candidate, int input_mode) {
   if (!impl_ || pinyin.empty() || candidate.empty()) return;
   std::scoped_lock lock(impl_->mutex);
   // Fire-and-forget: recording a preference must never stall the commit edit
@@ -236,35 +338,65 @@ void HostedPinyinEngine::Learn(const std::wstring& pinyin, const std::wstring& c
   // already in the pipe buffer are delivered before the Host sees the close.
   const ULONGLONG now = GetTickCount64();
   if (impl_->last_verified_tick == 0 || now - impl_->last_verified_tick >= kVerifiedHostTtlMs) return;
-  HANDLE pipe = OpenHostPipe(30);
+  const ULONGLONG deadline = GetTickCount64() + kLearningWriteBudgetMs;
+  HANDLE pipe = OpenHostPipe(gy::host::RemainingDeadlineMs(deadline));
   if (pipe == INVALID_HANDLE_VALUE) return;
-  gy::host::WriteMessage(pipe, gy::host::MessageType::LearnCandidate,
-                         gy::host::EncodeLearningEvent(pinyin, candidate));
+  gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::LearnCandidate,
+                                     gy::host::EncodeLearningEvent(pinyin, candidate, input_mode), deadline);
+  CloseHandle(pipe);
+}
+void HostedPinyinEngine::UndoLearn(const std::wstring& pinyin, const std::wstring& candidate, int input_mode) {
+  if (!impl_ || pinyin.empty() || candidate.empty() || input_mode < 0 || input_mode > 1) return;
+  std::scoped_lock lock(impl_->mutex);
+  const ULONGLONG now = GetTickCount64();
+  if (impl_->last_verified_tick == 0 || now - impl_->last_verified_tick >= kVerifiedHostTtlMs) return;
+  const ULONGLONG deadline = GetTickCount64() + kLearningWriteBudgetMs;
+  HANDLE pipe = OpenHostPipe(gy::host::RemainingDeadlineMs(deadline));
+  if (pipe == INVALID_HANDLE_VALUE) return;
+  gy::host::WriteMessageWithDeadline(pipe, gy::host::MessageType::UndoLearnCandidate,
+                                     gy::host::EncodeLearningEvent(pinyin, candidate, input_mode), deadline);
   CloseHandle(pipe);
 }
 void HostedPinyinEngine::Prewarm() {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);
   std::wstring status;
-  if (SendRequest(gy::host::MessageType::Status, L"", &status)) return;
+  if (SendRequest(gy::host::MessageType::Status, L"", &status)) {
+    if (IsExpectedHostStatus(status, impl_->HostVersion())) {
+      impl_->last_verified_tick = GetTickCount64();
+      return;
+    }
+    impl_->diagnostic = L"GY Host version does not match this TSF core";
+    return;
+  }
   if (!StartHost(impl_->HostPath())) impl_->diagnostic = L"GY Host could not be prewarmed";
 }
 std::wstring HostedPinyinEngine::Diagnostic() const {
   return impl_ ? impl_->diagnostic : L"hosted engine implementation is unavailable";
 }
-void HostedPinyinEngine::ShowCandidates(const RECT& caret, const std::vector<std::wstring>& candidates,
-                                        unsigned selected, unsigned page_start, int input_mode, bool expanded, const std::wstring& callback_pipe) {
+void HostedPinyinEngine::ShowCandidates(const RECT& caret, const std::wstring& composition,
+                                        const std::vector<std::wstring>& candidates,
+                                        unsigned selected, unsigned page_start, int input_mode,
+                                        unsigned candidate_purpose, bool chinese_grid_open,
+                                        bool english_list_open, bool english_candidate_focus,
+                                        const std::wstring& callback_pipe, const std::vector<unsigned>& correction_indices) {
   if (!impl_ || candidates.empty()) { HideCandidates(); return; }
   std::scoped_lock lock(impl_->mutex);
   gy::host::CandidateUiState state{};
   state.caret = caret;
+  state.composition = composition;
   state.candidates = candidates;
+  state.correction_indices = correction_indices;
   state.selected = selected;
-  state.page_start = page_start;
   state.input_mode = static_cast<unsigned>(input_mode < 0 ? 0 : input_mode > 2 ? 2 : input_mode);
-  state.expanded = expanded;
+  state.candidate_purpose = candidate_purpose > 2 ? 0 : candidate_purpose;
+  const bool chinese_candidates = state.candidate_purpose == 0;
+  state.page_start = chinese_candidates ? page_start : 0;
+  state.chinese_grid_open = chinese_candidates && chinese_grid_open;
+  state.english_list_open = !chinese_candidates && english_list_open;
+  state.english_candidate_focus = !chinese_candidates && english_candidate_focus;
   state.callback_pipe = callback_pipe;
-  if (!impl_->SendUi(gy::host::MessageType::ShowCandidates, gy::host::EncodeCandidateUi(state), true)) {
+  if (!impl_->SendUi(gy::host::MessageType::ShowCandidates, gy::host::EncodeCandidateUi(state))) {
     impl_->diagnostic = L"GY Host candidate UI is unavailable";
   }
 }
@@ -272,7 +404,7 @@ void HostedPinyinEngine::ShowCandidates(const RECT& caret, const std::vector<std
 void HostedPinyinEngine::HideCandidates() {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);
-  impl_->SendUi(gy::host::MessageType::HideCandidates, L"", false);
+  impl_->SendUi(gy::host::MessageType::HideCandidates, L"");
 }
 
 void HostedPinyinEngine::ShowMode(const RECT& caret, int input_mode) {
@@ -283,8 +415,7 @@ void HostedPinyinEngine::ShowMode(const RECT& caret, int input_mode) {
   state.input_mode = static_cast<unsigned>(input_mode < 0 ? 0 : input_mode > 2 ? 2 : input_mode);
   state.selected = state.input_mode;
   state.candidates = {state.input_mode == 2 ? L"EN" : (state.input_mode == 1 ? L"繁" : L"中")};
-  if (!impl_->SendUi(gy::host::MessageType::ShowMode, gy::host::EncodeCandidateUi(state), true)) {
+  if (!impl_->SendUi(gy::host::MessageType::ShowMode, gy::host::EncodeCandidateUi(state))) {
     impl_->diagnostic = L"GY Host mode UI is unavailable";
   }
 }
-
