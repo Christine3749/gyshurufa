@@ -177,7 +177,17 @@ bool StartHost(const std::wstring& path, bool reconcile) {
   // ACCESS_DENIED (compositions work, lookups die, the IME feels dead).
   // Elevated clients can still USE an existing Host (their token user is the
   // same account); they must just never be the process that creates it.
-  if (CurrentProcessElevated()) return false;
+  if (CurrentProcessElevated()) {
+#ifdef GY_TESTING
+    // GitHub's Windows runner executes tests from an elevated service token.
+    // Permit process creation only on the isolated test endpoint; production
+    // and any test accidentally pointed at the live pipe keep the fail-closed
+    // integrity boundary above.
+    if (gy::host::HostPipeName() == gy::host::kPipeName) return false;
+#else
+    return false;
+#endif
+  }
   std::wstring command_line = L"\"" + path + L"\"";
   if (reconcile) command_line += L" --reconcile-host";
   std::vector<wchar_t> command(command_line.begin(), command_line.end());
