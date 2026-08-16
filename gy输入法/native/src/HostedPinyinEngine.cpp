@@ -234,9 +234,9 @@ struct HostedPinyinEngine::Impl {
         registered_version == HostVersion();
   }
 
-  bool RequestHostRecovery() {
+  bool RequestHostRecovery(bool throttle) {
     const ULONGLONG now = GetTickCount64();
-    if (last_recovery_request_tick != 0 &&
+    if (throttle && last_recovery_request_tick != 0 &&
         now - last_recovery_request_tick < kHostRecoveryRequestCooldownMs) {
       return last_recovery_request_succeeded;
     }
@@ -403,7 +403,7 @@ void HostedPinyinEngine::Prewarm() {
     // activation callback never shuts down a process, waits for a lifecycle
     // hand-off, or mutates registration. An older DLL whose machine registry
     // now selects a newer release fails closed and cannot disturb that Host.
-    if (impl_->RegisteredHostMatchesCore() && impl_->RequestHostRecovery()) {
+    if (impl_->RegisteredHostMatchesCore() && impl_->RequestHostRecovery(true)) {
       impl_->diagnostic = L"GY Host version reconciliation was requested";
     } else {
       impl_->diagnostic = L"GY Host version does not match this TSF core";
@@ -411,7 +411,11 @@ void HostedPinyinEngine::Prewarm() {
     return;
   }
   if (impl_->RegisteredHostMatchesCore()) {
-    if (!impl_->RequestHostRecovery()) impl_->diagnostic = L"GY Host could not be prewarmed";
+    // A missing endpoint is different from a version mismatch: the verified
+    // Host may have exited or crashed after the previous recovery request.
+    // Start its one-shot coordinator immediately; the named coordinator and
+    // Host instance mutexes collapse concurrent launches safely.
+    if (!impl_->RequestHostRecovery(false)) impl_->diagnostic = L"GY Host could not be prewarmed";
     return;
   }
   // Keep source-tree/dev use working when no machine release is selected.
