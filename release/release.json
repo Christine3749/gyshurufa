@@ -1,24 +1,23 @@
 {
   "schemaVersion": 2,
-  "releaseId": "gy-2026.08.16-windows-0.12.8-thinkpad-test",
+  "releaseId": "gy-2026.08.16-windows-0.12.9-thinkpad-test",
   "channel": "candidate",
   "windows": {
-    "version": "0.12.8",
-    "coreVersion": "0.12.8",
-    "hostVersion": "0.12.8",
+    "version": "0.12.9",
+    "coreVersion": "0.12.9",
+    "hostVersion": "0.12.9",
     "architecture": "x64",
-    "setupFile": "GYInputSetup-0.12.8.exe",
-    "zipFile": "GYInput-0.12.8.zip",
-    "sha256": "DDE6B510EB9329BC1F9E513506430CFE1843E3759344B6F8FFA4DA7BB54C164D",
-    "bytes": 7960127,
-    "state": "candidate"
+    "setupFile": "GYInputSetup-0.12.9.exe",
+    "zipFile": "GYInput-0.12.9.zip",
+    "sha256": "PENDING-PACKAGE-VERIFICATION",
+    "bytes": 0,
+    "state": "draft"
   },
   "macos": {
     "version": "2.0.0",
     "architecture": "arm64",
     "state": "verification-required"
   },
-  "publishedAtUtc": "2026-08-16T01:15:28.3626746Z",
   "internalTest": {
     "audience": "Ethan private ThinkPad",
     "signed": false,

@@ -20,6 +20,15 @@ if (-not $InstallRoot) {
 }
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
 $statePath = Join-Path $InstallRoot 'install-state.json'
+$recoveryErrorPath = Join-Path $InstallRoot 'registration-recovery.error.log'
+
+trap {
+  try {
+    $stamp = [DateTime]::UtcNow.ToString('o')
+    [IO.File]::WriteAllText($recoveryErrorPath, "$stamp $($_.Exception.Message)", [Text.UTF8Encoding]::new($false))
+  } catch {}
+  exit 1
+}
 
 function Read-RegisteredString([string]$SubKey, [string]$ValueName) {
   $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($SubKey)

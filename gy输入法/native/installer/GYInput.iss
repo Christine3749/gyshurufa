@@ -108,7 +108,7 @@ Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{commonappdata}\GYInp
 Source: "{#SourcePath}\GYInputTransaction.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Register-GYInputActivationTasks.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Register-GYInputActivationTasks.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
-Source: "{#SourcePath}\Recover-GYIncompleteRegistration.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
+Source: "{#SourcePath}\Recover-GYIncompleteRegistration.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -521,7 +521,7 @@ begin
   // those two values from a health-checked, exact install-state snapshot. The
   // helper cannot register a DLL or otherwise switch the live TSF version.
   Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-          ExpandConstant('{tmp}\Recover-GYIncompleteRegistration.ps1') +
+          ExpandConstant('{app}\Recover-GYIncompleteRegistration.ps1') +
           '" -LockAlreadyHeld';
   Result := Exec(GYWindowsPowerShellPath(), Args, '', SW_HIDE,
                  ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
@@ -638,7 +638,7 @@ begin
     CapturePreviousGyState();
     if (not PreviousStateAvailable) and HasExistingGyRegistration() then begin
       if not RecoverIncompletePreviousGyRegistration() then begin
-        MsgBox('检测到旧版 GY DLL 仍在使用，但 Host 注册信息不完整，且无法从已验证状态安全恢复。当前输入法保持不变。', mbError, MB_OK);
+        MsgBox('检测到旧版 GY DLL 仍在使用，但 Host 注册信息不完整，且无法从已验证状态安全恢复。当前输入法保持不变。诊断信息：{app}\registration-recovery.error.log', mbError, MB_OK);
         Abort;
       end;
       CapturePreviousGyState();
