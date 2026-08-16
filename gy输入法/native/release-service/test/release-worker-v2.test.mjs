@@ -49,25 +49,30 @@ function env(overrides = {}) {
   return {
     RELEASE_STATUS: "candidate",
     RELEASES: {
-      async get(key) {
+      async head(key) {
+        if (key === "releases/0.9.29/windows/GYInput-0.9.29.zip") return { size: 3, httpEtag: '"test"' };
+        return null;
+      },
+      async get(key, options) {
         if (key === "releases/latest.json") return { async json() { return selected; } };
         if (key === "lexicons/english-mixed/manifest.json") return { async json() { return overrides.lexiconManifest ?? lexiconManifest; } };
         if (key === "lexicons/english-mixed/2026.08.13.1/english.tsv") return object(lexicon, overrides.lexiconSize);
         if (key === "candidates/windows/latest.json") return { async json() { return candidate; } };
         if (key === "candidates/windows/0.9.29/release.json") return { async json() { return candidate; } };
-        if (key === "releases/0.9.29/windows/GYInputSetup-0.9.29.exe") return object(windows, overrides.windowsSize);
-        if (key === "releases/0.9.29/windows/GYInput-0.9.29.zip") return object(new Uint8Array([8, 9, 10]));
-        if (key === "releases/0.9.29/macos/GYInput-0.9.29-arm64.pkg") return object(macos, overrides.macosSize);
+        if (key === "releases/0.9.29/windows/GYInputSetup-0.9.29.exe") return object(windows, overrides.windowsSize, options?.range);
+        if (key === "releases/0.9.29/windows/GYInput-0.9.29.zip") return object(new Uint8Array([8, 9, 10]), undefined, options?.range);
+        if (key === "releases/0.9.29/macos/GYInput-0.9.29-arm64.pkg") return object(macos, overrides.macosSize, options?.range);
         return null;
       }
     }
   };
 }
 
-function object(bytes, overrideSize) {
+function object(bytes, overrideSize, range) {
+  const bodyBytes = range ? bytes.slice(range.offset, range.offset + range.length) : bytes;
   return {
     size: overrideSize ?? bytes.byteLength,
-    body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }),
+    body: new ReadableStream({ start(controller) { controller.enqueue(bodyBytes); controller.close(); } }),
     httpEtag: '"test"'
   };
 }
@@ -126,6 +131,34 @@ test("candidate Windows download is version-pinned and never reads latest.json",
   const info = await worker.fetch(new Request("https://example.test/api/releases/candidate/windows/0.9.29"), env());
   assert.equal(info.status, 200);
   assert.equal((await info.json()).downloadUrl, "/download/candidate/windows/0.9.29");
+});
+
+test("versioned R2 downloads honor byte ranges without streaming the full installer", async () => {
+  const response = await worker.fetch(new Request("https://example.test/download/candidate/windows/0.9.29", {
+    headers: { range: "bytes=1-2" }
+  }), env());
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("accept-ranges"), "bytes");
+  assert.equal(response.headers.get("content-range"), "bytes 1-2/3");
+  assert.equal(response.headers.get("content-length"), "2");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([2, 3]));
+});
+
+test("invalid and multiple byte ranges fail closed", async () => {
+  const response = await worker.fetch(new Request("https://example.test/download/candidate/windows/0.9.29", {
+    headers: { range: "bytes=99-100" }
+  }), env());
+  assert.equal(response.status, 416);
+  assert.equal(response.headers.get("content-range"), "bytes */3");
+});
+
+test("ZIP ranges use R2 object metadata instead of installer byte size", async () => {
+  const response = await worker.fetch(new Request("https://example.test/download/candidate/windows/0.9.29/zip", {
+    headers: { range: "bytes=2-" }
+  }), env());
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("content-range"), "bytes 2-2/3");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([10]));
 });
 
 test("latest candidate is a mutable pointer to an immutable versioned release", async () => {

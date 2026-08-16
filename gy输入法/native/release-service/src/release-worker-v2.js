@@ -19,6 +19,59 @@ const json = (body, status = 200) => new Response(JSON.stringify(body, null, 2),
 const invalidRelease = (message) => ({ error: "invalid_release_manifest", message });
 const publishedStates = new Set(["candidate", "signed", "notarized", "stable"]);
 
+function parseByteRange(value, totalBytes) {
+  if (!value) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2])) return false;
+
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return false;
+    start = Math.max(totalBytes - suffixLength, 0);
+    end = totalBytes - 1;
+  } else {
+    start = Number(match[1]);
+    if (!Number.isSafeInteger(start) || start >= totalBytes) return false;
+    end = match[2] ? Number(match[2]) : totalBytes - 1;
+    if (!Number.isSafeInteger(end) || end < start) return false;
+    end = Math.min(end, totalBytes - 1);
+  }
+
+  return { offset: start, length: end - start + 1, start, end };
+}
+
+function rangeNotSatisfiable(totalBytes) {
+  return new Response(null, {
+    status: 416,
+    headers: {
+      "accept-ranges": "bytes",
+      "content-range": `bytes */${totalBytes}`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    }
+  });
+}
+
+async function getR2DownloadObject(env, key, request, totalBytes) {
+  const byteRange = parseByteRange(request.headers.get("range"), totalBytes);
+  if (byteRange === false) return { error: rangeNotSatisfiable(totalBytes) };
+  const options = byteRange ? { range: { offset: byteRange.offset, length: byteRange.length } } : undefined;
+  return { object: await env.RELEASES.get(key, options), byteRange };
+}
+
+function applyRangeHeaders(headers, totalBytes, byteRange) {
+  headers.set("accept-ranges", "bytes");
+  if (byteRange) {
+    headers.set("content-length", String(byteRange.length));
+    headers.set("content-range", `bytes ${byteRange.start}-${byteRange.end}/${totalBytes}`);
+  } else {
+    headers.set("content-length", String(totalBytes));
+  }
+  return headers;
+}
+
 function validateEnglishLexiconManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || manifest.schemaVersion !== 1 ||
       manifest.id !== ENGLISH_LEXICON_ID || manifest.format !== ENGLISH_LEXICON_FORMAT) {
@@ -150,25 +203,27 @@ function validateBetaMac(raw) {
 }
 async function loadBetaMac(env) { const obj = await env.RELEASES.get(BETA_MACOS_KEY); if (!obj) throw new Error("beta macOS manifest is missing"); return validateBetaMac(await obj.json()); }
 function betaMacFeed(beta) { return { version: beta.version, build: beta.build, packageURL: `${OFFICIAL_DOWNLOAD_ORIGIN}/download/beta/macos/${beta.version}/download`, sha256: beta.sha256.toUpperCase() }; }
-function betaMacHeaders(beta, object, cacheControl) {
-  const h = new Headers({ "content-type": PLATFORM.macos.contentType, "content-disposition": `attachment; filename="${beta.packageFile}"`, "content-length": String(object.size), "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": beta.version, "x-gy-release-channel": "beta", "x-gy-platform": "macos" });
+function betaMacHeaders(beta, object, cacheControl, byteRange) {
+  const h = new Headers({ "content-type": PLATFORM.macos.contentType, "content-disposition": `attachment; filename="${beta.packageFile}"`, "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": beta.version, "x-gy-release-channel": "beta", "x-gy-platform": "macos" });
   if (object.httpEtag) h.set("etag", object.httpEtag);
-  return h;
+  return applyRangeHeaders(h, object.size, byteRange);
 }
-async function downloadBetaMac(beta, env, method, cacheControl) {
+async function downloadBetaMac(beta, env, request, cacheControl) {
   const key = `beta/macos/${beta.version}/${beta.packageFile}`;
-  const object = await env.RELEASES.get(key);
+  const result = await getR2DownloadObject(env, key, request, beta.bytes);
+  if (result.error) return result.error;
+  const { object, byteRange } = result;
   if (!object) return json({ error: "beta_release_not_found", platform: "macos" }, 404);
   if (object.size !== beta.bytes) return json(invalidRelease("R2 beta macOS object byte size does not match manifest"), 503);
-  return new Response(method === "HEAD" ? null : object.body, { headers: betaMacHeaders(beta, object, cacheControl) });
+  return new Response(request.method === "HEAD" ? null : object.body, { status: byteRange ? 206 : 200, headers: betaMacHeaders(beta, object, cacheControl, byteRange) });
 }
-async function betaMacRoute(path, env, method) {
+async function betaMacRoute(path, env, request) {
   let beta;
   try { beta = await loadBetaMac(env); } catch (error) { return json({ error: "beta_release_unavailable", message: error.message }, 404); }
   if (path === "/download/macos-beta.json") return json(betaMacFeed(beta));
   const versionPath = `/download/beta/macos/${beta.version}`;
-  if (path === "/download/beta/macos/latest" || path === "/download/beta/macos/latest/download") return downloadBetaMac(beta, env, method, CACHE_CONTROL_LATEST);
-  if (path === versionPath || path === `${versionPath}/download`) return downloadBetaMac(beta, env, method, CACHE_CONTROL_VERSIONED);
+  if (path === "/download/beta/macos/latest" || path === "/download/beta/macos/latest/download") return downloadBetaMac(beta, env, request, CACHE_CONTROL_LATEST);
+  if (path === versionPath || path === `${versionPath}/download`) return downloadBetaMac(beta, env, request, CACHE_CONTROL_VERSIONED);
   if (path === "/download/beta/macos/latest/sha256" || path === `${versionPath}/sha256`) return new Response(`${beta.sha256.toUpperCase()}  ${beta.packageFile}\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
   return null;
 }
@@ -193,19 +248,28 @@ function candidateWindowsInfo(release) {
   };
 }
 function releaseInfo(release, env) { return { releaseId: release.releaseId, channel: release.channel, publishedAtUtc: release.publishedAtUtc, releaseStatus: env.RELEASE_STATUS || release.channel, platforms: { windows: assetInfo(release.windows, "windows"), macos: assetInfo(release.macos, "macos") } }; }
-function headers(release, platform, object, cacheControl) { const asset = release[platform]; const h = new Headers({ "content-type": PLATFORM[platform].contentType, "content-disposition": `attachment; filename="${asset.file}"`, "content-length": String(object.size), "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": asset.version, "x-gy-release-channel": release.channel, "x-gy-platform": platform }); if (object.httpEtag) h.set("etag", object.httpEtag); return h; }
-async function download(release, platform, env, method, cacheControl) { const asset = release[platform]; if (!asset || !asset.available) return json({ error: "platform_not_verified", platform }, 409); const object = await env.RELEASES.get(asset.objectKey); if (!object) return json({ error: "release_not_found", platform }, 404); if (object.size !== asset.bytes) return json(invalidRelease(`R2 ${platform} object byte size does not match latest.json`), 503); return new Response(method === "HEAD" ? null : object.body, { headers: headers(release, platform, object, cacheControl) }); }
-function windowsZipHeaders(release, object, cacheControl) { const asset = release.windows; const h = new Headers({ "content-type": WINDOWS_ZIP_CONTENT_TYPE, "content-disposition": `attachment; filename="${asset.zipFile}"`, "content-length": String(object.size), "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": asset.version, "x-gy-release-channel": release.channel, "x-gy-platform": "windows" }); if (object.httpEtag) h.set("etag", object.httpEtag); return h; }
-async function downloadWindowsZip(release, env, method, cacheControl) {
+function headers(release, platform, object, cacheControl, byteRange) { const asset = release[platform]; const h = new Headers({ "content-type": PLATFORM[platform].contentType, "content-disposition": `attachment; filename="${asset.file}"`, "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": asset.version, "x-gy-release-channel": release.channel, "x-gy-platform": platform }); if (object.httpEtag) h.set("etag", object.httpEtag); return applyRangeHeaders(h, object.size, byteRange); }
+async function download(release, platform, env, request, cacheControl) { const asset = release[platform]; if (!asset || !asset.available) return json({ error: "platform_not_verified", platform }, 409); const result = await getR2DownloadObject(env, asset.objectKey, request, asset.bytes); if (result.error) return result.error; const { object, byteRange } = result; if (!object) return json({ error: "release_not_found", platform }, 404); if (object.size !== asset.bytes) return json(invalidRelease(`R2 ${platform} object byte size does not match latest.json`), 503); return new Response(request.method === "HEAD" ? null : object.body, { status: byteRange ? 206 : 200, headers: headers(release, platform, object, cacheControl, byteRange) }); }
+function windowsZipHeaders(release, object, cacheControl, byteRange) { const asset = release.windows; const h = new Headers({ "content-type": WINDOWS_ZIP_CONTENT_TYPE, "content-disposition": `attachment; filename="${asset.zipFile}"`, "cache-control": cacheControl, "x-content-type-options": "nosniff", "x-gy-release-version": asset.version, "x-gy-release-channel": release.channel, "x-gy-platform": "windows" }); if (object.httpEtag) h.set("etag", object.httpEtag); return applyRangeHeaders(h, object.size, byteRange); }
+async function downloadWindowsZip(release, env, request, cacheControl) {
   const asset = release.windows;
   const expectedFile = `GYInput-${asset.version}.zip`;
   if (!asset?.available) return json({ error: "platform_not_verified", platform: "windows" }, 409);
   if (asset.zipFile !== expectedFile) return json(invalidRelease("Windows ZIP filename does not match its release version"), 503);
-  const object = await env.RELEASES.get(`releases/${asset.version}/windows/${asset.zipFile}`);
+  const key = `releases/${asset.version}/windows/${asset.zipFile}`;
+  let zipBytes = asset.zipBytes;
+  if (request.headers.has("range") && !zipBytes) {
+    const metadata = await env.RELEASES.head(key);
+    if (!metadata) return json({ error: "release_not_found", platform: "windows", artifact: "zip" }, 404);
+    zipBytes = metadata.size;
+  }
+  const result = await getR2DownloadObject(env, key, request, zipBytes);
+  if (result.error) return result.error;
+  const { object, byteRange } = result;
   if (!object) return json({ error: "release_not_found", platform: "windows", artifact: "zip" }, 404);
-  return new Response(method === "HEAD" ? null : object.body, { headers: windowsZipHeaders(release, object, cacheControl) });
+  return new Response(request.method === "HEAD" ? null : object.body, { status: byteRange ? 206 : 200, headers: windowsZipHeaders(release, object, cacheControl, byteRange) });
 }
-async function candidateWindowsRoute(path, env, method) {
+async function candidateWindowsRoute(path, env, request) {
   const api = path.match(/^\/api\/releases\/candidate\/windows\/(latest|\d+\.\d+\.\d+)$/);
   const downloadMatch = path.match(/^\/download\/candidate\/windows\/(latest|\d+\.\d+\.\d+)(?:\/(download|zip|sha256))?$/);
   const match = api || downloadMatch;
@@ -225,8 +289,8 @@ async function candidateWindowsRoute(path, env, method) {
     });
   }
   const cacheControl = latest ? CACHE_CONTROL_LATEST : CACHE_CONTROL_VERSIONED;
-  if (action === "zip") return downloadWindowsZip(release, env, method, cacheControl);
-  return download(release, "windows", env, method, cacheControl);
+  if (action === "zip") return downloadWindowsZip(release, env, request, cacheControl);
+  return download(release, "windows", env, request, cacheControl);
 }
 function route(path, release) {
   const version = release.windows?.version;
@@ -247,4 +311,4 @@ function route(path, release) {
   if (path === "/latest.pkg" || path === "/download/latest.pkg") return ["macos", "download", CACHE_CONTROL_LATEST];
   return null;
 }
-export default { async fetch(request, env) { if (!["GET", "HEAD"].includes(request.method)) return json({ error: "method_not_allowed" }, 405); const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/"; const lexiconResponse = await englishLexiconRoute(path, env, request.method); if (lexiconResponse) return lexiconResponse; if (path === "/download/macos-beta.json" || path.startsWith("/download/beta/macos/")) { const betaResponse = await betaMacRoute(path, env, request.method); if (betaResponse) return betaResponse; } const candidateResponse = await candidateWindowsRoute(path, env, request.method); if (candidateResponse) return candidateResponse; let release; try { release = await loadLatest(env); } catch (error) { return json(invalidRelease(error.message), 503); } if (["/", "/health", "/api/releases/latest"].includes(path)) return json({ service: "GY Input Method release service", ...releaseInfo(release, env) }); const r = route(path, release); if (!r) return json({ error: "not_found" }, 404); const [platform, action, downloadCacheControl] = r; if (platform === "windows-zip") return downloadWindowsZip(release, env, request.method, downloadCacheControl); if (action === "info") return json(assetInfo(release[platform], platform)); if (action === "sha256") { const asset = release[platform]; if (!asset?.available) return json({ error: "platform_not_verified", platform }, 409); return new Response(`${asset.sha256.toUpperCase()}  ${asset.file}\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } }); } return download(release, platform, env, request.method, downloadCacheControl); } };
+export default { async fetch(request, env) { if (!["GET", "HEAD"].includes(request.method)) return json({ error: "method_not_allowed" }, 405); const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/"; const lexiconResponse = await englishLexiconRoute(path, env, request.method); if (lexiconResponse) return lexiconResponse; if (path === "/download/macos-beta.json" || path.startsWith("/download/beta/macos/")) { const betaResponse = await betaMacRoute(path, env, request); if (betaResponse) return betaResponse; } const candidateResponse = await candidateWindowsRoute(path, env, request); if (candidateResponse) return candidateResponse; let release; try { release = await loadLatest(env); } catch (error) { return json(invalidRelease(error.message), 503); } if (["/", "/health", "/api/releases/latest"].includes(path)) return json({ service: "GY Input Method release service", ...releaseInfo(release, env) }); const r = route(path, release); if (!r) return json({ error: "not_found" }, 404); const [platform, action, downloadCacheControl] = r; if (platform === "windows-zip") return downloadWindowsZip(release, env, request, downloadCacheControl); if (action === "info") return json(assetInfo(release[platform], platform)); if (action === "sha256") { const asset = release[platform]; if (!asset?.available) return json({ error: "platform_not_verified", platform }, 409); return new Response(`${asset.sha256.toUpperCase()}  ${asset.file}\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } }); } return download(release, platform, env, request, downloadCacheControl); } };
