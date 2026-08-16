@@ -29,6 +29,7 @@ $releaseState = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYReleaseState
 $keepHealth = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYKeepHealth.ps1')
 $transaction = Assert-ScriptParses (Join-Path $PSScriptRoot 'GYInputTransaction.ps1')
 $taskRegistrar = Assert-ScriptParses (Join-Path $PSScriptRoot 'Register-GYInputActivationTasks.ps1')
+$registrationRecovery = Assert-ScriptParses (Join-Path $PSScriptRoot 'Recover-GYIncompleteRegistration.ps1')
 $validator = Assert-ScriptParses (Join-Path $PSScriptRoot 'Validate-GYInput.ps1')
 $clientProbe = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYLoadedClientState.ps1')
 $keyboard = Assert-ScriptParses (Join-Path $PSScriptRoot 'Set-GYKeyboard.ps1')
@@ -220,6 +221,12 @@ Assert-Contains $inno 'Register-GYInputActivationTasks.ps1' 'EXE installer does 
 Assert-Contains $inno '" -LockAlreadyHeld' 'EXE installer does not register pending activation tasks inside its owning transaction.'
 Assert-Contains $inno 'VerifyCapturedPreviousGyState' 'EXE installer does not health-check the rollback snapshot before staging an upgrade.'
 Assert-Contains $inno 'HasExistingGyRegistration' 'EXE installer can overwrite an incomplete prior registration without a rollback snapshot.'
+Assert-Contains $inno 'RecoverIncompletePreviousGyRegistration' 'EXE installer cannot recover missing Host metadata for a verified active rollback target.'
+Assert-Contains $registrationRecovery '$state.registryVerified -ne $true' 'Host metadata recovery does not require a verified durable active snapshot.'
+Assert-Contains $registrationRecovery 'Test-SamePath $registeredDll $dll' 'Host metadata recovery can combine state with a different registered TSF DLL.'
+Assert-Contains $registrationRecovery 'Start-Process -FilePath $health' 'Host metadata recovery does not health-check the active rollback target.'
+if ($registrationRecovery -match '(?i)regsvr32|Set-Win|Remove-Item|Stop-Process') { throw 'Host metadata recovery can mutate the live TSF registration, user keyboard list, processes, or installed files.' }
+Assert-Contains $installer 'Recover-GYIncompleteRegistration.ps1' 'ZIP installer cannot recover verified incomplete Host metadata before capturing rollback state.'
 Assert-Contains $inno "PreviousHealth, 'active'" 'EXE installer does not mark its captured rollback snapshot as active.'
 if ($inno -match '(?m)^\[Run\]') { throw 'EXE installer must not launch a second activation registrar that races its own transaction mutex.' }
 Assert-Contains $packaging 'Release notes are missing' 'ZIP package does not require version-specific release notes.'
@@ -265,6 +272,7 @@ $manifestModule = Assert-ScriptParses (Join-Path $PSScriptRoot '..\ReleaseManife
 Assert-Contains $manifestModule 'Windows setupFile does not match its version.' 'Release manifest does not enforce versioned installer naming.'
 Assert-Contains $manifestModule 'PENDING-PACKAGE-VERIFICATION' 'Release manifest does not distinguish an unfinished draft from a publishable artifact.'
 Assert-Contains $manifestModule "'0.12.6'" 'Withdrawn 0.12.6 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.7'" 'Withdrawn 0.12.7 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule 'Release approval is missing' 'Release approval boundary does not fail closed when the approval record is absent.'
 Assert-Contains $manifestModule 'target-test-distribution' 'Release manifest module cannot represent an approved candidate awaiting target-machine acceptance.'
 Assert-Contains $manifestModule 'pending-on-target' 'Candidate distribution approval cannot honestly retain pending target acceptance.'

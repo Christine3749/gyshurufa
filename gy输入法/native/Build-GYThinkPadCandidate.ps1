@@ -68,7 +68,8 @@ foreach ($name in @(
   'Install-GYInput.ps1', 'Set-GYKeyboard.ps1', 'Validate-GYInput.ps1', 'Get-GYLoadedClientState.ps1',
   'Get-GYKeepHealth.ps1', 'Rollback-GYInput.ps1', 'Repair-GYInput.ps1', 'AutoUpdate-GYInput.ps1',
   'Sync-GYEnglishLexicon.ps1', 'Finalize-GYClientReload.ps1', 'Prune-GYOldVersions.ps1',
-  'Migrate-GYLegacyInstallEntries.ps1', 'Register-GYInputActivationTasks.ps1', 'GYInputTransaction.ps1'
+  'Migrate-GYLegacyInstallEntries.ps1', 'Register-GYInputActivationTasks.ps1',
+  'Recover-GYIncompleteRegistration.ps1', 'GYInputTransaction.ps1'
 )) {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot "installer\$name") -Destination (Join-Path $packageRoot $name)
 }

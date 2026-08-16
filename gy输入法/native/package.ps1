@@ -51,6 +51,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Finalize-GYClientRelo
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Prune-GYOldVersions.ps1') -Destination (Join-Path $packageRoot 'Prune-GYOldVersions.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Migrate-GYLegacyInstallEntries.ps1') -Destination (Join-Path $packageRoot 'Migrate-GYLegacyInstallEntries.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Register-GYInputActivationTasks.ps1') -Destination (Join-Path $packageRoot 'Register-GYInputActivationTasks.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer\Recover-GYIncompleteRegistration.ps1') -Destination (Join-Path $packageRoot 'Recover-GYIncompleteRegistration.ps1')
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'LICENSES') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer/GYInputTransaction.ps1') -Destination (Join-Path $packageRoot 'GYInputTransaction.ps1')
 Copy-Item -LiteralPath (Get-GYReleaseManifestPath) -Destination (Join-Path $packageRoot 'release.json')

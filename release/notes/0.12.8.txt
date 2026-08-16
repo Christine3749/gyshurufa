@@ -1,0 +1,7 @@
+GY 输入法 Windows 0.12.8 Firefox / Chromium 地址栏候选版
+
+- 0.12.7 因目标电脑旧 Host 注册信息缺失而未能完成激活，现已永久跳过，禁止重建或覆盖。
+- 安装器可在旧 DLL 路径、持久状态、版本化 Host 与离线健康检查全部一致时，仅恢复缺失的 HostPath / HostVersion；不会在当前会话切换 TSF DLL。
+- 保留 Firefox URL 输入域的异步组合生命周期修正及不记录用户文本的 TSF 生命周期诊断。
+- 地址栏应直接输入英文且不显示中文候选框；网页普通文本框仍保留中文拼音输入。
+- 本候选版仅供 Ethan 的 ThinkPad 真实 Firefox / Chrome 验收；真实应用验收完成前不进入稳定版通道。

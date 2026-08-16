@@ -108,6 +108,7 @@ Source: "{#SourcePath}\Prune-GYOldVersions.ps1"; DestDir: "{commonappdata}\GYInp
 Source: "{#SourcePath}\GYInputTransaction.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Register-GYInputActivationTasks.ps1"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
 Source: "{#SourcePath}\Register-GYInputActivationTasks.ps1"; DestDir: "{commonappdata}\GYInput"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallSharedHelpers
+Source: "{#SourcePath}\Recover-GYIncompleteRegistration.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "{#MyLicenseDir}\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -510,6 +511,22 @@ begin
             RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost);
 end;
 
+function RecoverIncompletePreviousGyRegistration(): Boolean;
+var
+  ResultCode: Integer;
+  Args: String;
+begin
+  // The previous DLL may still be correctly active while a legacy uninstall
+  // entry or maintenance run has removed only HostPath/HostVersion. Recover
+  // those two values from a health-checked, exact install-state snapshot. The
+  // helper cannot register a DLL or otherwise switch the live TSF version.
+  Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+          ExpandConstant('{tmp}\Recover-GYIncompleteRegistration.ps1') +
+          '" -LockAlreadyHeld';
+  Result := Exec(GYWindowsPowerShellPath(), Args, '', SW_HIDE,
+                 ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
 procedure SaveTransactionGyState(const ActivationState: String);
 begin
   SaveStringToFile(ExpandConstant('{app}\install-state.json'),
@@ -619,6 +636,13 @@ begin
     try
     if not VerifyNewHost() then Abort;
     CapturePreviousGyState();
+    if (not PreviousStateAvailable) and HasExistingGyRegistration() then begin
+      if not RecoverIncompletePreviousGyRegistration() then begin
+        MsgBox('检测到旧版 GY DLL 仍在使用，但 Host 注册信息不完整，且无法从已验证状态安全恢复。当前输入法保持不变。', mbError, MB_OK);
+        Abort;
+      end;
+      CapturePreviousGyState();
+    end;
     if PreviousStateAvailable and (not VerifyCapturedPreviousGyState()) then begin
       MsgBox('当前 GY 输入法版本未通过离线自检，已拒绝覆盖它。请先使用“整备 GY 输入法”恢复当前版本。', mbError, MB_OK);
       Abort;

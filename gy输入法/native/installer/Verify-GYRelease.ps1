@@ -92,6 +92,7 @@ $sourceScripts = @(
   'Prune-GYOldVersions.ps1',
   'Migrate-GYLegacyInstallEntries.ps1',
   'Register-GYInputActivationTasks.ps1',
+  'Recover-GYIncompleteRegistration.ps1',
   'GYInputTransaction.ps1'
 )
 foreach ($name in $sourceScripts) {

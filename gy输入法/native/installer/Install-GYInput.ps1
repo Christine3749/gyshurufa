@@ -28,6 +28,7 @@ $legacyMigrationSource = Join-Path $packageRoot 'Migrate-GYLegacyInstallEntries.
 $legacyMigrationPath = Join-Path $installRoot 'Migrate-GYLegacyInstallEntries.ps1'
 $keyboardSource = Join-Path $packageRoot 'Set-GYKeyboard.ps1'
 $keyboardPath = Join-Path $installRoot 'Set-GYKeyboard.ps1'
+$registrationRecoverySource = Join-Path $packageRoot 'Recover-GYIncompleteRegistration.ps1'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $statePath = Join-Path $installRoot 'install-state.json'
 $commonDataRoot = Join-Path $env:ProgramData 'GYInput'
@@ -522,6 +523,9 @@ if (-not (Test-Path -LiteralPath $legacyMigrationSource -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $keyboardSource -PathType Leaf)) {
   throw 'Keyboard completion helper is missing from the package.'
 }
+if (-not (Test-Path -LiteralPath $registrationRecoverySource -PathType Leaf)) {
+  throw 'Incomplete-registration recovery helper is missing from the package.'
+}
 New-Item -ItemType Directory -Path $versionRoot, $tsfRoot -Force | Out-Null
 $payloadDll = Join-Path $payloadRoot ("GyIme-$version.dll")
 $payloadHost = Join-Path $payloadRoot ("GyImeHost-$version.exe")
@@ -555,6 +559,7 @@ if (-not (Test-SameTree $payloadEnglish (Join-Path $versionRoot 'english-lexicon
 }
 $health = Start-Process -FilePath $installedHealth -WorkingDirectory $versionRoot -Wait -PassThru
 if ($health.ExitCode -ne 0) { throw "GY 输入法离线引擎自检失败；退出码：$($health.ExitCode)。旧版本保持不变。" }
+& $registrationRecoverySource -LockAlreadyHeld -InstallRoot $installRoot
 $previousState = Get-ActiveGyState
 $previousCoreVersion = ''
 $previousCoreVersion = [string]$previousState.coreVersion
