@@ -9,17 +9,18 @@
     "architecture": "x64",
     "setupFile": "GYInputSetup-0.12.8.exe",
     "zipFile": "GYInput-0.12.8.zip",
-    "sha256": "PENDING-PACKAGE-VERIFICATION",
-    "bytes": 0,
-    "state": "draft"
+    "sha256": "DDE6B510EB9329BC1F9E513506430CFE1843E3759344B6F8FFA4DA7BB54C164D",
+    "bytes": 7960127,
+    "state": "candidate"
   },
   "macos": {
     "version": "2.0.0",
     "architecture": "arm64",
     "state": "verification-required"
   },
+  "publishedAtUtc": "2026-08-16T01:15:28.3626746Z",
   "internalTest": {
-    "audience": "Ethan ThinkPad target acceptance through shurufa.wang",
+    "audience": "Ethan private ThinkPad",
     "signed": false,
     "tsfLifecycleTrace": true,
     "realApplications": "pending",
