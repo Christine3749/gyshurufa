@@ -31,6 +31,7 @@ constexpr ULONGLONG kVerifiedHostTtlMs = 1500;
 // not.  Open, write and read all share this one deadline.
 constexpr DWORD kInputRequestBudgetMs = 35;
 constexpr DWORD kLearningWriteBudgetMs = 12;
+constexpr ULONGLONG kHostRecoveryRequestCooldownMs = 2000;
 
 constexpr wchar_t kHostRegistryKey[] = L"SOFTWARE\\GYInput";
 
@@ -168,7 +169,7 @@ bool CurrentProcessElevated() {
   return elevated;
 }
 
-bool StartHost(const std::wstring& path) {
+bool StartHost(const std::wstring& path, bool reconcile) {
   if (!FileExists(path)) return false;
   // An elevated launch poisons the whole install: objects created by an
   // elevated process are owned by the Administrators group, while the Host
@@ -177,7 +178,9 @@ bool StartHost(const std::wstring& path) {
   // Elevated clients can still USE an existing Host (their token user is the
   // same account); they must just never be the process that creates it.
   if (CurrentProcessElevated()) return false;
-  std::vector<wchar_t> command(path.begin(), path.end());
+  std::wstring command_line = L"\"" + path + L"\"";
+  if (reconcile) command_line += L" --reconcile-host";
+  std::vector<wchar_t> command(command_line.begin(), command_line.end());
   command.push_back(L'\0');
   STARTUPINFOW startup{sizeof(startup)};
   PROCESS_INFORMATION process{};
@@ -212,6 +215,24 @@ struct HostedPinyinEngine::Impl {
     // The machine registry selects which Host is active, but it must not change
     // the identity expected by an older DLL still loaded in an application.
     return GY_HOSTED_WIDEN(GY_HOST_VERSION);
+  }
+
+  bool RegisteredHostMatchesCore() const {
+    const std::wstring registered_path = ReadMachineValue(L"HostPath");
+    const std::wstring registered_version = ReadMachineValue(L"HostVersion");
+    return !registered_path.empty() && FileExists(registered_path) &&
+        registered_version == HostVersion();
+  }
+
+  bool RequestHostRecovery() {
+    const ULONGLONG now = GetTickCount64();
+    if (last_recovery_request_tick != 0 &&
+        now - last_recovery_request_tick < kHostRecoveryRequestCooldownMs) {
+      return last_recovery_request_succeeded;
+    }
+    last_recovery_request_tick = now;
+    last_recovery_request_succeeded = StartHost(HostPath(), true);
+    return last_recovery_request_succeeded;
   }
 
   bool EnsureHost() {
@@ -254,6 +275,8 @@ struct HostedPinyinEngine::Impl {
   std::wstring diagnostic;
   std::mutex mutex;
   ULONGLONG last_verified_tick = 0;
+  ULONGLONG last_recovery_request_tick = 0;
+  bool last_recovery_request_succeeded = false;
 };
 
 HostedPinyinEngine::HostedPinyinEngine(std::wstring module_directory)
@@ -366,10 +389,27 @@ void HostedPinyinEngine::Prewarm() {
       impl_->last_verified_tick = GetTickCount64();
       return;
     }
-    impl_->diagnostic = L"GY Host version does not match this TSF core";
+    // Prewarm only launches an independent, one-shot coordinator. The TSF
+    // activation callback never shuts down a process, waits for a lifecycle
+    // hand-off, or mutates registration. An older DLL whose machine registry
+    // now selects a newer release fails closed and cannot disturb that Host.
+    if (impl_->RegisteredHostMatchesCore() && impl_->RequestHostRecovery()) {
+      impl_->diagnostic = L"GY Host version reconciliation was requested";
+    } else {
+      impl_->diagnostic = L"GY Host version does not match this TSF core";
+    }
     return;
   }
-  if (!StartHost(impl_->HostPath())) impl_->diagnostic = L"GY Host could not be prewarmed";
+  if (impl_->RegisteredHostMatchesCore()) {
+    if (!impl_->RequestHostRecovery()) impl_->diagnostic = L"GY Host could not be prewarmed";
+    return;
+  }
+  // Keep source-tree/dev use working when no machine release is selected.
+  // A partial or mismatched registration is never treated as this fallback.
+  if (ReadMachineValue(L"HostPath").empty() && ReadMachineValue(L"HostVersion").empty() &&
+      !StartHost(impl_->HostPath(), false)) {
+    impl_->diagnostic = L"GY Host could not be prewarmed";
+  }
 }
 std::wstring HostedPinyinEngine::Diagnostic() const {
   return impl_ ? impl_->diagnostic : L"hosted engine implementation is unavailable";

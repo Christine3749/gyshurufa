@@ -129,8 +129,9 @@ function Test-ScheduledTaskExists([string]$TaskName) {
 
 function Schedule-PendingActivation {
   try {
-    # Activation is boot-only. The shared registrar creates one ONSTART task,
-    # and the Finalizer also verifies that Windows BootId changed.
+    # Activation is boot-bound. The shared registrar creates redundant
+    # ONSTART/ONLOGON SYSTEM tasks, and the Finalizer independently verifies
+    # that Windows BootId changed before either trigger can switch the DLL.
     if (-not (Test-Path -LiteralPath $taskRegistrarSource -PathType Leaf)) {
       throw 'Pending activation task registrar is missing from the ZIP package.'
     }

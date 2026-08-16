@@ -18,7 +18,7 @@ $installRoot = Join-Path $programFiles 'GYInput'
 $commonDataRoot = Join-Path $env:ProgramData 'GYInput'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $taskName = 'GYInput\ActivatePending'
-$legacyLogonTaskName = 'GYInput\ActivatePendingLogon'
+$logonTaskName = 'GYInput\ActivatePendingLogon'
 $regsvr32 = Join-Path $env:WINDIR 'System32\regsvr32.exe'
 $prunePath = Join-Path $commonDataRoot 'Prune-GYOldVersions.ps1'
 $legacyMigrationPath = Join-Path $installRoot 'Migrate-GYLegacyInstallEntries.ps1'
@@ -43,7 +43,7 @@ if (-not $LockAlreadyHeld) {
 function Remove-PendingTask {
   try {
     Remove-GYInputScheduledTask $taskName | Out-Null
-    Remove-GYInputScheduledTask $legacyLogonTaskName | Out-Null
+    Remove-GYInputScheduledTask $logonTaskName | Out-Null
   } catch {}
 }
 

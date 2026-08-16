@@ -86,13 +86,15 @@ Assert-Contains $clientFinalizer 'Previous GY rollback target' 'Finalizer does n
 Assert-Contains $clientFinalizer 'Assert-RegisteredGyState' 'Finalizer does not read back both DLL and Host registration.'
 Assert-Contains $clientFinalizer 'Write-VerifiedActiveState' 'Finalizer does not persist only a registry-verified active state.'
 Assert-Contains $clientFinalizer '$registrationChanged' 'Finalizer may restore a prior registration even when it did not change the registry.'
-Assert-Contains $clientFinalizer '$StartupTrigger' 'Finalizer does not require its boot-only scheduled-task trigger.'
+Assert-Contains $clientFinalizer '$StartupTrigger' 'Finalizer does not require its boot-bound scheduled-task trigger.'
 Assert-Contains $clientFinalizer 'Get-CurrentBootId' 'Finalizer does not prove that Windows restarted after staging.'
 Assert-Contains $clientFinalizer 'Assert-NoRegisteredGyState' 'Finalizer does not safely handle a first installation.'
 $finalizerWaitCount = [regex]::Matches($clientFinalizer, '\$mutex\.WaitOne\(0\)').Count
 Assert-Contains $taskRegistrar 'Wait-GYInputScheduledTask' 'Activation task registrar does not read back task persistence.'
-Assert-Contains $taskRegistrar '/SC ONSTART' 'Activation task registrar does not create an ONSTART task.'
-if ($taskRegistrar -match '/SC\s+ONLOGON') { throw 'Activation task registrar must never create an ONLOGON activation task.' }
+Assert-Contains $taskRegistrar "Register-ActivationTask `$taskName 'ONSTART'" 'Activation task registrar does not create its primary ONSTART task.'
+Assert-Contains $taskRegistrar "Register-ActivationTask `$logonTaskName 'ONLOGON'" 'Activation task registrar lacks a redundant ONLOGON recovery task.'
+Assert-Contains $taskRegistrar '/DELAY 0000:20' 'Activation tasks can run before the system volume and pending state settle.'
+Assert-Contains $clientFinalizer "`$logonTaskName = 'GYInput\ActivatePendingLogon'" 'Finalizer cannot remove the redundant activation task after success.'
 Assert-Contains $taskRegistrar 'Remove-StaleTransientHelpers' 'Task registrar does not clean unneeded one-shot helper files.'
 if ($finalizerWaitCount -ne 2) { throw "Finalizer must acquire the shared mutex for activation and guarded cleanup; found $finalizerWaitCount WaitOne calls." }
 if ($installer -match '\$host\b' -or $rollback -match '\$host\b') { throw 'Installer scripts must not assign PowerShell automatic variable Host.' }
@@ -290,6 +292,7 @@ Assert-Contains $manifestModule "'0.12.6'" 'Withdrawn 0.12.6 can re-enter the pa
 Assert-Contains $manifestModule "'0.12.7'" 'Withdrawn 0.12.7 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule "'0.12.8'" 'Withdrawn 0.12.8 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule "'0.12.9'" 'Withdrawn 0.12.9 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.10'" 'Withdrawn 0.12.10 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule 'Release approval is missing' 'Release approval boundary does not fail closed when the approval record is absent.'
 Assert-Contains $manifestModule 'target-test-distribution' 'Release manifest module cannot represent an approved candidate awaiting target-machine acceptance.'
 Assert-Contains $manifestModule 'pending-on-target' 'Candidate distribution approval cannot honestly retain pending target acceptance.'
