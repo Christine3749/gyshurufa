@@ -9,15 +9,16 @@
     "architecture": "x64",
     "setupFile": "GYInputSetup-0.12.10.exe",
     "zipFile": "GYInput-0.12.10.zip",
-    "sha256": "PENDING-PACKAGE-VERIFICATION",
-    "bytes": 0,
-    "state": "draft"
+    "sha256": "85AD9B91EB2B036618C7FFC6C3F411ED6334F3B65EFEE8B9979B4514FBC03D89",
+    "bytes": 7960864,
+    "state": "candidate"
   },
   "macos": {
     "version": "2.0.0",
     "architecture": "arm64",
     "state": "verification-required"
   },
+  "publishedAtUtc": "2026-08-16T04:05:01.9642847Z",
   "internalTest": {
     "audience": "Ethan private ThinkPad",
     "signed": false,
