@@ -15,6 +15,24 @@ function Get-GyCoreVersionFromPath([string]$Path) {
   return ''
 }
 
+function Get-RunningGyHosts {
+  @(
+    Get-Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ProcessName -like 'GyImeHost-*' } |
+      ForEach-Object {
+        $processPath = ''
+        try { $processPath = [string]$_.Path } catch {}
+        $processVersion = if ($_.ProcessName -match '^GyImeHost-(\d+(?:\.\d+){2,3})$') { $matches[1] } else { '' }
+        [pscustomobject]@{
+          Id = $_.Id
+          Name = $_.ProcessName
+          Path = $processPath
+          Version = $processVersion
+        }
+      }
+  )
+}
+
 try {
   $gy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\GYInput' -ErrorAction Stop
   $hostPath = [string]$gy.HostPath
@@ -63,6 +81,26 @@ try {
   Check (-not [string]::IsNullOrWhiteSpace($hostVersion)) "当前 Host 版本：$hostVersion" '没有找到当前 Host 版本注册。'
   Check (Test-Path -LiteralPath $hostPath -PathType Leaf) "当前 Host 文件存在：$hostPath" '当前 Host 文件不存在。'
   Check ($state -and [string]::Equals($hostPath, [string]$state.host, [StringComparison]::OrdinalIgnoreCase)) '注册表 Host 与安装状态一致。' '注册表 Host 与安装状态不一致。'
+
+  $legacyHostStartup = $null
+  try {
+    $legacyHostStartup = Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+      -Name 'GYInputHost' -ErrorAction SilentlyContinue
+  } catch {}
+  Check ([string]::IsNullOrWhiteSpace([string]$legacyHostStartup)) '没有遗留的版本锁定 Host 自启动项。' '检测到遗留 GYInputHost 自启动项；它会在登录时启动错误版本。请安装 0.12.10 或更高版本。'
+
+  $runningHosts = @(Get-RunningGyHosts)
+  $mismatchedHosts = @($runningHosts | Where-Object {
+      $_.Version -ne $hostVersion -or
+      [string]::IsNullOrWhiteSpace($_.Path) -or
+      -not [string]::Equals($_.Path, $hostPath, [StringComparison]::OrdinalIgnoreCase)
+    })
+  if ($runningHosts.Count -eq 0) {
+    Write-Host '[通过] 当前没有常驻 Host；输入时会按注册版本启动。' -ForegroundColor Green
+  } else {
+    $mismatchDescription = @($mismatchedHosts | ForEach-Object { "$($_.Name) (PID $($_.Id))" }) -join '、'
+    Check ($mismatchedHosts.Count -eq 0) "实际运行 Host 与注册版本一致：$hostVersion" "实际运行 Host 与注册版本不一致：$mismatchDescription。请保存工作并正常重启 Windows。"
+  }
 
   if (Test-Path -LiteralPath $hostPath -PathType Leaf) {
     $supportsHealthCheck = $false

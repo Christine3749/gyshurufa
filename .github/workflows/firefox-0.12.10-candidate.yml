@@ -1,10 +1,10 @@
-name: Firefox 0.12.9 candidate
+name: Firefox and Host reconciliation 0.12.10 candidate
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - codex/gy-0.12.9-firefox-address-bar
+      - codex/gy-0.12.10-host-reconciliation
 
 permissions:
   contents: read
@@ -22,17 +22,20 @@ jobs:
 
       - name: Configure trace and tests
         run: >-
-          cmake -S . -B build-ci-firefox-0.12.9 -G "Visual Studio 17 2022" -A x64
-          "-DGY_VERSION=0.12.9" -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
+          cmake -S . -B build-ci-firefox-0.12.10 -G "Visual Studio 17 2022" -A x64
+          "-DGY_VERSION=0.12.10" -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
           -DGY_BUILD_HOST_SMOKE=ON
 
       - name: Build trace candidate and tests
-        run: cmake --build build-ci-firefox-0.12.9 --config Release --parallel 2
+        run: cmake --build build-ci-firefox-0.12.10 --config Release --parallel 2
 
       - name: Run non-GUI automated tests
         run: >-
-          ctest --test-dir build-ci-firefox-0.12.9 -C Release --output-on-failure
+          ctest --test-dir build-ci-firefox-0.12.10 -C Release --output-on-failure
           -E "Gy(InputScopeCacheSmoke|TsfActivationSmoke|InstallerSmoke|HostedPinyinEngineSmoke|PinyinEngineSmoke)"
+
+      - name: Run installer and Host reconciliation policy smoke
+        run: ./installer/InstallerSmoke.ps1
 
       - name: Ensure Inno Setup exists
         working-directory: ${{ github.workspace }}
@@ -40,18 +43,18 @@ jobs:
 
       - name: Build immutable ThinkPad trace candidate
         run: >-
-          ./Build-GYThinkPadCandidate.ps1 -Version 0.12.9 -EnableTsfTrace
+          ./Build-GYThinkPadCandidate.ps1 -Version 0.12.10 -EnableTsfTrace
 
       - name: Write source and artifact hash evidence
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           $paths = [ordered]@{
-            dll = 'build-thinkpad-0.12.9/bin/Release/GyIme.dll'
-            host = 'build-thinkpad-0.12.9/bin/Release/GyImeHost.exe'
-            health = 'build-thinkpad-0.12.9/bin/Release/GyImeHealth.exe'
-            setup = 'release/GYInputSetup-0.12.9.exe'
-            zip = 'release/GYInput-0.12.9.zip'
+            dll = 'build-thinkpad-0.12.10/bin/Release/GyIme.dll'
+            host = 'build-thinkpad-0.12.10/bin/Release/GyImeHost.exe'
+            health = 'build-thinkpad-0.12.10/bin/Release/GyImeHealth.exe'
+            setup = 'release/GYInputSetup-0.12.10.exe'
+            zip = 'release/GYInput-0.12.10.zip'
           }
           $artifacts = [ordered]@{}
           foreach ($entry in $paths.GetEnumerator()) {
@@ -65,23 +68,23 @@ jobs:
           }
           [ordered]@{
             sourceCommit = $env:SOURCE_COMMIT
-            sourceBranch = 'codex/gy-0.12.9-firefox-address-bar'
-            version = '0.12.9'
+            sourceBranch = 'codex/gy-0.12.10-host-reconciliation'
+            version = '0.12.10'
             tsfLifecycleTrace = $true
             artifacts = $artifacts
-          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'release/firefox-0.12.9-hashes.json' -Encoding utf8
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'release/firefox-0.12.10-hashes.json' -Encoding utf8
 
       - name: Upload candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: gy-firefox-0.12.9-${{ github.sha }}
+          name: gy-firefox-0.12.10-${{ github.sha }}
           if-no-files-found: error
           retention-days: 7
           path: |
-            gy输入法/native/release/GYInputSetup-0.12.9.exe
-            gy输入法/native/release/GYInputSetup-0.12.9.exe.sha256
-            gy输入法/native/release/GYInput-0.12.9.zip
-            gy输入法/native/release/firefox-0.12.9-hashes.json
-            gy输入法/native/build-thinkpad-0.12.9/bin/Release/GyIme.dll
-            gy输入法/native/build-thinkpad-0.12.9/bin/Release/GyImeHost.exe
-            gy输入法/native/build-thinkpad-0.12.9/bin/Release/GyImeHealth.exe
+            gy输入法/native/release/GYInputSetup-0.12.10.exe
+            gy输入法/native/release/GYInputSetup-0.12.10.exe.sha256
+            gy输入法/native/release/GYInput-0.12.10.zip
+            gy输入法/native/release/firefox-0.12.10-hashes.json
+            gy输入法/native/build-thinkpad-0.12.10/bin/Release/GyIme.dll
+            gy输入法/native/build-thinkpad-0.12.10/bin/Release/GyImeHost.exe
+            gy输入法/native/build-thinkpad-0.12.10/bin/Release/GyImeHealth.exe

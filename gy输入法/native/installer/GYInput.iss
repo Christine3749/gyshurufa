@@ -511,6 +511,15 @@ begin
             RegQueryStringValue(HKLM64, 'SOFTWARE\GYInput', 'HostPath', ActiveHost);
 end;
 
+function RemoveLegacyVersionPinnedHostStartup(): Boolean;
+begin
+  // Old releases wrote a version-specific Host executable into HKCU Run.
+  // The versioned on-demand model must remove it before the next logon or an
+  // obsolete Host can claim the shared pipe ahead of the newly activated DLL.
+  RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'GYInputHost');
+  Result := not RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'GYInputHost');
+end;
+
 function RecoverIncompletePreviousGyRegistration(): Boolean;
 var
   ResultCode: Integer;
@@ -647,6 +656,10 @@ begin
       MsgBox('当前 GY 输入法版本未通过离线自检，已拒绝覆盖它。请先使用“整备 GY 输入法”恢复当前版本。', mbError, MB_OK);
       Abort;
     end;
+    if not RemoveLegacyVersionPinnedHostStartup() then begin
+      MsgBox('无法移除旧版 GY Host 自启动项。安装已安全停止，以免重启后再次混用版本。', mbError, MB_OK);
+      Abort;
+    end;
     if (not PreviousStateAvailable) and HasExistingGyRegistration() then begin
       MsgBox('检测到已有 GY 注册状态，但无法建立完整回退快照。为避免丢失可恢复版本，本次安装未作任何切换。', mbError, MB_OK);
       Abort;
@@ -681,7 +694,7 @@ begin
     RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
       'GYInputCompleteKeyboard',
       '"' + ExpandConstant('{win}\System32\WindowsPowerShell\v1.0\powershell.exe') + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
-      ExpandConstant('{app}\Set-GYKeyboard.ps1') + '" -Add -RequireActiveVersion "{#MyAppVersion}" -RetryAtNextLogon -WaitForActivationSeconds 60');
+      ExpandConstant('{app}\Set-GYKeyboard.ps1') + '" -Add -RequireActiveVersion "{#MyAppVersion}" -RetryAtNextLogon -ReconcileHost -WaitForActivationSeconds 60');
     MsgBox('GY 输入法测试版已暂存。请正常重启 Windows；新版只会在重启时激活，不会关闭任何正在运行的办公软件。', mbInformation, MB_OK);
     Exit;
     finally
@@ -706,6 +719,10 @@ var
   OtherReleaseActive: Boolean;
 begin
   if CurUninstallStep = usUninstall then begin
+    if not RemoveLegacyVersionPinnedHostStartup() then begin
+      MsgBox('旧版 GY Host 自启动项未能自动移除；请重新运行卸载程序。', mbError, MB_OK);
+      Exit;
+    end;
     if not AcquireActivationMutex() then begin
       MsgBox('GY 输入法已有另一个安装/激活事务正在运行，请稍后重试。', mbError, MB_OK);
       Exit;

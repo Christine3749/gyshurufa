@@ -157,15 +157,30 @@ function Require-PendingActivationComplete {
 }
 
 function Schedule-CurrentUserKeyboardCompletion {
+  Remove-LegacyVersionPinnedHostStartup
   $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $command = '"' + $powershell + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
              $keyboardPath + '" -Add -RequireActiveVersion "' + $version +
-             '" -RetryAtNextLogon -WaitForActivationSeconds 60'
+             '" -RetryAtNextLogon -ReconcileHost -WaitForActivationSeconds 60'
   # Keep this completion entry until Set-GYKeyboard verifies that Windows has
   # retained the GY TIP. A one-shot RunOnce can be consumed before the boot
   # finalizer finishes and leave the current account permanently on ENG.
   $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
   try { $key.SetValue('GYInputCompleteKeyboard', $command, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+}
+
+function Remove-LegacyVersionPinnedHostStartup {
+  $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKey, $true)
+  if (-not $key) { return }
+  try {
+    $key.DeleteValue('GYInputHost', $false)
+    if (@($key.GetValueNames()) -contains 'GYInputHost') {
+      throw '无法移除旧版 GY Host 自启动项；安装已停止，以免重启后再次混用版本。'
+    }
+  } finally {
+    $key.Dispose()
+  }
 }
 function Test-SameFile([string]$Source, [string]$Destination) {
   if (-not (Test-Path -LiteralPath $Source) -or -not (Test-Path -LiteralPath $Destination)) { return $false }
@@ -446,6 +461,10 @@ function Remove-ActiveGyHostIfCurrent {
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Do this in the interactive account before any UAC hand-off.  The obsolete
+# value is per-user and otherwise survives every machine-wide version switch.
+Remove-LegacyVersionPinnedHostStartup
 
 if (-not $Elevated) {
   if (-not $Uninstall) {

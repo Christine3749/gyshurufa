@@ -3,6 +3,7 @@ param(
   [switch]$Remove,
   [string]$RequireActiveVersion = '',
   [switch]$RetryAtNextLogon,
+  [switch]$ReconcileHost,
   [ValidateRange(0, 300)][int]$WaitForActivationSeconds = 0
 )
 
@@ -11,13 +12,15 @@ if ($Add -eq $Remove) { throw 'Specify exactly one of -Add or -Remove.' }
 
 $completionRunKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $completionRunName = 'GYInputCompleteKeyboard'
+$legacyHostRunName = 'GYInputHost'
 
 function Save-DurableKeyboardCompletion {
   if (-not $RetryAtNextLogon) { return }
   $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $reconcileArgument = if ($ReconcileHost) { ' -ReconcileHost' } else { '' }
   $command = '"' + $powershell + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
              $PSCommandPath + '" -Add -RequireActiveVersion "' + $RequireActiveVersion +
-             '" -RetryAtNextLogon -WaitForActivationSeconds ' + $WaitForActivationSeconds
+             '" -RetryAtNextLogon' + $reconcileArgument + ' -WaitForActivationSeconds ' + $WaitForActivationSeconds
   $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($completionRunKey)
   try { $key.SetValue($completionRunName, $command, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
 }
@@ -28,8 +31,26 @@ function Clear-DurableKeyboardCompletion {
   try { $key.DeleteValue($completionRunName, $false) } finally { $key.Dispose() }
 }
 
+function Remove-LegacyVersionPinnedHostStartup {
+  # Releases before the versioned on-demand Host model wrote GYInputHost as a
+  # per-user Run value containing one immutable version path.  Leaving it in
+  # place lets an old Host win the pipe at logon even after the DLL and machine
+  # registration have advanced.  The value belongs exclusively to GY.
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($completionRunKey, $true)
+  if (-not $key) { return }
+  try {
+    $key.DeleteValue($legacyHostRunName, $false)
+    if (@($key.GetValueNames()) -contains $legacyHostRunName) {
+      throw 'The obsolete version-pinned GY Host startup value could not be removed.'
+    }
+  } finally {
+    $key.Dispose()
+  }
+}
+
 if ($Add) { Save-DurableKeyboardCompletion }
 if ($Remove) { Clear-DurableKeyboardCompletion }
+Remove-LegacyVersionPinnedHostStartup
 
 function Test-RequiredVersionActive {
   if ([string]::IsNullOrWhiteSpace($RequireActiveVersion)) { return $true }
@@ -51,6 +72,78 @@ if ($Add -and $RequireActiveVersion) {
     exit 2
   }
 }
+
+function Get-RegisteredGyHost {
+  $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('Software\GYInput')
+  if (-not $key) { throw 'The active GY Host registration is missing.' }
+  try {
+    [pscustomobject]@{
+      Path = [string]$key.GetValue('HostPath')
+      Version = [string]$key.GetValue('HostVersion')
+    }
+  } finally {
+    $key.Dispose()
+  }
+}
+
+function Test-ManagedGyHostPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+  try {
+    $root = [IO.Path]::GetFullPath((Join-Path $programFiles 'GYInput\versions')).TrimEnd('\') + '\'
+    $full = [IO.Path]::GetFullPath($Path)
+    return $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+           [IO.Path]::GetFileName($full) -match '^GyImeHost-\d+(\.\d+){2,3}\.exe$'
+  } catch {
+    return $false
+  }
+}
+
+function Reconcile-CurrentUserGyHost {
+  if (-not $ReconcileHost) { return }
+  $registered = Get-RegisteredGyHost
+  if ([string]::IsNullOrWhiteSpace($registered.Path) -or
+      [string]::IsNullOrWhiteSpace($registered.Version) -or
+      -not (Test-Path -LiteralPath $registered.Path -PathType Leaf) -or
+      -not (Test-ManagedGyHostPath $registered.Path)) {
+    throw 'The active GY Host registration is incomplete or unmanaged.'
+  }
+  if ($RequireActiveVersion -and $registered.Version -ne $RequireActiveVersion) {
+    throw "The active GY Host version is $($registered.Version), expected $RequireActiveVersion."
+  }
+
+  $expectedRunning = $false
+  $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'GyImeHost-*' })
+  foreach ($process in $running) {
+    $processPath = ''
+    try { $processPath = [string]$process.Path } catch {}
+    $isExpected = -not [string]::IsNullOrWhiteSpace($processPath) -and
+                  [string]::Equals($processPath, $registered.Path, [StringComparison]::OrdinalIgnoreCase)
+    if ($isExpected) {
+      $expectedRunning = $true
+      continue
+    }
+    # This path runs only from the durable post-reboot logon completion entry.
+    # Never terminate an inaccessible or non-GY process even if its image name
+    # resembles GY.  A managed obsolete Host is safe to replace before typing.
+    if (-not (Test-ManagedGyHostPath $processPath)) {
+      throw "A non-managed or inaccessible process named $($process.ProcessName) blocks GY Host reconciliation."
+    }
+    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    try { Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue } catch {}
+  }
+
+  if (-not $expectedRunning) {
+    $started = Start-Process -FilePath $registered.Path -WorkingDirectory (Split-Path -Parent $registered.Path) `
+      -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 500
+    if ($started.HasExited) {
+      throw "The registered GY Host exited during logon reconciliation (exit code: $($started.ExitCode))."
+    }
+  }
+}
+
+if ($Add) { Reconcile-CurrentUserGyHost }
 
 $tipId = '0804:{5F689D3D-73E3-4C2B-979A-2DD86E438D6F}{5F689D3E-73E3-4C2B-979A-2DD86E438D6F}'
 $languages = Get-WinUserLanguageList
