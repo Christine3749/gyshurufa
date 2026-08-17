@@ -89,12 +89,15 @@ Assert-Contains $clientFinalizer '$registrationChanged' 'Finalizer may restore a
 Assert-Contains $clientFinalizer '$StartupTrigger' 'Finalizer does not require its boot-bound scheduled-task trigger.'
 Assert-Contains $clientFinalizer 'Get-CurrentBootId' 'Finalizer does not prove that Windows restarted after staging.'
 Assert-Contains $clientFinalizer 'Assert-NoRegisteredGyState' 'Finalizer does not safely handle a first installation.'
+Assert-Contains $clientFinalizer 'Get-LoadedGyClientModules' 'Finalizer does not scan actual loaded GY DLL clients before activation.'
+Assert-Contains $clientFinalizer 'Loaded GY TSF clients still exist' 'Finalizer does not fail closed when an old GY DLL is already loaded.'
 $finalizerWaitCount = [regex]::Matches($clientFinalizer, '\$mutex\.WaitOne\(0\)').Count
 Assert-Contains $taskRegistrar 'Wait-GYInputScheduledTask' 'Activation task registrar does not read back task persistence.'
-Assert-Contains $taskRegistrar "Register-ActivationTask `$taskName 'ONSTART'" 'Activation task registrar does not create its primary ONSTART task.'
-Assert-Contains $taskRegistrar "Register-ActivationTask `$logonTaskName 'ONLOGON'" 'Activation task registrar lacks a redundant ONLOGON recovery task.'
-Assert-Contains $taskRegistrar '/DELAY 0000:20' 'Activation tasks can run before the system volume and pending state settle.'
-Assert-Contains $clientFinalizer "`$logonTaskName = 'GYInput\ActivatePendingLogon'" 'Finalizer cannot remove the redundant activation task after success.'
+Assert-Contains $taskRegistrar '/SC ONSTART' 'Activation task registrar does not create its boot-bound ONSTART task.'
+Assert-Contains $taskRegistrar 'Register-ActivationTask $taskName' 'Activation task registrar does not register the primary ONSTART task.'
+if ($taskRegistrar.Contains('Register-ActivationTask $logonTaskName')) { throw 'Activation registrar must not create the unsafe ONLOGON task.' }
+if ($taskRegistrar.Contains('/DELAY')) { throw 'Activation registrar must run before interactive clients can load the old GY DLL.' }
+Assert-Contains $clientFinalizer "`$logonTaskName = 'GYInput\ActivatePendingLogon'" 'Finalizer cannot remove the legacy unsafe ONLOGON task after success.'
 Assert-Contains $taskRegistrar 'Remove-StaleTransientHelpers' 'Task registrar does not clean unneeded one-shot helper files.'
 if ($finalizerWaitCount -ne 2) { throw "Finalizer must acquire the shared mutex for activation and guarded cleanup; found $finalizerWaitCount WaitOne calls." }
 if ($installer -match '\$host\b' -or $rollback -match '\$host\b') { throw 'Installer scripts must not assign PowerShell automatic variable Host.' }
@@ -374,13 +377,17 @@ if ($realAppRegression.Contains('RegSetValueExW') -or $realAppRegression.Contain
   throw 'Real-app regression must not write registry or settings state.'
 }
 $ime = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\GyIme.cpp') -Raw
+$inputScopePolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\InputScopePolicy.h') -Raw
 if ($ime.Contains('ReadAutomationInputScope') -or $ime.Contains('uiautomation.h')) { throw 'TSF key paths must not use cross-process UI Automation.' }
-Assert-Contains $ime 'input_scope_manual_override_' 'TSF cannot preserve an explicit per-field user mode choice.'
+if ($ime.Contains('input_scope_manual_override_')) { throw 'Direct fields can still be forced into Chinese capture by a focus-local override.' }
+Assert-Contains $inputScopePolicy 'IsHardDirectCaptureBoundary' 'Direct URL/account/password fields are not a hard key-capture boundary.'
 Assert-Contains $ime 'EnterNativeSensitiveDirectMode' 'Native password/PIN controls do not have a first-key direct-input boundary.'
 Assert-Contains $ime 'before consulting the previous TSF context' 'Password/PIN first-key guard no longer documents the stale-context boundary.'
 Assert-Contains $ime 'TF_ES_ASYNC | TF_ES_READ' 'TSF input-scope refresh is not asynchronous.'
 Assert-Contains $ime 'Scope probes are scheduled on focus and normal edit notifications' 'TSF key path may still schedule a scope probe.'
 Assert-Contains $ime 'static_cast<unsigned>(candidates_.size())' 'TSF capture does not pass the complete candidate pool.'
+Assert-Contains $ime 'range->Clone(&caret_range)' 'TSF composition updates collapse the live composition range instead of a caret clone.'
+Assert-Contains $ime 'no-text-read' 'TSF range diagnostics no longer document their user-text privacy boundary.'
 Assert-Contains $ime 'chinese_grid_open_' 'Chinese grid state is not explicitly separated from English suggestions.'
 Assert-Contains $ime 'Preserve the current user''s enabled GY language profile across upgrades.' 'Normal registration can still discard the enabled GY profile during an upgrade.'
 $profileUnregisterCount = [regex]::Matches($ime, 'profiles->UnregisterProfile\(').Count

@@ -152,6 +152,38 @@ function Assert-OfflineHealthy([string]$HealthPath, [string]$Context) {
   if ($result.ExitCode -ne 0) { throw "$Context health check failed (exit code: $($result.ExitCode))." }
 }
 
+function Get-LoadedGyClientModules {
+  # Read only module identity. Never inspect window text, edit contents,
+  # clipboard data, or command lines. The finalizer runs as 64-bit SYSTEM so
+  # it can see ordinary x64 clients that a 32-bit installer cannot enumerate.
+  $loaded = [System.Collections.Generic.List[object]]::new()
+  $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $managedRoot = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
+  foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+    try {
+      foreach ($module in @($process.Modules)) {
+        $path = [string]$module.FileName
+        if ([IO.Path]::GetFileName($path) -ine 'GyIme.dll') { continue }
+        $full = [IO.Path]::GetFullPath($path)
+        if (-not $full.StartsWith($managedRoot, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $identity = "$($process.Id)|$full"
+        if ($seen.Add($identity)) {
+          $loaded.Add([pscustomobject][ordered]@{
+              processId = [int]$process.Id
+              processName = [string]$process.ProcessName
+              modulePath = $full
+            })
+        }
+      }
+    } catch {
+      # Protected Windows processes do not load this third-party TSF DLL. An
+      # access denial is neither treated as a clean client nor logged with any
+      # window/user content.
+    }
+  }
+  return @($loaded.ToArray())
+}
+
 function Write-VerifiedActiveState([string]$Version, [string]$Dll, [string]$HostPath,
                                    [string]$HealthPath, [string]$PreviousVersion) {
   $retainedVersion = $null
@@ -256,6 +288,18 @@ try {
   }
 
   Assert-OfflineHealthy $health 'Pending GY activation target'
+
+  # The immediate ONSTART task should run before Explorer/SearchHost. Prove
+  # that condition immediately before changing registration. If any managed
+  # GY DLL is already loaded, keep the old registration and pending state for
+  # a later clean boot instead of creating a DLL/Host split-brain session.
+  $loadedClients = @(Get-LoadedGyClientModules)
+  if ($loadedClients.Count -gt 0) {
+    $identities = @($loadedClients | ForEach-Object {
+        "$($_.processName)(PID $($_.processId))=$($_.modulePath)"
+      }) -join '; '
+    throw "Loaded GY TSF clients still exist; activation remains pending: $identities"
+  }
 
   $registrationChanged = $true
   $register = Start-Process -FilePath $regsvr32 -ArgumentList ('/s "{0}"' -f $dll) -Wait -PassThru

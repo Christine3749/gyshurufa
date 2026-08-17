@@ -161,6 +161,32 @@ int main() {
     std::wcerr << L"Candidate quality gate returned a non-Han value.\n";
     return 10;
   }
+  const auto simplified_houmian = engine.LookupExact(L"houmian", gy::input_mode::kSimplified);
+  const auto simplified_weishenme = engine.LookupExact(L"weishenme", gy::input_mode::kSimplified);
+  const bool simplified_houmian_front =
+      !simplified_houmian.empty() && simplified_houmian.front() == L"后面";
+  const bool simplified_weishenme_front =
+      !simplified_weishenme.empty() && simplified_weishenme.front() == L"为什么";
+  const bool simplified_houmian_leak =
+      std::any_of(simplified_houmian.begin(), simplified_houmian.end(),
+                  [](const std::wstring& value) { return value.find(L'後') != std::wstring::npos; });
+  const bool simplified_weishenme_leak =
+      std::any_of(simplified_weishenme.begin(), simplified_weishenme.end(),
+                  [](const std::wstring& value) {
+                    return value.find(L'爲') != std::wstring::npos ||
+                           value.find(L'麽') != std::wstring::npos;
+                  });
+  if (!simplified_houmian_front || !simplified_weishenme_front ||
+      simplified_houmian_leak || simplified_weishenme_leak) {
+    std::wcerr << L"OpenCC did not keep the complete simplified candidate pool in simplified script. "
+               << L"houmian.size=" << simplified_houmian.size()
+               << L", houmian.front-ok=" << simplified_houmian_front
+               << L", houmian.leak=" << simplified_houmian_leak
+               << L", weishenme.size=" << simplified_weishenme.size()
+               << L", weishenme.front-ok=" << simplified_weishenme_front
+               << L", weishenme.leak=" << simplified_weishenme_leak << L"\n";
+    return 29;
+  }
   // A malformed but high-confidence code has ordinary fallback choices in
   // slot one, leaving the visible correction policy free to insert 紧急 only
   // as the non-destructive red #2 suggestion.
@@ -212,7 +238,14 @@ int main() {
   if (!WritePrivateProfileStringW(L"Phrases", L"dz", L"地址|电子邮箱", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Phrases", L"dizhi ", L" 地址 ", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Phrases", L"zg", L"中国", settings.c_str()) ||
+      !WritePrivateProfileStringW(L"Phrases", L"jf", L"爲什麽|後面", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Input", L"Mode", L"1", settings.c_str())) return 4;
+  const auto simplified_local_phrases = engine.Lookup(L"jf", gy::input_mode::kSimplified);
+  if (simplified_local_phrases.size() < 2 ||
+      simplified_local_phrases[0] != L"为什么" || simplified_local_phrases[1] != L"后面") {
+    std::wcerr << L"Local phrases bypassed the complete OpenCC simplified conversion.\n";
+    return 30;
+  }
   // TSF instances use the shared registry mode at runtime. Make the smoke test
   // explicit and restore the user's mode automatically on every return path.
   const ScopedInputMode traditional_mode(gy::input_mode::kTraditional);

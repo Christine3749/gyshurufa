@@ -93,6 +93,166 @@ std::wstring NormalizeCode(std::wstring value) {
   return value;
 }
 
+bool ReadUtf8File(const std::wstring& path, std::string* content) {
+  if (!content) return false;
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  const DWORD size = GetFileSize(file, nullptr);
+  if (size == INVALID_FILE_SIZE || size == 0 || size > 4 * 1024 * 1024) {
+    CloseHandle(file);
+    return false;
+  }
+  std::string bytes(size, '\0');
+  DWORD read = 0;
+  const bool ok = ReadFile(file, bytes.data(), size, &read, nullptr) && read == size;
+  CloseHandle(file);
+  if (!ok) return false;
+  if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
+      static_cast<unsigned char>(bytes[1]) == 0xBB &&
+      static_cast<unsigned char>(bytes[2]) == 0xBF) {
+    bytes.erase(0, 3);
+  }
+  *content = std::move(bytes);
+  return true;
+}
+
+std::wstring WideUtf8(std::string_view text) {
+  if (text.empty()) return {};
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+                                       static_cast<int>(text.size()), nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring result(static_cast<size_t>(size), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+                          static_cast<int>(text.size()), result.data(), size) != size) {
+    return {};
+  }
+  return result;
+}
+
+class OpenCcSimplifier final {
+ public:
+  bool Initialize(const std::wstring& opencc_directory) {
+    std::call_once(started_, [&] {
+      ready_ = LoadDictionary(JoinPath(opencc_directory, L"CJK_Compatibility_Ideographs.txt"),
+                              &compatibility_, &compatibility_max_) &&
+               LoadDictionary(JoinPath(opencc_directory, L"TSPhrases.txt"),
+                              &phrases_, &phrase_max_) &&
+               LoadDictionary(JoinPath(opencc_directory, L"TSCharactersExt.txt"),
+                              &characters_ext_, &characters_ext_max_) &&
+               LoadDictionary(JoinPath(opencc_directory, L"TSCharacters.txt"),
+                              &characters_, &characters_max_);
+    });
+    return ready_;
+  }
+
+  [[nodiscard]] bool Ready() const noexcept { return ready_; }
+
+  [[nodiscard]] std::wstring Convert(const std::wstring& value) const {
+    if (!ready_ || value.empty()) return value;
+    const std::wstring normalized = ConvertWithDictionary(
+        value, compatibility_, compatibility_max_);
+    std::wstring converted;
+    converted.reserve(normalized.size());
+    size_t offset = 0;
+    while (offset < normalized.size()) {
+      size_t consumed = 0;
+      if (AppendMatch(normalized, offset, phrases_, phrase_max_, &converted, &consumed) ||
+          AppendMatch(normalized, offset, characters_ext_, characters_ext_max_, &converted,
+                      &consumed) ||
+          AppendMatch(normalized, offset, characters_, characters_max_, &converted, &consumed)) {
+        offset += consumed;
+        continue;
+      }
+      converted.push_back(normalized[offset++]);
+    }
+    return converted;
+  }
+
+ private:
+  using Dictionary = std::unordered_map<std::wstring, std::wstring>;
+
+  static bool LoadDictionary(const std::wstring& path, Dictionary* dictionary,
+                             size_t* maximum_key_length) {
+    if (!dictionary || !maximum_key_length) return false;
+    std::string content;
+    if (!ReadUtf8File(path, &content)) return false;
+    size_t line_begin = 0;
+    while (line_begin <= content.size()) {
+      const size_t line_end = content.find('\n', line_begin);
+      std::string_view line(content.data() + line_begin,
+                            (line_end == std::string::npos ? content.size() : line_end) - line_begin);
+      if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+      if (!line.empty() && line.front() != '#') {
+        const size_t separator = line.find('\t');
+        if (separator != std::string_view::npos && separator > 0 && separator + 1 < line.size()) {
+          std::string_view raw_value = line.substr(separator + 1);
+          const size_t alternative = raw_value.find_first_of(" \t");
+          if (alternative != std::string_view::npos) raw_value = raw_value.substr(0, alternative);
+          const std::wstring key = WideUtf8(line.substr(0, separator));
+          const std::wstring value = WideUtf8(raw_value);
+          if (key.empty() || value.empty()) return false;
+          dictionary->insert_or_assign(key, value);
+          *maximum_key_length = std::max(*maximum_key_length, key.size());
+        }
+      }
+      if (line_end == std::string::npos) break;
+      line_begin = line_end + 1;
+    }
+    return !dictionary->empty() && *maximum_key_length > 0;
+  }
+
+  static bool AppendMatch(const std::wstring& input, size_t offset,
+                          const Dictionary& dictionary, size_t maximum_key_length,
+                          std::wstring* output, size_t* consumed) {
+    if (!output || !consumed || offset >= input.size()) return false;
+    size_t length = std::min(maximum_key_length, input.size() - offset);
+    while (length > 0) {
+      const auto match = dictionary.find(input.substr(offset, length));
+      if (match != dictionary.end()) {
+        output->append(match->second);
+        *consumed = length;
+        return true;
+      }
+      --length;
+    }
+    return false;
+  }
+
+  static std::wstring ConvertWithDictionary(const std::wstring& input,
+                                            const Dictionary& dictionary,
+                                            size_t maximum_key_length) {
+    std::wstring output;
+    output.reserve(input.size());
+    size_t offset = 0;
+    while (offset < input.size()) {
+      size_t consumed = 0;
+      if (AppendMatch(input, offset, dictionary, maximum_key_length, &output, &consumed)) {
+        offset += consumed;
+      } else {
+        output.push_back(input[offset++]);
+      }
+    }
+    return output;
+  }
+
+  std::once_flag started_;
+  bool ready_ = false;
+  Dictionary compatibility_;
+  Dictionary phrases_;
+  Dictionary characters_ext_;
+  Dictionary characters_;
+  size_t compatibility_max_ = 0;
+  size_t phrase_max_ = 0;
+  size_t characters_ext_max_ = 0;
+  size_t characters_max_ = 0;
+};
+
+OpenCcSimplifier& Simplifier() {
+  static OpenCcSimplifier simplifier;
+  return simplifier;
+}
+
 int ActiveInputMode() {
 #if defined(GY_CANDIDATE_LAB)
   // The visual candidate laboratory is a separate executable.  Its mode
@@ -239,6 +399,9 @@ std::vector<std::wstring> ReadIniSection(const std::wstring& path, const wchar_t
 
 std::wstring NormalizeOutputScript(const std::wstring& value, int input_mode) {
   if (value.empty() || input_mode == 2) return value;
+  if (input_mode == gy::input_mode::kSimplified && Simplifier().Ready()) {
+    return Simplifier().Convert(value);
+  }
   const DWORD flags = input_mode == 1 ? LCMAP_TRADITIONAL_CHINESE : LCMAP_SIMPLIFIED_CHINESE;
   // Conversion output must not depend on the Windows display-language setting.
   // A user running an English UI still expects 繁体 mode to emit 繁體字.
@@ -413,6 +576,10 @@ struct Runtime {
       }
       if (GetFileAttributesW(JoinPath(shared, L"luna_pinyin.schema.yaml").c_str()) == INVALID_FILE_ATTRIBUTES) {
         diagnostic = L"the bundled luna_pinyin schema is missing";
+        return;
+      }
+      if (!Simplifier().Initialize(JoinPath(shared, L"opencc"))) {
+        diagnostic = L"the bundled OpenCC simplified-Chinese data is incomplete";
         return;
       }
       const std::string shared_utf8 = Utf8(shared);

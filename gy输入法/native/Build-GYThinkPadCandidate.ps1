@@ -62,6 +62,7 @@ if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw "ThinkPad candi
 Copy-Item -LiteralPath $notes -Destination (Join-Path $payloadRoot 'release-notes.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $licensesRoot 'librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $licensesRoot 'rime-data-license.txt')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.opencc.txt') -Destination (Join-Path $licensesRoot 'opencc-Apache-2.0.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\english\LICENSE.frequency-words.txt') -Destination (Join-Path $licensesRoot 'english-frequency-words-CC-BY-SA-4.0.txt')
 
 foreach ($name in @(

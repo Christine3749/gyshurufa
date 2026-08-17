@@ -171,7 +171,15 @@ int wmain() {
     return 3;
   }
   Sleep(80);
-  const auto recovered = LookupAfterPrewarm(&engine, L"nihao", gy::input_mode::kSimplified, 2);
+  // Do not call Prewarm again. The first failed lookup must enqueue recovery
+  // outside the keystroke path, and later lookups must recover automatically.
+  std::vector<std::wstring> recovered;
+  const ULONGLONG recovery_deadline = GetTickCount64() + 4000;
+  do {
+    recovered = engine.Lookup(L"nihao", gy::input_mode::kSimplified, 2);
+    if (!recovered.empty()) break;
+    Sleep(20);
+  } while (GetTickCount64() < recovery_deadline);
   std::wstring version;
   gy::host::HostStatus status{};
   const bool version_ok = Send(gy::host::MessageType::Status, &version) &&

@@ -1,6 +1,6 @@
 param([switch]$LockAlreadyHeld)
 
-# Register redundant boot-bound activation tasks from native PowerShell.
+# Register the boot-bound activation task from native PowerShell.
 # Inno Setup is a 32-bit host on x64 Windows; delegating the actual schtasks
 # call here keeps the installer and ZIP paths on the same code path.
 
@@ -45,9 +45,9 @@ function Register-GYInputActivationTasksCore {
   $schtasks = Join-Path $env:WINDIR 'System32\schtasks.exe'
   $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
-  function Register-ActivationTask([string]$TaskName, [string]$Schedule) {
+  function Register-ActivationTask([string]$TaskName) {
     $taskArgs = '/Create /TN "' + $TaskName +
-                '" /SC ' + $Schedule + ' /DELAY 0000:20 /RU SYSTEM /RL HIGHEST /F /TR "' +
+                '" /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR "' +
                 $powershell + ' -NoProfile -ExecutionPolicy Bypass -File ' +
                 $finalizerPath + ' -StartupTrigger"'
     $result = Start-Process -FilePath $schtasks -ArgumentList $taskArgs -Wait -PassThru -WindowStyle Hidden
@@ -60,17 +60,16 @@ function Register-GYInputActivationTasksCore {
   }
 
   try {
-    # ONSTART remains primary. ONLOGON is a durable second chance for systems
-    # where an early startup task disappears or runs before Program Files is
-    # ready. Both call a finalizer whose BootId gate makes a same-boot logon
-    # unable to activate a newly staged TSF DLL.
+    # Activation must happen before the interactive shell can load the old TSF
+    # DLL. A delayed ONLOGON task races Explorer/SearchHost and can switch the
+    # registry after those clients already loaded the previous DLL. Keep one
+    # immediate SYSTEM ONSTART task; on failure it remains for the next boot.
     Remove-GYInputScheduledTask $taskName | Out-Null
+    # Remove the unsafe task name left by 0.12.11 and earlier candidates.
     Remove-GYInputScheduledTask $logonTaskName | Out-Null
-    Register-ActivationTask $taskName 'ONSTART'
-    Register-ActivationTask $logonTaskName 'ONLOGON'
-    if (-not (Wait-GYInputScheduledTask $taskName) -or
-        -not (Wait-GYInputScheduledTask $logonTaskName)) {
-      throw 'The redundant GY activation tasks failed the final readback.'
+    Register-ActivationTask $taskName
+    if (-not (Wait-GYInputScheduledTask $taskName)) {
+      throw 'The boot-bound GY activation task failed the final readback.'
     }
   } catch {
     Remove-GYInputScheduledTask $taskName | Out-Null
