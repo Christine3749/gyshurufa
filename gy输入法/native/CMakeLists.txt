@@ -74,6 +74,33 @@ foreach(GY_RIME_DATA_FILE IN LISTS GY_REQUIRED_RIME_DATA)
     message(FATAL_ERROR "The bundled luna-pinyin runtime is incomplete: missing ${GY_RIME_BUILD_ROOT}/${GY_RIME_DATA_FILE}.")
   endif()
 endforeach()
+set(GY_RIME_OPENCC_ROOT "${GY_RIME_RUNTIME_ROOT}/shared/opencc")
+set(GY_REQUIRED_OPENCC_DATA
+  "OPENCC_SOURCE.json"
+  "t2s.json"
+  "t2hk.json"
+  "t2tw.json"
+  "CJK_Compatibility_Ideographs.ocd2"
+  "CJK_Compatibility_Ideographs.txt"
+  "TSPhrases.ocd2"
+  "TSPhrases.txt"
+  "TSCharactersExt.ocd2"
+  "TSCharactersExt.txt"
+  "TSCharacters.ocd2"
+  "TSCharacters.txt"
+  "HKVariantsPhrases.ocd2"
+  "HKVariants.ocd2"
+  "TWVariantsPhrases.ocd2"
+  "TWVariants.ocd2"
+)
+foreach(GY_OPENCC_DATA_FILE IN LISTS GY_REQUIRED_OPENCC_DATA)
+  if(NOT EXISTS "${GY_RIME_OPENCC_ROOT}/${GY_OPENCC_DATA_FILE}")
+    message(FATAL_ERROR "The bundled OpenCC runtime is incomplete: missing ${GY_RIME_OPENCC_ROOT}/${GY_OPENCC_DATA_FILE}.")
+  endif()
+endforeach()
+if(NOT EXISTS "${GY_RIME_RUNTIME_ROOT}/LICENSE.opencc.txt")
+  message(FATAL_ERROR "The bundled OpenCC Apache-2.0 license is missing.")
+endif()
 
 # The TSF DLL remains a small, stable compatibility layer inside each target
 # app. It talks to GyImeHost over a local named pipe for lookup/ranking work.
@@ -112,14 +139,28 @@ set_target_properties(GyIme PROPERTIES
 
 # The updatable out-of-process engine. Later Host-only releases can update
 # dictionaries and ranking without asking users to restart Windows or apps.
+option(GY_ENGINE_ONLY_SMOKE
+  "Permit engine/policy smoke targets on builders without C++/WinRT; never use for product binaries"
+  OFF)
 get_filename_component(GY_PROGRAM_FILES_X86 "$ENV{ProgramFiles}/../Program Files (x86)" ABSOLUTE)
 file(GLOB GY_CPPWINRT_INCLUDE_CANDIDATES "${GY_PROGRAM_FILES_X86}/Windows Kits/10/Include/*/cppwinrt")
 list(SORT GY_CPPWINRT_INCLUDE_CANDIDATES ORDER DESCENDING)
 list(LENGTH GY_CPPWINRT_INCLUDE_CANDIDATES GY_CPPWINRT_INCLUDE_COUNT)
 if(GY_CPPWINRT_INCLUDE_COUNT LESS 1)
-  message(FATAL_ERROR "C++/WinRT headers are required for the Windows update notification.")
+  if(GY_ENGINE_ONLY_SMOKE)
+    set(GY_CPPWINRT_INCLUDE "")
+    message(WARNING "C++/WinRT is unavailable: only engine/policy smoke targets may be built.")
+  else()
+    message(FATAL_ERROR "C++/WinRT headers are required for product binaries.")
+  endif()
+else()
+  list(GET GY_CPPWINRT_INCLUDE_CANDIDATES 0 GY_CPPWINRT_INCLUDE)
 endif()
-list(GET GY_CPPWINRT_INCLUDE_CANDIDATES 0 GY_CPPWINRT_INCLUDE)
+if(GY_ENGINE_ONLY_SMOKE)
+  set(GY_UPDATE_NOTIFICATION_SOURCE src/UpdateNotificationStub.cpp)
+else()
+  set(GY_UPDATE_NOTIFICATION_SOURCE src/UpdateNotification.cpp)
+endif()
 add_executable(GyImeHost WIN32
   src/GyImeHost.cpp
   src/InputScopeProbe.cpp
@@ -131,7 +172,7 @@ add_executable(GyImeHost WIN32
   src/ClipboardHistory.cpp
   src/EnglishLexicon.cpp
   src/PinyinEngine.cpp
-  src/UpdateNotification.cpp
+  ${GY_UPDATE_NOTIFICATION_SOURCE}
   "${GY_HOST_VERSION_RESOURCE}"
 )
 target_compile_features(GyImeHost PRIVATE cxx_std_20)
@@ -140,6 +181,8 @@ target_include_directories(GyImeHost PRIVATE src "${GY_RIME_ROOT}/include" "${GY
 target_link_libraries(GyImeHost PRIVATE shell32 comdlg32 comctl32 advapi32 ole32 runtimeobject winhttp crypt32 gdiplus uiautomationcore "${GY_RIME_ROOT}/lib/rime.lib")
 if(MSVC)
   target_compile_options(GyImeHost PRIVATE /utf-8)
+elseif(MINGW)
+  target_link_options(GyImeHost PRIVATE -municode)
 endif()
 set_target_properties(GyImeHost PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 if(GY_BUILD_HOST_SMOKE)
@@ -198,7 +241,7 @@ if(GY_BUILD_HOST_SMOKE)
   )
   target_compile_features(GySettingsLab PRIVATE cxx_std_20)
   target_compile_definitions(GySettingsLab PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-                                                GY_RELEASE_VERSION="${GY_VERSION}")
+                                                GY_RELEASE_VERSION="${GY_VERSION}" GY_SETTINGS_LAB)
   target_include_directories(GySettingsLab PRIVATE src "${GY_CPPWINRT_INCLUDE}")
   target_link_libraries(GySettingsLab PRIVATE shell32 comdlg32 comctl32 advapi32 ole32 runtimeobject
                                               winhttp crypt32 gdiplus uiautomationcore)
@@ -314,6 +357,8 @@ if(GY_BUILD_HOST_SMOKE)
   target_link_libraries(GyHostedPinyinEngineSmoke PRIVATE advapi32)
   if(MSVC)
     target_compile_options(GyHostedPinyinEngineSmoke PRIVATE /W4 /permissive- /utf-8)
+  elseif(MINGW)
+    target_link_options(GyHostedPinyinEngineSmoke PRIVATE -municode)
   endif()
   set_target_properties(GyHostedPinyinEngineSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_test(NAME GyHostedPinyinEngineSmoke COMMAND $<TARGET_FILE:GyHostedPinyinEngineSmoke>)
@@ -331,6 +376,8 @@ if(GY_BUILD_HOST_SMOKE)
   target_link_libraries(GyHostedPinyinEngineDeadlineSmoke PRIVATE advapi32)
   if(MSVC)
     target_compile_options(GyHostedPinyinEngineDeadlineSmoke PRIVATE /W4 /permissive- /utf-8)
+  elseif(MINGW)
+    target_link_options(GyHostedPinyinEngineDeadlineSmoke PRIVATE -municode)
   endif()
   set_target_properties(GyHostedPinyinEngineDeadlineSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_test(NAME GyHostedPinyinEngineDeadlineSmoke COMMAND $<TARGET_FILE:GyHostedPinyinEngineDeadlineSmoke>)
@@ -355,6 +402,8 @@ if(GY_BUILD_HOST_SMOKE)
   target_include_directories(GyKeyPolicySmoke PRIVATE src)
   if(MSVC)
     target_compile_options(GyKeyPolicySmoke PRIVATE /W4 /permissive- /utf-8)
+  elseif(MINGW)
+    target_link_options(GyKeyPolicySmoke PRIVATE -municode)
   endif()
   set_target_properties(GyKeyPolicySmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   add_test(NAME GyKeyPolicySmoke COMMAND $<TARGET_FILE:GyKeyPolicySmoke>)

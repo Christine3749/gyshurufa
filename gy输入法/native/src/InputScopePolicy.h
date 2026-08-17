@@ -51,29 +51,19 @@ constexpr bool IsPasswordContext(InputScope scope) noexcept {
          scope == IS_ALPHANUMERIC_PIN_SET;
 }
 
-// Passwords and PINs are a hard privacy boundary. Unlike a URL or email
-// field, they cannot be temporarily switched back to Chinese composition by
-// the GY mode shortcut while they have focus.
+// Passwords and PINs are a hard privacy boundary within the broader direct
+// input policy.
 constexpr bool IsSensitiveDirectInput(InputScope scope) noexcept {
   return IsPasswordContext(scope);
 }
 
-constexpr bool AllowsManualChineseOverride(bool direct, bool sensitive) noexcept {
-  return direct && !sensitive;
-}
-
-// The temporary Shift override belongs to one semantic field, never to an
-// entire browser window. A tab can keep the same HWND and TSF context while
-// focus moves from an email field to a password field, so the override must
-// be cleared whenever the field classification changes.
-constexpr bool ShouldClearManualChineseOverrideOnScopeChange(bool previous_known,
-                                                              bool previous_direct,
-                                                              bool previous_sensitive,
-                                                              bool next_known,
-                                                              bool next_direct,
-                                                              bool next_sensitive) noexcept {
-  return previous_known != next_known || previous_direct != next_direct ||
-         previous_sensitive != next_sensitive;
+// A direct field is a hard capture boundary, not a temporary mode suggestion.
+// Browsers may publish IS_URL only after the first edit and may retain one
+// HWND/context for several semantic fields. Allowing a focus-local Chinese
+// override made an already-recognised address bar consume letters and display
+// candidates. Keep the policy explicit so every entry point applies it.
+constexpr bool IsHardDirectCaptureBoundary(bool direct) noexcept {
+  return direct;
 }
 
 // Browsers and Electron controls do not always publish a TSF InputScope.  In
@@ -111,9 +101,8 @@ inline bool IsEnglishAutomationHint(std::wstring_view hint) noexcept {
 }
 
 // Accessibility labels are metadata rather than typed text. Keep the hard
-// privacy subset narrower than the broader literal-input classifier so an
-// email or URL field can still use the temporary current-field Chinese
-// override when the user deliberately asks for it.
+// privacy subset narrower than the broader literal-input classifier because
+// sensitive fields additionally suppress any content-oriented recovery path.
 inline bool IsSensitiveAutomationHint(std::wstring_view hint) noexcept {
   auto contains_ascii = [hint](std::wstring_view token) {
     if (token.empty() || token.size() > hint.size()) return false;

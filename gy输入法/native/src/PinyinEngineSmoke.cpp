@@ -161,6 +161,32 @@ int main() {
     std::wcerr << L"Candidate quality gate returned a non-Han value.\n";
     return 10;
   }
+  const auto simplified_houmian = engine.LookupExact(L"houmian", gy::input_mode::kSimplified);
+  const auto simplified_weishenme = engine.LookupExact(L"weishenme", gy::input_mode::kSimplified);
+  const bool simplified_houmian_front =
+      !simplified_houmian.empty() && simplified_houmian.front() == L"后面";
+  const bool simplified_weishenme_front =
+      !simplified_weishenme.empty() && simplified_weishenme.front() == L"为什么";
+  const bool simplified_houmian_leak =
+      std::any_of(simplified_houmian.begin(), simplified_houmian.end(),
+                  [](const std::wstring& value) { return value.find(L'後') != std::wstring::npos; });
+  const bool simplified_weishenme_leak =
+      std::any_of(simplified_weishenme.begin(), simplified_weishenme.end(),
+                  [](const std::wstring& value) {
+                    return value.find(L'爲') != std::wstring::npos ||
+                           value.find(L'麽') != std::wstring::npos;
+                  });
+  if (!simplified_houmian_front || !simplified_weishenme_front ||
+      simplified_houmian_leak || simplified_weishenme_leak) {
+    std::wcerr << L"OpenCC did not keep the complete simplified candidate pool in simplified script. "
+               << L"houmian.size=" << simplified_houmian.size()
+               << L", houmian.front-ok=" << simplified_houmian_front
+               << L", houmian.leak=" << simplified_houmian_leak
+               << L", weishenme.size=" << simplified_weishenme.size()
+               << L", weishenme.front-ok=" << simplified_weishenme_front
+               << L", weishenme.leak=" << simplified_weishenme_leak << L"\n";
+    return 29;
+  }
   // A malformed but high-confidence code has ordinary fallback choices in
   // slot one, leaving the visible correction policy free to insert 紧急 only
   // as the non-destructive red #2 suggestion.
@@ -212,7 +238,14 @@ int main() {
   if (!WritePrivateProfileStringW(L"Phrases", L"dz", L"地址|电子邮箱", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Phrases", L"dizhi ", L" 地址 ", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Phrases", L"zg", L"中国", settings.c_str()) ||
+      !WritePrivateProfileStringW(L"Phrases", L"jf", L"爲什麽|後面", settings.c_str()) ||
       !WritePrivateProfileStringW(L"Input", L"Mode", L"1", settings.c_str())) return 4;
+  const auto simplified_local_phrases = engine.Lookup(L"jf", gy::input_mode::kSimplified);
+  if (simplified_local_phrases.size() < 2 ||
+      simplified_local_phrases[0] != L"为什么" || simplified_local_phrases[1] != L"后面") {
+    std::wcerr << L"Local phrases bypassed the complete OpenCC simplified conversion.\n";
+    return 30;
+  }
   // TSF instances use the shared registry mode at runtime. Make the smoke test
   // explicit and restore the user's mode automatically on every return path.
   const ScopedInputMode traditional_mode(gy::input_mode::kTraditional);
@@ -353,11 +386,28 @@ int main() {
   // Settings “clear learning” deletes LearningStats too.  Recreating the
   // engine after the two local sections are cleared must not resurrect a
   // three-confirmation preference from its legacy compatibility record.
+  WIN32_FILE_ATTRIBUTE_DATA before_clear{};
+  if (!GetFileAttributesExW(settings.c_str(), GetFileExInfoStandard, &before_clear)) {
+    std::wcerr << L"Could not fingerprint isolated learning storage.\n";
+    return 26;
+  }
   if (!WritePrivateProfileStringW(L"Learning", nullptr, nullptr, settings.c_str()) ||
       !WritePrivateProfileStringW(L"LearningStats", nullptr, nullptr, settings.c_str())) {
     std::wcerr << L"Could not clear isolated learning storage.\n";
     return 26;
   }
+  // Reproduce the Windows same-timestamp edge deterministically. A cache that
+  // checks only ftLastWriteTime would now keep the deleted preference.
+  HANDLE clear_settings_file = CreateFileW(settings.c_str(), FILE_WRITE_ATTRIBUTES,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (clear_settings_file == INVALID_HANDLE_VALUE ||
+      !SetFileTime(clear_settings_file, nullptr, nullptr, &before_clear.ftLastWriteTime)) {
+    if (clear_settings_file != INVALID_HANDLE_VALUE) CloseHandle(clear_settings_file);
+    std::wcerr << L"Could not reproduce the same-timestamp settings update.\n";
+    return 26;
+  }
+  CloseHandle(clear_settings_file);
   const auto cleared_summary = engine.GetLearningSummary(L"nihao", learned_candidate);
   const auto cleared_candidates = engine.Lookup(L"nihao", gy::input_mode::kTraditional);
   if (cleared_summary.count != 0 || cleared_summary.armed ||

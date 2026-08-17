@@ -122,13 +122,8 @@ int wmain() {
        !gy::input_scope::IsPasswordContext(IS_ALPHANUMERIC_PIN) ||
        !gy::input_scope::IsSensitiveDirectInput(IS_PASSWORD) ||
        gy::input_scope::IsSensitiveDirectInput(IS_URL) ||
-       !gy::input_scope::AllowsManualChineseOverride(true, false) ||
-       gy::input_scope::AllowsManualChineseOverride(true, true) ||
-       gy::input_scope::AllowsManualChineseOverride(false, false) ||
-       gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, true, false) ||
-       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, true, true) ||
-       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(true, true, false, true, false, false) ||
-       !gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(false, false, false, true, false, false) ||
+       !gy::input_scope::IsHardDirectCaptureBoundary(true) ||
+       gy::input_scope::IsHardDirectCaptureBoundary(false) ||
        gy::input_scope::IsPasswordContext(IS_EMAIL_SMTPEMAILADDRESS) ||
       gy::input_scope::IsDirectInput(IS_CHAT) ||
       gy::input_scope::IsDirectInput(IS_SEARCH)) return 16;

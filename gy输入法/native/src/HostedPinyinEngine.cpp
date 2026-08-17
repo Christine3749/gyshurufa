@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cwchar>
 #include <cwctype>
 #include <memory>
@@ -202,6 +203,38 @@ bool StartHost(const std::wstring& path, bool reconcile) {
   return true;
 }
 
+std::atomic<ULONGLONG> g_last_queued_recovery_tick{0};
+
+struct HostRecoveryRequest {
+  std::wstring path;
+};
+
+DWORD WINAPI RunQueuedHostRecovery(void* parameter) {
+  std::unique_ptr<HostRecoveryRequest> request(
+      static_cast<HostRecoveryRequest*>(parameter));
+  if (request) StartHost(request->path, true);
+  return 0;
+}
+
+bool QueueHostRecovery(const std::wstring& path) {
+  if (!FileExists(path)) return false;
+  const ULONGLONG now = GetTickCount64();
+  ULONGLONG previous = g_last_queued_recovery_tick.load(std::memory_order_relaxed);
+  do {
+    if (previous != 0 && now - previous < kHostRecoveryRequestCooldownMs) return true;
+  } while (!g_last_queued_recovery_tick.compare_exchange_weak(
+      previous, now, std::memory_order_relaxed));
+
+  auto request = std::make_unique<HostRecoveryRequest>();
+  request->path = path;
+  if (!QueueUserWorkItem(RunQueuedHostRecovery, request.get(), WT_EXECUTEDEFAULT)) {
+    g_last_queued_recovery_tick.store(0, std::memory_order_relaxed);
+    return false;
+  }
+  request.release();
+  return true;
+}
+
 
 bool IsExpectedHostStatus(const std::wstring& payload, const std::wstring& expected_version) {
   gy::host::HostStatus status{};
@@ -245,6 +278,11 @@ struct HostedPinyinEngine::Impl {
     return last_recovery_request_succeeded;
   }
 
+  bool ScheduleHostRecovery() {
+    if (!RegisteredHostMatchesCore()) return false;
+    return QueueHostRecovery(HostPath());
+  }
+
   bool EnsureHost() {
     // Fast path: a Host verified moments ago is almost certainly still alive.
     // Steady-state keystrokes skip the Status round trip entirely (Lookup and
@@ -264,21 +302,34 @@ struct HostedPinyinEngine::Impl {
       }
       // Never coordinate an update from a text-service callback.  An
       // installer or activation prewarm owns lifecycle changes; the active
-      // input path simply declines candidates until the expected Host is up.
-      diagnostic = L"GY Host version is changing";
+      // input path declines this lookup, but queues a background coordinator
+      // so a crashed/stale Host cannot leave every client permanently without
+      // candidates until the profile is reactivated.
+      if (ScheduleHostRecovery()) {
+        diagnostic = L"GY Host version reconciliation was queued";
+      } else {
+        diagnostic = L"GY Host version is changing";
+      }
       return false;
     }
     // Process creation and version hand-off are intentionally kept out of a
     // keystroke.  Prewarm() starts the Host on activation; a key during that
     // small window keeps its local preedit and retries next time.
-    diagnostic = L"GY Host is unavailable or starting";
+    if (ScheduleHostRecovery()) {
+      diagnostic = L"GY Host recovery was queued";
+    } else {
+      diagnostic = L"GY Host is unavailable or starting";
+    }
     return false;
   }
 
   bool SendUi(gy::host::MessageType type, const std::wstring& payload) {
     if (!EnsureHost()) return false;
     std::wstring ignored;
-    return SendRequest(type, payload, &ignored);
+    if (SendRequest(type, payload, &ignored)) return true;
+    last_verified_tick = 0;
+    ScheduleHostRecovery();
+    return false;
   }
 
   std::wstring module_directory;
@@ -311,6 +362,7 @@ std::vector<std::wstring> HostedPinyinEngine::Lookup(const std::wstring& pinyin,
       return response.candidates;
     }
     impl_->last_verified_tick = 0;
+    impl_->ScheduleHostRecovery();
   }
   impl_->diagnostic = L"GY Host unavailable or lookup snapshot mismatch";
   return {};
@@ -331,6 +383,7 @@ std::vector<std::wstring> HostedPinyinEngine::LookupExact(const std::wstring& pi
       return response.candidates;
     }
     impl_->last_verified_tick = 0;
+    impl_->ScheduleHostRecovery();
   }
   impl_->diagnostic = L"GY Host unavailable";
   return {};

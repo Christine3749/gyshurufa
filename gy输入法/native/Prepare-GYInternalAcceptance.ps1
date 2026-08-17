@@ -80,6 +80,7 @@ foreach ($name in @(
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $packageRoot 'LICENSES\librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $packageRoot 'LICENSES\rime-data-license.txt')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.opencc.txt') -Destination (Join-Path $packageRoot 'LICENSES\opencc-Apache-2.0.txt')
 Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $version -NoNewline -Encoding utf8
 
 $hashLines = Get-ChildItem -LiteralPath $payloadRoot -File -Recurse | ForEach-Object {

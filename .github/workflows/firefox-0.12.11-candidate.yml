@@ -1,10 +1,12 @@
-name: Firefox and activation recovery 0.12.11 candidate
+# Keep this historical path because GitHub only dispatches workflow files that
+# are registered on the default branch. This non-default branch builds 0.12.12.
+name: Windows TSF root-fix 0.12.12 candidate
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - codex/gy-0.12.11-runtime-host-supervision
+      - codex/gy-windows-tsf-root-fixes-after-0.12.11
 
 permissions:
   contents: read
@@ -22,22 +24,27 @@ jobs:
 
       - name: Configure trace and tests
         run: >-
-          cmake -S . -B build-ci-firefox-0.12.11 -G "Visual Studio 17 2022" -A x64
-          "-DGY_VERSION=0.12.11" -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
+          cmake -S . -B build-ci-windows-0.12.12 -G "Visual Studio 17 2022" -A x64
+          "-DGY_VERSION=0.12.12" -DGY_IME_TRACE=ON -DGY_REGISTRATION_TRACE=OFF
           -DGY_BUILD_HOST_SMOKE=ON
 
       - name: Build trace candidate and tests
-        run: cmake --build build-ci-firefox-0.12.11 --config Release --parallel 2
+        run: cmake --build build-ci-windows-0.12.12 --config Release --parallel 2
 
       - name: Run non-GUI automated tests
         run: >-
-          ctest --test-dir build-ci-firefox-0.12.11 -C Release --output-on-failure
+          ctest --test-dir build-ci-windows-0.12.12 -C Release --output-on-failure
           -E "Gy(InputScopeCacheSmoke|TsfActivationSmoke|InstallerSmoke|HostedPinyinEngineSmoke|PinyinEngineSmoke)"
 
-      - name: Run isolated stale-Host handoff integration
+      - name: Run isolated Host recovery and rapid-input burst
         run: >-
-          ctest --test-dir build-ci-firefox-0.12.11 -C Release --output-on-failure
+          ctest --test-dir build-ci-windows-0.12.12 -C Release --output-on-failure
           -R "^GyHostedPinyinEngineSmoke$"
+
+      - name: Run complete simplified-script engine smoke
+        run: >-
+          ctest --test-dir build-ci-windows-0.12.12 -C Release --output-on-failure
+          -R "^GyPinyinEngineSmoke$"
 
       - name: Run installer and activation recovery policy smoke
         run: ./installer/InstallerSmoke.ps1
@@ -48,18 +55,18 @@ jobs:
 
       - name: Build immutable ThinkPad trace candidate
         run: >-
-          ./Build-GYThinkPadCandidate.ps1 -Version 0.12.11 -EnableTsfTrace
+          ./Build-GYThinkPadCandidate.ps1 -Version 0.12.12 -EnableTsfTrace
 
       - name: Write source and artifact hash evidence
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           $paths = [ordered]@{
-            dll = 'build-thinkpad-0.12.11/bin/Release/GyIme.dll'
-            host = 'build-thinkpad-0.12.11/bin/Release/GyImeHost.exe'
-            health = 'build-thinkpad-0.12.11/bin/Release/GyImeHealth.exe'
-            setup = 'release/GYInputSetup-0.12.11.exe'
-            zip = 'release/GYInput-0.12.11.zip'
+            dll = 'build-thinkpad-0.12.12/bin/Release/GyIme.dll'
+            host = 'build-thinkpad-0.12.12/bin/Release/GyImeHost.exe'
+            health = 'build-thinkpad-0.12.12/bin/Release/GyImeHealth.exe'
+            setup = 'release/GYInputSetup-0.12.12.exe'
+            zip = 'release/GYInput-0.12.12.zip'
           }
           $artifacts = [ordered]@{}
           foreach ($entry in $paths.GetEnumerator()) {
@@ -73,23 +80,25 @@ jobs:
           }
           [ordered]@{
             sourceCommit = $env:SOURCE_COMMIT
-            sourceBranch = 'codex/gy-0.12.11-runtime-host-supervision'
-            version = '0.12.11'
+            sourceBranch = 'codex/gy-windows-tsf-root-fixes-after-0.12.11'
+            version = '0.12.12'
             tsfLifecycleTrace = $true
+            rapidHostLookups = 256
+            realApplications = 'pending-on-target'
             artifacts = $artifacts
-          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'release/firefox-0.12.11-hashes.json' -Encoding utf8
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'release/windows-0.12.12-hashes.json' -Encoding utf8
 
       - name: Upload candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: gy-firefox-0.12.11-${{ github.sha }}
+          name: gy-windows-0.12.12-${{ github.sha }}
           if-no-files-found: error
           retention-days: 7
           path: |
-            gy输入法/native/release/GYInputSetup-0.12.11.exe
-            gy输入法/native/release/GYInputSetup-0.12.11.exe.sha256
-            gy输入法/native/release/GYInput-0.12.11.zip
-            gy输入法/native/release/firefox-0.12.11-hashes.json
-            gy输入法/native/build-thinkpad-0.12.11/bin/Release/GyIme.dll
-            gy输入法/native/build-thinkpad-0.12.11/bin/Release/GyImeHost.exe
-            gy输入法/native/build-thinkpad-0.12.11/bin/Release/GyImeHealth.exe
+            gy输入法/native/release/GYInputSetup-0.12.12.exe
+            gy输入法/native/release/GYInputSetup-0.12.12.exe.sha256
+            gy输入法/native/release/GYInput-0.12.12.zip
+            gy输入法/native/release/windows-0.12.12-hashes.json
+            gy输入法/native/build-thinkpad-0.12.12/bin/Release/GyIme.dll
+            gy输入法/native/build-thinkpad-0.12.12/bin/Release/GyImeHost.exe
+            gy输入法/native/build-thinkpad-0.12.12/bin/Release/GyImeHealth.exe

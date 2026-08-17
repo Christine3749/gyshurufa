@@ -2,6 +2,7 @@
 **/.gradle/
 **/dist/
 **/build*/
+/.artifacts/
 **/release/
 /release/
 !/release/
@@ -58,12 +59,17 @@ gy输入法---官方网站/publish/
 # ignored by the broad rules above.
 !gy输入法/native/runtime/rime/AUTHORS.rime-data.txt
 !gy输入法/native/runtime/rime/LICENSE.librime.txt
+!gy输入法/native/runtime/rime/LICENSE.opencc.txt
 !gy输入法/native/runtime/rime/LICENSE.rime-data.txt
 !gy输入法/native/runtime/rime/include/
 !gy输入法/native/runtime/rime/include/rime_api.h
 !gy输入法/native/runtime/rime/lib/
 !gy输入法/native/runtime/rime/lib/rime.dll
 !gy输入法/native/runtime/rime/lib/rime.lib
+!gy输入法/native/runtime/rime/shared/opencc/
+!gy输入法/native/runtime/rime/shared/opencc/*.json
+!gy输入法/native/runtime/rime/shared/opencc/*.ocd2
+!gy输入法/native/runtime/rime/shared/opencc/*.txt
 
 # HS 项目工作副本（独立仓库，不入本仓）
 HS-halfsphere/

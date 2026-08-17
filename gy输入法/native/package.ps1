@@ -57,6 +57,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer/GYInputTransaction.ps
 Copy-Item -LiteralPath (Get-GYReleaseManifestPath) -Destination (Join-Path $packageRoot 'release.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.librime.txt') -Destination (Join-Path $packageRoot 'LICENSES\librime-BSD-3-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.rime-data.txt') -Destination (Join-Path $packageRoot 'LICENSES\rime-data-license.txt')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\rime\LICENSE.opencc.txt') -Destination (Join-Path $packageRoot 'LICENSES\opencc-Apache-2.0.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\english\LICENSE.frequency-words.txt') -Destination (Join-Path $packageRoot 'LICENSES\english-frequency-words-CC-BY-SA-4.0.txt')
 Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $Version -NoNewline -Encoding utf8
 

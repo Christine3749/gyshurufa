@@ -64,7 +64,10 @@ function Assert-GYReleaseVersion {
   param($Manifest, [string]$RequestedVersion)
   $version = [string]$Manifest.windows.version
   if ($RequestedVersion -and $RequestedVersion -ne $version) { throw "Requested Windows version $RequestedVersion does not match canonical Windows version $version." }
-  if ($version -in @('0.10.96', '0.10.97', '0.12.6', '0.12.7', '0.12.8', '0.12.9', '0.12.10')) { throw "Withdrawn GY version $version can never be packaged, signed, or published." }
+  if ($version -in @(
+      '0.10.96', '0.10.97',
+      '0.12.4', '0.12.5', '0.12.6', '0.12.7', '0.12.8', '0.12.9', '0.12.10', '0.12.11'
+    )) { throw "Withdrawn GY version $version can never be packaged, signed, or published." }
   return $version
 }
 

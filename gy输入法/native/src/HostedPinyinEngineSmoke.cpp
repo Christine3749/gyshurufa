@@ -171,7 +171,32 @@ int wmain() {
     return 3;
   }
   Sleep(80);
-  const auto recovered = LookupAfterPrewarm(&engine, L"nihao", gy::input_mode::kSimplified, 2);
+  // Do not call Prewarm again. The first failed lookup must enqueue recovery
+  // outside the keystroke path, and later lookups must recover automatically.
+  std::vector<std::wstring> recovered;
+  const ULONGLONG recovery_deadline = GetTickCount64() + 4000;
+  do {
+    recovered = engine.Lookup(L"nihao", gy::input_mode::kSimplified, 2);
+    if (!recovered.empty()) break;
+    Sleep(20);
+  } while (GetTickCount64() < recovery_deadline);
+
+  // A fast typist can issue many composition snapshots before the candidate
+  // window has visibly caught up. Exercise the same DLL-to-Host request path
+  // with changing generations; every response must remain usable and the Host
+  // must stay alive. This does not replace a real TSF/TextStore stress test.
+  constexpr unsigned kRapidLookupCount = 256;
+  for (unsigned index = 0; index < kRapidLookupCount; ++index) {
+    const wchar_t* query = index % 3 == 0 ? L"wo" : (index % 3 == 1 ? L"nihao" : L"weishenme");
+    const auto rapid = engine.Lookup(query, gy::input_mode::kSimplified,
+                                     static_cast<unsigned long long>(index + 100));
+    if (rapid.empty()) {
+      std::wcerr << L"Rapid lookup burst failed at request " << index
+                 << L": " << engine.Diagnostic() << L"\n";
+      Send(gy::host::MessageType::Shutdown);
+      return 8;
+    }
+  }
   std::wstring version;
   gy::host::HostStatus status{};
   const bool version_ok = Send(gy::host::MessageType::Status, &version) &&

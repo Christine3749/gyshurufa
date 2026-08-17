@@ -1,0 +1,5 @@
+# Preserve vendored OpenCC data byte-for-byte so the hashes recorded in
+# OPENCC_SOURCE.json remain valid on Windows checkouts with core.autocrlf=true.
+gy输入法/native/runtime/rime/shared/opencc/*.json binary
+gy输入法/native/runtime/rime/shared/opencc/*.ocd2 binary
+gy输入法/native/runtime/rime/shared/opencc/*.txt -text

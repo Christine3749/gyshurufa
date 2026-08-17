@@ -344,7 +344,6 @@ public:
       input_scope_known_ = false;
       input_scope_direct_ = false;
       input_scope_sensitive_ = false;
-      input_scope_manual_override_ = false;
     } else {
       RequestInputScopeRefresh();
       SynchronizeInputMode(false);
@@ -368,8 +367,7 @@ public:
       return S_OK;
     }
     RefreshInputScopeForKey(context, key);
-    const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) {
+    if (EffectiveInputScopeDirect()) {
       *eaten = FALSE;
       TraceKey(L"key.test.pass.direct", context, key, current_key_sequence_);
       return S_OK;
@@ -390,8 +388,7 @@ public:
       return S_OK;
     }
     RefreshInputScopeForKey(context, key);
-    const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) { *eaten = FALSE; return S_OK; }
+    if (EffectiveInputScopeDirect()) { *eaten = FALSE; return S_OK; }
     // A focus switch can leave a cached Ctrl/Alt/Win state behind. Reconcile
     // before deciding whether a plain Shift release is the GY mode toggle.
     ReconcileModifierState();
@@ -409,8 +406,7 @@ public:
       return S_OK;
     }
     RefreshInputScopeForKey(context, key);
-    const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) {
+    if (EffectiveInputScopeDirect()) {
       TraceKey(L"key.down.pass.direct", context, key, current_key_sequence_);
       return S_OK;
     }
@@ -651,8 +647,7 @@ public:
       EnterNativeSensitiveDirectMode();
       return S_OK;
     }
-    const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) return S_OK;
+    if (EffectiveInputScopeDirect()) return S_OK;
     // Use real keyboard state so a return from another app cannot suppress a
     // bare-Shift Chinese/English toggle.
     ReconcileModifierState();
@@ -848,6 +843,32 @@ public:
                TF_INVALID_EDIT_COOKIE, mode_generation_, key_sequence,
                end_edit_depth_, L"key-category-only");
   }
+  static unsigned long long EncodeRangeComparison(HRESULT hr, LONG comparison) noexcept {
+    // ITfRange comparison is -1 / 0 / +1. Keep the trace unsigned and compact:
+    // 0=before, 1=equal, 2=after, 3=unavailable. No document text is read.
+    return SUCCEEDED(hr) && comparison >= -1 && comparison <= 1
+        ? static_cast<unsigned long long>(comparison + 1)
+        : 3ull;
+  }
+  void TraceRangeRelation(const wchar_t* event, ITfContext* edit_context,
+                          ITfRange* subject, ITfRange* composition_range,
+                          TfEditCookie cookie) const {
+    LONG start_to_composition_end = 0;
+    LONG end_to_composition_end = 0;
+    const HRESULT start_hr = subject && composition_range
+        ? subject->CompareStart(cookie, composition_range, TF_ANCHOR_END,
+                                &start_to_composition_end)
+        : E_INVALIDARG;
+    const HRESULT end_hr = subject && composition_range
+        ? subject->CompareEnd(cookie, composition_range, TF_ANCHOR_END,
+                              &end_to_composition_end)
+        : E_INVALIDARG;
+    TraceState(event, L"anchors-vs-composition-end", start_hr, end_hr,
+               edit_context, subject, cookie, mode_generation_,
+               EncodeRangeComparison(start_hr, start_to_composition_end),
+               EncodeRangeComparison(end_hr, end_to_composition_end),
+               L"anchor-only:0=before,1=equal,2=after,3=unavailable");
+  }
   static bool IsDown(int virtual_key) { return (GetKeyState(virtual_key) & 0x8000) != 0; }
   static bool IsPhysicallyDown(int virtual_key) { return (GetAsyncKeyState(virtual_key) & 0x8000) != 0; }
   void UpdateModifierState(WPARAM key, bool down) {
@@ -985,17 +1006,13 @@ public:
     selected_ = page_start_;
   }
   void ToggleEnglishMode() {
-    // A literal field is an overlay, not a global mode write. A deliberate
-    // Shift in a non-sensitive URL/email/path field may temporarily restore
-    // Chinese for this focus; Shift again returns to direct EN. Password and
-    // PIN fields remain a hard direct-input boundary.
+    // Every direct field is a hard capture boundary. A keyboard or Host UI
+    // action must not turn the current URL/email/path/account/number/password
+    // field into a Chinese composition surface. The saved global mode is left
+    // untouched and will be restored in the next normal text field.
     if (input_scope_direct_) {
-      if (input_scope_sensitive_) {
-        Trace(L"mode.toggle.sensitive-ignored");
-        return;
-      }
-      input_scope_manual_override_ = !input_scope_manual_override_;
-      ApplyInputMode(input_scope_manual_override_ ? chinese_mode_ : gy::input_mode::kEnglish, true);
+      Trace(input_scope_sensitive_ ? L"mode.toggle.sensitive-ignored"
+                                   : L"mode.toggle.direct-ignored");
       return;
     }
     const int next_mode = gy::input_mode::IsEnglish(input_mode_) ? chinese_mode_ : gy::input_mode::kEnglish;
@@ -1110,7 +1127,6 @@ public:
     input_scope_known_ = true;
     input_scope_direct_ = true;
     input_scope_sensitive_ = true;
-    input_scope_manual_override_ = false;
     input_scope_hwnd_ = CurrentFocusedInputWindow();
     input_scope_probe_count_ = 0;
     ApplyInputMode(gy::input_mode::kEnglish, false);
@@ -1174,11 +1190,6 @@ public:
                (known ? 1ull : 0ull) | (sensitive ? 2ull : 0ull));
     const bool changed = input_scope_known_ != known || input_scope_direct_ != direct ||
                          input_scope_sensitive_ != sensitive;
-    if (gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(
-            input_scope_known_, input_scope_direct_, input_scope_sensitive_,
-            known, direct, sensitive)) {
-      input_scope_manual_override_ = false;
-    }
     input_scope_known_ = known;
     input_scope_direct_ = direct;
     input_scope_sensitive_ = sensitive;
@@ -1207,7 +1218,6 @@ public:
     const bool focus_changed = input_scope_hwnd_ != focused;
     if (focus_changed) {
       input_scope_probe_count_ = 0;
-      input_scope_manual_override_ = false;
     }
 
     const InputScopeResult scope = ReadInputScope(context, cookie);
@@ -1396,7 +1406,6 @@ public:
     input_scope_known_ = false;
     input_scope_direct_ = false;
     input_scope_sensitive_ = false;
-    input_scope_manual_override_ = false;
     input_scope_hwnd_ = nullptr;
     input_scope_probe_count_ = 0;
     last_commit_was_ascii_ = false;
@@ -1479,6 +1488,17 @@ public:
                                         static_cast<ITfCompositionSink*>(this), &composition_);
       }
       Trace(L"composition.start", hr);
+      if (SUCCEEDED(hr) && composition_ && composition_range) {
+        // Microsoft SampleIME establishes the selection on the insertion
+        // range before the edit lock is released. Some XAML/CoreText stores
+        // use that selection to establish the composition anchors' gravity.
+        TF_SELECTION start_selection{};
+        start_selection.range = composition_range;
+        start_selection.style.ase = TF_AE_NONE;
+        start_selection.style.fInterimChar = FALSE;
+        Trace(L"composition.start-selection",
+              edit_context->SetSelection(cookie, 1, &start_selection));
+      }
       if (composer) composer->Release();
       if (composition_range) composition_range->Release();
       if (inserter) inserter->Release();
@@ -1495,15 +1515,45 @@ public:
       Trace(L"composition.set-text", hr);
       if (SUCCEEDED(hr)) {
         // Measure the candidate anchor on the full composition range first,
-        // then pin the caret to the composition end: XAML hosts (Win11
-        // Notepad) leave the caret at the composition start after SetText.
+        // then pin the caret with a clone. Collapsing the composition range
+        // object itself mutates its anchors and is not equivalent to moving
+        // the selection; XAML/CoreText stores can then apply the next SetText
+        // at the stale anchor and display keystrokes in reverse order.
         ShowCandidates(edit_context, range, cookie);
-        range->Collapse(cookie, TF_ANCHOR_END);
-        TF_SELECTION selection{};
-        selection.range = range;
-        selection.style.ase = TF_AE_NONE;
-        selection.style.fInterimChar = FALSE;
-        Trace(L"composition.selection", edit_context->SetSelection(cookie, 1, &selection));
+        ITfRange* caret_range = nullptr;
+        const HRESULT clone_hr = range->Clone(&caret_range);
+        Trace(L"composition.caret-clone", clone_hr);
+        if (SUCCEEDED(clone_hr) && caret_range) {
+          const HRESULT collapse_hr = caret_range->Collapse(cookie, TF_ANCHOR_END);
+          Trace(L"composition.caret-collapse", collapse_hr);
+          if (SUCCEEDED(collapse_hr)) {
+            TraceRangeRelation(L"composition.caret-before-selection", edit_context,
+                               caret_range, range, cookie);
+            TF_SELECTION selection{};
+            selection.range = caret_range;
+            selection.style.ase = TF_AE_NONE;
+            selection.style.fInterimChar = FALSE;
+            const HRESULT selection_hr = edit_context->SetSelection(cookie, 1, &selection);
+            Trace(L"composition.selection", selection_hr);
+            if (SUCCEEDED(selection_hr)) {
+              TF_SELECTION observed{};
+              ULONG fetched = 0;
+              const HRESULT observed_hr = edit_context->GetSelection(
+                  cookie, TF_DEFAULT_SELECTION, 1, &observed, &fetched);
+              TraceState(L"composition.selection-readback", L"range-count-only",
+                         observed_hr, observed_hr, edit_context,
+                         fetched == 1 ? observed.range : nullptr, cookie,
+                         mode_generation_, fetched, 0,
+                         L"no-text-read");
+              if (SUCCEEDED(observed_hr) && fetched == 1 && observed.range) {
+                TraceRangeRelation(L"composition.selection-after-set", edit_context,
+                                   observed.range, range, cookie);
+              }
+              if (observed.range) observed.range->Release();
+            }
+          }
+          caret_range->Release();
+        }
       }
       range->Release();
     }
@@ -1892,13 +1942,10 @@ public:
         &candidates_, composition_text_, input_mode_);
   }
   bool EffectiveInputScopeDirect() const noexcept {
-    return input_scope_direct_ && !input_scope_manual_override_;
-  }
-  bool AllowsAutoDirectChineseOverride() const noexcept {
-    return gy::input_scope::AllowsManualChineseOverride(input_scope_direct_, input_scope_sensitive_);
+    return gy::input_scope::IsHardDirectCaptureBoundary(input_scope_direct_);
   }
   struct ExplicitLearn { std::wstring pinyin; std::wstring candidate; int input_mode = -1; bool active = false; };
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; gy::input_scope_cache::Reader input_scope_cache_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; gy::english_candidates::CandidateSet english_candidate_set_; std::vector<unsigned> correction_indices_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool chinese_grid_open_ = false; bool english_candidate_focus_ = false; bool english_list_open_ = false; bool english_assist_active_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; bool input_scope_sensitive_ = false; bool input_scope_manual_override_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; bool numeric_fragment_active_ = false; ExplicitLearn last_explicit_learn_{}; unsigned long long mode_generation_ = 0; unsigned long long candidate_input_generation_ = 0; unsigned long long key_event_sequence_ = 0; unsigned long long current_key_sequence_ = 0; unsigned end_edit_depth_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; gy::input_scope_cache::Reader input_scope_cache_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; gy::english_candidates::CandidateSet english_candidate_set_; std::vector<unsigned> correction_indices_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool chinese_grid_open_ = false; bool english_candidate_focus_ = false; bool english_list_open_ = false; bool english_assist_active_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; bool input_scope_sensitive_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; bool numeric_fragment_active_ = false; ExplicitLearn last_explicit_learn_{}; unsigned long long mode_generation_ = 0; unsigned long long candidate_input_generation_ = 0; unsigned long long key_event_sequence_ = 0; unsigned long long current_key_sequence_ = 0; unsigned end_edit_depth_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 
