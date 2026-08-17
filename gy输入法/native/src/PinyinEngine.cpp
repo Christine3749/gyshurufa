@@ -450,6 +450,7 @@ constexpr size_t kCandidatePoolLimit = gy::candidate_pool::MaximumSize();
 struct LocalSettingsCache {
   std::wstring path;
   FILETIME last_write{};
+  std::uint64_t file_size = 0;
   bool loaded = false;
   std::unordered_map<std::wstring, std::vector<std::wstring>> phrases;
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, unsigned>> learning;
@@ -463,16 +464,25 @@ struct LocalSettingsCache {
     const std::wstring current_path = SettingsPath();
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
     FILETIME current_write{};
+    std::uint64_t current_size = 0;
     if (!current_path.empty() && GetFileAttributesExW(current_path.c_str(), GetFileExInfoStandard, &attributes)) {
       current_write = attributes.ftLastWriteTime;
+      current_size = (static_cast<std::uint64_t>(attributes.nFileSizeHigh) << 32) |
+                     attributes.nFileSizeLow;
     }
-    if (loaded && current_path == path && CompareFileTime(&current_write, &last_write) == 0) {
+    // Windows profile writes can occur more than once within one filesystem
+    // timestamp tick. Comparing only ftLastWriteTime left deleted learning
+    // records alive in this process until some unrelated later write. Section
+    // deletion changes the byte length, so retain both pieces of identity.
+    if (loaded && current_path == path && current_size == file_size &&
+        CompareFileTime(&current_write, &last_write) == 0) {
       return;
     }
 
     loaded = true;
     path = current_path;
     last_write = current_write;
+    file_size = current_size;
     phrases.clear();
     learning.clear();
     learning_stats.clear();
@@ -955,4 +965,8 @@ PinyinEngine::LearningSummary PinyinEngine::GetLearningSummary(const std::wstrin
   summary.armed = IsPromotionArmed(stat);
   summary.tier = LearningTierFor(stat);
   return summary;
+}
+
+void PinyinEngine::InvalidateLocalSettingsCache() {
+  SettingsCache().Invalidate();
 }

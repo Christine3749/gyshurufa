@@ -56,6 +56,15 @@
 
 主要位置：`Finalize-GYClientReload.ps1`、`Register-GYInputActivationTasks.ps1`、`HostedPinyinEngine.cpp`和其 smoke test。
 
+### 2.5 快速连续写入后旧候选残留：修正本地学习缓存身份
+
+- 首次 0.12.12 MSVC 候选构建成功编译了产品 DLL，但发布流水线在完整拼音引擎测试处停止，没有生成安装包。
+- 失败原因是本地学习缓存只比较 `settings.ini` 的最后写入时间。Windows 可在同一文件系统时间片内连续写入并删除两个 INI section，时间戳不变时 Host 会继续使用已经删除的旧候选快照。
+- 缓存身份现在同时比较文件时间和字节大小；设置窗口保存短语、清除学习或导入备份后还会在同一进程内显式失效缓存。
+- 回归测试在清除学习后故意把文件时间恢复成清除前的值，证明不能再靠时间戳侥幸通过；旧候选必须立即消失。
+
+主要位置：`PinyinEngine.cpp`、`PinyinEngine.h`、`SettingsWindow.cpp`和`PinyinEngineSmoke.cpp`。
+
 ## 3. 验证结果
 
 ### 已通过
@@ -68,16 +77,17 @@
 - `GyEnglishInteractionPolicySmoke`：PASS。
 - `GyEnglishLexiconSyncSmoke`：PASS。
 - `GyPinyinEngineSmoke`：PASS，包含完整简体候选池和本地短语转换断言。
+- 同时间戳清除学习缓存回归：PASS。
 - `InstallerSmoke.ps1`：PASS，包含无 ONLOGON/无 DELAY、加载客户端拒绝切换、OpenCC 包含和日志隐私断言。
 - `git diff --check`：PASS。
 
 ### 构建环境限制
 
-本机没有 Visual Studio/MSVC 和 C++/WinRT SDK。MinGW 的 `msctf.h` 缺少 `ITfTextInputProcessorEx`和相关 TSF 常量，因此无法用该工具链编译产品 `GyIme.dll` 或 `GyTsfActivationSmoke`。这是工具链缺失，不是把相关测试记为通过的理由。独立引擎、策略、Host、健康和安装脚本测试使用 MinGW/Ninja 完成。
+本机没有 Visual Studio/MSVC 和 C++/WinRT SDK。MinGW 的 `msctf.h` 缺少 `ITfTextInputProcessorEx`和相关 TSF 常量，因此无法用该工具链编译产品 `GyIme.dll` 或 `GyTsfActivationSmoke`。这是工具链缺失，不是把相关测试记为通过的理由。独立引擎、策略、Host、健康和安装脚本测试使用 MinGW/Ninja 完成。GitHub Windows/MSVC 首次 0.12.12 运行已成功编译产品 DLL，但随后由上述学习缓存回归测试拦截，因此没有把该次运行冒充成可安装候选。
 
 ### 尚未通过的发布门槛
 
-1. 在有完整 MSVC/Windows SDK/C++/WinRT 的构建机生成新的 `GyIme.dll`、Host 和 Health。
+1. 用修正缓存身份后的提交重新跑完整 MSVC/Windows SDK/C++/WinRT 流水线，所有测试通过后才生成新的 `GyIme.dll`、Host、Health 和安装包。
 2. 使用新的、从未发布过的候选版本号，不覆盖 0.12.11 或任何旧版。
 3. 建立源码提交 → 编译 DLL/Host/Health → ZIP/安装包 → ThinkPad 实际安装文件 → 目标进程实际加载 DLL 的完整 SHA-256 链。
 4. Firefox 真实地址栏连续新建至少 20 个标签：首字母不丢失/不重复，后续字母连续，无中文候选，无文本生命周期日志保存哈希。

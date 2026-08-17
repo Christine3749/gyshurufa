@@ -46,6 +46,11 @@ public:
   bool SetLearningPinned(const std::wstring& pinyin, const std::wstring& candidate, bool pinned) const;
   [[nodiscard]] LearningSummary GetLearningSummary(const std::wstring& pinyin,
                                                    const std::wstring& candidate) const;
+  // SettingsWindow and other in-process writers call this after replacing or
+  // clearing settings.ini so the Host never serves one more lookup from the
+  // previous snapshot. Out-of-process writers are still detected by the file
+  // fingerprint in LocalSettingsCache.
+  static void InvalidateLocalSettingsCache();
   [[nodiscard]] bool IsReady() const;
   [[nodiscard]] std::wstring Diagnostic() const;
 
