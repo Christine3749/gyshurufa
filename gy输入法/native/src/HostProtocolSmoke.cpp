@@ -100,14 +100,30 @@ int wmain() {
   if (!gy::host::DecodeStatus(gy::host::EncodeStatus(source_status), &decoded_status) ||
       decoded_status.host_version != source_status.host_version ||
       decoded_status.protocol_version != source_status.protocol_version ||
-      decoded_status.release_version != source_status.release_version) {
+      decoded_status.release_version != source_status.release_version ||
+      !gy::host::MatchesHostIdentity(decoded_status, L"0.9.39")) {
     std::wcerr << L"Structured host status round-trip failed.\n";
     return 4;
   }
 
+  gy::host::HostStatus wrong_host = decoded_status;
+  wrong_host.host_version = L"0.9.38";
+  gy::host::HostStatus wrong_release = decoded_status;
+  wrong_release.release_version = L"0.9.38";
+  gy::host::HostStatus wrong_protocol = decoded_status;
+  ++wrong_protocol.protocol_version;
+  if (gy::host::MatchesHostIdentity(decoded_status, L"") ||
+      gy::host::MatchesHostIdentity(wrong_host, L"0.9.39") ||
+      gy::host::MatchesHostIdentity(wrong_release, L"0.9.39") ||
+      gy::host::MatchesHostIdentity(wrong_protocol, L"0.9.39")) {
+    std::wcerr << L"A missing or mixed-version Host identity was accepted.\n";
+    return 12;
+  }
+
   gy::host::HostStatus legacy_status{};
   if (!gy::host::DecodeStatus(L"0.9.38", &legacy_status) ||
-      legacy_status.host_version != L"0.9.38" || legacy_status.protocol_version != 1) {
+      legacy_status.host_version != L"0.9.38" || legacy_status.protocol_version != 1 ||
+      gy::host::MatchesHostIdentity(legacy_status, L"0.9.38")) {
     std::wcerr << L"Legacy host status compatibility failed.\n";
     return 5;
   }

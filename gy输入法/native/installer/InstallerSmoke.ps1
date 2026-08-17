@@ -29,6 +29,7 @@ $releaseState = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYReleaseState
 $keepHealth = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYKeepHealth.ps1')
 $transaction = Assert-ScriptParses (Join-Path $PSScriptRoot 'GYInputTransaction.ps1')
 $taskRegistrar = Assert-ScriptParses (Join-Path $PSScriptRoot 'Register-GYInputActivationTasks.ps1')
+$registrationRecovery = Assert-ScriptParses (Join-Path $PSScriptRoot 'Recover-GYIncompleteRegistration.ps1')
 $validator = Assert-ScriptParses (Join-Path $PSScriptRoot 'Validate-GYInput.ps1')
 $clientProbe = Assert-ScriptParses (Join-Path $PSScriptRoot 'Get-GYLoadedClientState.ps1')
 $keyboard = Assert-ScriptParses (Join-Path $PSScriptRoot 'Set-GYKeyboard.ps1')
@@ -50,6 +51,7 @@ Assert-Contains $repair 'Start-Process -FilePath (Get-X64RegSvr32)' 'One-click r
 Assert-Contains $repair 'Remove-StaleTransientHelpers' 'One-click repair does not clean expired staged helper files.'
 Assert-Contains $repair 'Prune-GYOldVersions.ps1' 'One-click repair does not invoke the audited old-version cleaner.'
 Assert-Contains $repair 'Write-RecoveryReport' 'One-click repair does not persist a durable recovery result.'
+Assert-Contains $repair 'Remove-LegacyVersionPinnedHostStartup' 'One-click repair does not remove the obsolete version-pinned Host startup value.'
 Assert-Contains $legacyInstallMigration 'GYInput-(\d+\.\d+\.\d+)_is1' 'Legacy installed-app migration does not target versioned Inno entries.'
 Assert-Contains $legacyInstallMigration '$expectedDisplayName' 'Legacy installed-app migration does not verify the product name before removal.'
 Assert-Contains $legacyInstallMigration '0x8F93' 'Legacy installed-app migration does not preserve the exact GY product name.'
@@ -84,13 +86,15 @@ Assert-Contains $clientFinalizer 'Previous GY rollback target' 'Finalizer does n
 Assert-Contains $clientFinalizer 'Assert-RegisteredGyState' 'Finalizer does not read back both DLL and Host registration.'
 Assert-Contains $clientFinalizer 'Write-VerifiedActiveState' 'Finalizer does not persist only a registry-verified active state.'
 Assert-Contains $clientFinalizer '$registrationChanged' 'Finalizer may restore a prior registration even when it did not change the registry.'
-Assert-Contains $clientFinalizer '$StartupTrigger' 'Finalizer does not require its boot-only scheduled-task trigger.'
+Assert-Contains $clientFinalizer '$StartupTrigger' 'Finalizer does not require its boot-bound scheduled-task trigger.'
 Assert-Contains $clientFinalizer 'Get-CurrentBootId' 'Finalizer does not prove that Windows restarted after staging.'
 Assert-Contains $clientFinalizer 'Assert-NoRegisteredGyState' 'Finalizer does not safely handle a first installation.'
 $finalizerWaitCount = [regex]::Matches($clientFinalizer, '\$mutex\.WaitOne\(0\)').Count
 Assert-Contains $taskRegistrar 'Wait-GYInputScheduledTask' 'Activation task registrar does not read back task persistence.'
-Assert-Contains $taskRegistrar '/SC ONSTART' 'Activation task registrar does not create an ONSTART task.'
-if ($taskRegistrar -match '/SC\s+ONLOGON') { throw 'Activation task registrar must never create an ONLOGON activation task.' }
+Assert-Contains $taskRegistrar "Register-ActivationTask `$taskName 'ONSTART'" 'Activation task registrar does not create its primary ONSTART task.'
+Assert-Contains $taskRegistrar "Register-ActivationTask `$logonTaskName 'ONLOGON'" 'Activation task registrar lacks a redundant ONLOGON recovery task.'
+Assert-Contains $taskRegistrar '/DELAY 0000:20' 'Activation tasks can run before the system volume and pending state settle.'
+Assert-Contains $clientFinalizer "`$logonTaskName = 'GYInput\ActivatePendingLogon'" 'Finalizer cannot remove the redundant activation task after success.'
 Assert-Contains $taskRegistrar 'Remove-StaleTransientHelpers' 'Task registrar does not clean unneeded one-shot helper files.'
 if ($finalizerWaitCount -ne 2) { throw "Finalizer must acquire the shared mutex for activation and guarded cleanup; found $finalizerWaitCount WaitOne calls." }
 if ($installer -match '\$host\b' -or $rollback -match '\$host\b') { throw 'Installer scripts must not assign PowerShell automatic variable Host.' }
@@ -122,6 +126,8 @@ Assert-Contains $installer 'Require-PendingActivationComplete' 'ZIP installer ca
 Assert-Contains $installer 'stagedBootId' 'ZIP installer does not bind activation to a later Windows boot.'
 if ($installer -match 'Try-FinalizePendingActivation') { throw 'ZIP installer must never activate a staged TSF release in the current session.' }
 Assert-Contains $validator 'Get-GyCoreVersionFromPath' 'Post-install validation does not derive the registered TSF version.'
+Assert-Contains $validator 'Get-RunningGyHosts' 'Post-install validation does not inspect the actual running Host version.'
+Assert-Contains $validator "-Name 'GYInputHost'" 'Post-install validation does not reject the obsolete version-pinned Host startup value.'
 Assert-Contains $validator 'Host Logo 存在' 'Post-install validation does not verify the Host Logo.'
 Assert-Contains $validator 'TSF Logo 存在' 'Post-install validation does not verify the TSF Logo.'
 Assert-Contains $rollback "action = 'rollback'" 'Rollback does not persist an explicit recovery action.'
@@ -161,12 +167,17 @@ Assert-Contains $keyboard 'RequireActiveVersion' 'Keyboard helper can expose GY 
 Assert-Contains $keyboard 'Software\Microsoft\Windows\CurrentVersion\Run' 'Keyboard completion is not durable across a slow boot activation.'
 Assert-Contains $keyboard 'Clear-DurableKeyboardCompletion' 'Keyboard completion cannot remove its persistent retry after verified success.'
 Assert-Contains $keyboard '$updatedTips -contains $tipId' 'Keyboard completion does not read back the current user TIP before declaring success.'
+Assert-Contains $keyboard 'Remove-LegacyVersionPinnedHostStartup' 'Keyboard completion does not remove the obsolete version-pinned Host startup value.'
+Assert-Contains $keyboard 'Reconcile-CurrentUserGyHost' 'Keyboard completion does not reconcile the actual Host after reboot.'
+Assert-Contains $keyboard 'Test-ManagedGyHostPath $processPath' 'Host reconciliation can terminate an unmanaged process.'
+Assert-Contains $keyboard 'Stop-Process -Id $process.Id' 'Host reconciliation cannot replace a verified obsolete managed Host.'
 if ($keyboard.Contains('CurrentVersion\RunOnce')) { throw 'Keyboard completion must not use lossy RunOnce retry semantics.' }
 if ($installer -match '(?im)^\s*Stop-Process\b' -or
-    $repair -match '(?im)^\s*Stop-Process\b' -or
-    $keyboard -match '(?im)^\s*Stop-Process\b') {
-  throw 'Install, repair, and keyboard maintenance must never terminate a process.'
+    $repair -match '(?im)^\s*Stop-Process\b') {
+  throw 'Install and repair must never terminate a process.'
 }
+$keyboardStopCount = [regex]::Matches($keyboard, '(?im)^\s*Stop-Process\s+-Id\s+\$process\.Id\b').Count
+if ($keyboardStopCount -ne 1) { throw "Post-reboot Host reconciliation must contain exactly one scoped Host stop; found $keyboardStopCount." }
 Assert-Contains $installer '$installedSharedIcon' 'ZIP installer does not install the stable shared GY input-method icon.'
 Assert-Contains $validator '共享输入法 Logo 存在' 'Post-install validation does not verify the stable shared input-method icon.'
 Assert-Contains $validator 'Get-GYLoadedClientState.ps1' 'Post-install validation does not inspect already-open clients holding an old TSF DLL.'
@@ -178,6 +189,7 @@ Assert-Contains $rollback 'ActivatePendingLogon' 'Standalone rollback does not r
 Assert-Contains $rollback "activationState = 'active'" 'Standalone rollback does not normalize the restored state to active.'
 Assert-Contains $rollback 'Assert-RegisteredGyState' 'Standalone rollback does not read back DLL / Host registry activation.'
 Assert-Contains $rollback 'Restart-ActiveGyHost' 'Standalone rollback does not restart the verified restored Host.'
+Assert-Contains $rollback 'Remove-LegacyVersionPinnedHostStartup' 'Standalone rollback does not remove the obsolete version-pinned Host startup value.'
 Assert-Contains $rollback 'Write-RecoveryReport' 'Standalone rollback does not persist a durable recovery result.'
 Assert-Contains $rollback 'Invoke-PostRecoveryCleanup' 'Standalone rollback does not clean only after successful recovery.'
 Assert-Contains $rollback "activationState -eq 'active'" 'Standalone rollback accepts an unverified recovery snapshot.'
@@ -217,9 +229,21 @@ Assert-Contains $inno 'stable path' 'EXE installer does not document the stable 
 Assert-Contains $inno 'DestName: "gy.ico"' 'EXE installer does not install the stable shared input-method icon.'
 Assert-Contains $inno 'stagedBootId' 'EXE installer does not bind activation to a later Windows boot.'
 Assert-Contains $inno 'Register-GYInputActivationTasks.ps1' 'EXE installer does not delegate task registration to the shared PowerShell registrar.'
+Assert-Contains $inno 'RemoveLegacyVersionPinnedHostStartup' 'EXE installer does not remove the obsolete version-pinned Host startup value.'
+Assert-Contains $inno '-ReconcileHost' 'EXE installer does not request post-reboot Host reconciliation.'
+Assert-Contains $installer 'Remove-LegacyVersionPinnedHostStartup' 'ZIP installer does not remove the obsolete version-pinned Host startup value.'
+Assert-Contains $installer '-ReconcileHost' 'ZIP installer does not request post-reboot Host reconciliation.'
 Assert-Contains $inno '" -LockAlreadyHeld' 'EXE installer does not register pending activation tasks inside its owning transaction.'
 Assert-Contains $inno 'VerifyCapturedPreviousGyState' 'EXE installer does not health-check the rollback snapshot before staging an upgrade.'
 Assert-Contains $inno 'HasExistingGyRegistration' 'EXE installer can overwrite an incomplete prior registration without a rollback snapshot.'
+Assert-Contains $inno 'RecoverIncompletePreviousGyRegistration' 'EXE installer cannot recover missing Host metadata for a verified active rollback target.'
+Assert-Contains $inno "ExpandConstant('{app}\Recover-GYIncompleteRegistration.ps1')" 'EXE installer launches recovery from a temporary directory that endpoint security may block.'
+Assert-Contains $registrationRecovery 'registration-recovery.error.log' 'Host metadata recovery does not preserve a content-free failure reason for field diagnosis.'
+Assert-Contains $registrationRecovery '$state.registryVerified -ne $true' 'Host metadata recovery does not require a verified durable active snapshot.'
+Assert-Contains $registrationRecovery 'Test-SamePath $registeredDll $dll' 'Host metadata recovery can combine state with a different registered TSF DLL.'
+Assert-Contains $registrationRecovery 'Start-Process -FilePath $health' 'Host metadata recovery does not health-check the active rollback target.'
+if ($registrationRecovery -match '(?i)regsvr32|Set-Win|Remove-Item|Stop-Process') { throw 'Host metadata recovery can mutate the live TSF registration, user keyboard list, processes, or installed files.' }
+Assert-Contains $installer 'Recover-GYIncompleteRegistration.ps1' 'ZIP installer cannot recover verified incomplete Host metadata before capturing rollback state.'
 Assert-Contains $inno "PreviousHealth, 'active'" 'EXE installer does not mark its captured rollback snapshot as active.'
 if ($inno -match '(?m)^\[Run\]') { throw 'EXE installer must not launch a second activation registrar that races its own transaction mutex.' }
 Assert-Contains $packaging 'Release notes are missing' 'ZIP package does not require version-specific release notes.'
@@ -264,6 +288,11 @@ Assert-Contains $finalize 'Copy-Item -LiteralPath $manifestPath -Destination $pa
 $manifestModule = Assert-ScriptParses (Join-Path $PSScriptRoot '..\ReleaseManifest.psm1')
 Assert-Contains $manifestModule 'Windows setupFile does not match its version.' 'Release manifest does not enforce versioned installer naming.'
 Assert-Contains $manifestModule 'PENDING-PACKAGE-VERIFICATION' 'Release manifest does not distinguish an unfinished draft from a publishable artifact.'
+Assert-Contains $manifestModule "'0.12.6'" 'Withdrawn 0.12.6 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.7'" 'Withdrawn 0.12.7 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.8'" 'Withdrawn 0.12.8 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.9'" 'Withdrawn 0.12.9 can re-enter the package or publication pipeline.'
+Assert-Contains $manifestModule "'0.12.10'" 'Withdrawn 0.12.10 can re-enter the package or publication pipeline.'
 Assert-Contains $manifestModule 'Release approval is missing' 'Release approval boundary does not fail closed when the approval record is absent.'
 Assert-Contains $manifestModule 'target-test-distribution' 'Release manifest module cannot represent an approved candidate awaiting target-machine acceptance.'
 Assert-Contains $manifestModule 'pending-on-target' 'Candidate distribution approval cannot honestly retain pending target acceptance.'

@@ -72,38 +72,72 @@ std::wstring SharedIconPath() {
 }
 
 #ifdef GY_IME_TRACE
-void TraceRect(const wchar_t* event, const RECT& rect) {
+std::atomic<unsigned long long> g_trace_sequence{0};
+
+void AppendTraceLine(const wchar_t* line) {
+  if (!line) return;
   wchar_t directory[MAX_PATH]{};
   if (!GetTempPathW(MAX_PATH, directory)) return;
   const std::wstring path = std::wstring(directory) + L"GyIme.trace.log";
   const HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return;
-  wchar_t line[256]{};
-  const int length = swprintf_s(line, L"pid=%lu event=%ls rect=%ld,%ld,%ld,%ld\r\n",
-                                GetCurrentProcessId(), event, rect.left, rect.top, rect.right, rect.bottom);
-  DWORD written = 0;
-  if (length > 0) WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+  const int utf8_length = WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0, nullptr, nullptr);
+  if (utf8_length > 1) {
+    std::string utf8(static_cast<size_t>(utf8_length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8.data(), utf8_length, nullptr, nullptr);
+    DWORD written = 0;
+    WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size() - 1), &written, nullptr);
+  }
   CloseHandle(file);
 }
-void Trace(const wchar_t* event, HRESULT hr = S_OK, WPARAM key = 0) {
-  wchar_t directory[MAX_PATH]{};
-  if (!GetTempPathW(MAX_PATH, directory)) return;
-  const std::wstring path = std::wstring(directory) + L"GyIme.trace.log";
-  const HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return;
+
+void TraceRect(const wchar_t* event, const RECT& rect) {
   wchar_t line[256]{};
-  const int length = swprintf_s(line, L"pid=%lu event=%ls hr=0x%08lX key=%llu\r\n",
-                                GetCurrentProcessId(), event, static_cast<unsigned long>(hr),
-                                static_cast<unsigned long long>(key));
-  DWORD written = 0;
-  if (length > 0) WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
-  CloseHandle(file);
+  swprintf_s(line,
+             L"seq=%llu tick=%llu pid=%lu tid=%lu event=%ls rect=%ld,%ld,%ld,%ld\r\n",
+             ++g_trace_sequence, GetTickCount64(), GetCurrentProcessId(), GetCurrentThreadId(), event,
+             rect.left, rect.top, rect.right, rect.bottom);
+  AppendTraceLine(line);
+}
+void Trace(const wchar_t* event, HRESULT hr = S_OK, unsigned long long value = 0) {
+  wchar_t line[256]{};
+  swprintf_s(line,
+             L"seq=%llu tick=%llu pid=%lu tid=%lu event=%ls hr=0x%08lX value=%llu\r\n",
+             ++g_trace_sequence, GetTickCount64(), GetCurrentProcessId(), GetCurrentThreadId(), event,
+             static_cast<unsigned long>(hr), value);
+  AppendTraceLine(line);
+}
+void TraceLifecycleLine(const wchar_t* event, const wchar_t* action, HRESULT outer_hr,
+                        HRESULT session_hr, const void* context, const void* related,
+                        const void* composition, TfEditCookie cookie,
+                        unsigned long long current_generation,
+                        unsigned long long queued_generation, bool scope_known,
+                        bool scope_direct, bool scope_sensitive, HWND focused,
+                        HWND foreground, unsigned long long aux0 = 0,
+                        unsigned long long aux1 = 0, const wchar_t* detail = L"-") {
+  wchar_t line[768]{};
+  swprintf_s(
+      line,
+      L"seq=%llu tick=%llu pid=%lu tid=%lu event=%ls action=%ls outer=0x%08lX "
+      L"session=0x%08lX ctx=%p related=%p composition=%p cookie=%lu current_gen=%llu "
+      L"queued_gen=%llu scope_known=%u scope_direct=%u scope_sensitive=%u focused_hwnd=%p "
+      L"foreground_hwnd=%p aux0=%llu aux1=%llu detail=%ls\r\n",
+      ++g_trace_sequence, GetTickCount64(), GetCurrentProcessId(), GetCurrentThreadId(), event,
+      action ? action : L"-", static_cast<unsigned long>(outer_hr),
+      static_cast<unsigned long>(session_hr), context, related, composition,
+      static_cast<unsigned long>(cookie), current_generation, queued_generation,
+      scope_known ? 1u : 0u, scope_direct ? 1u : 0u, scope_sensitive ? 1u : 0u, focused,
+      foreground, aux0, aux1, detail ? detail : L"-");
+  AppendTraceLine(line);
 }
 #else
-void Trace(const wchar_t*, HRESULT = S_OK, WPARAM = 0) {}
+void Trace(const wchar_t*, HRESULT = S_OK, unsigned long long = 0) {}
 void TraceRect(const wchar_t*, const RECT&) {}
+void TraceLifecycleLine(const wchar_t*, const wchar_t*, HRESULT, HRESULT, const void*, const void*,
+                        const void*, TfEditCookie, unsigned long long, unsigned long long, bool,
+                        bool, bool, HWND, HWND, unsigned long long = 0,
+                        unsigned long long = 0, const wchar_t* = L"-") {}
 #endif
 
 #ifdef GY_REGISTRATION_TRACE
@@ -145,6 +179,61 @@ enum class EditActionKind {
   CommitRawForDirectInput,
   RefreshInputScope
 };
+
+const wchar_t* EditActionName(EditActionKind kind) {
+  switch (kind) {
+    case EditActionKind::Append: return L"append";
+    case EditActionKind::InsertText: return L"insert-text";
+    case EditActionKind::Backspace: return L"backspace";
+    case EditActionKind::CommitCandidate: return L"commit-candidate";
+    case EditActionKind::CommitRaw: return L"commit-raw";
+    case EditActionKind::CancelAndToggleEnglish: return L"cancel-toggle-english";
+    case EditActionKind::BeginEnglishAssist: return L"begin-english-assist";
+    case EditActionKind::DismissEnglishSuggestions: return L"dismiss-english-suggestions";
+    case EditActionKind::Cancel: return L"cancel";
+    case EditActionKind::CommitRawForDirectInput: return L"commit-raw-direct";
+    case EditActionKind::RefreshInputScope: return L"refresh-input-scope";
+  }
+  return L"unknown";
+}
+
+const wchar_t* KeyCategory(WPARAM key) {
+  if (key >= 'A' && key <= 'Z') return L"letter";
+  if (key >= '0' && key <= '9') return L"digit";
+  switch (key) {
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+    case VK_MENU: case VK_LMENU: case VK_RMENU:
+    case VK_LWIN: case VK_RWIN: return L"modifier";
+    case VK_BACK: return L"backspace";
+    case VK_RETURN: return L"enter";
+    case VK_TAB: return L"tab";
+    case VK_ESCAPE: return L"escape";
+    case VK_SPACE: return L"space";
+    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
+    case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT: return L"navigation";
+    case VK_OEM_1: case VK_OEM_PLUS: case VK_OEM_COMMA: case VK_OEM_MINUS:
+    case VK_OEM_PERIOD: case VK_OEM_2: case VK_OEM_3: case VK_OEM_4:
+    case VK_OEM_5: case VK_OEM_6: case VK_OEM_7: return L"punctuation";
+    default: return L"other";
+  }
+}
+
+const wchar_t* CacheReadStatusName(gy::input_scope_cache::ReadStatus status) {
+  using gy::input_scope_cache::ReadStatus;
+  switch (status) {
+    case ReadStatus::Unavailable: return L"unavailable";
+    case ReadStatus::Busy: return L"busy";
+    case ReadStatus::NoForeground: return L"no-foreground";
+    case ReadStatus::ForegroundWindowMismatch: return L"hwnd-mismatch";
+    case ReadStatus::ProcessUnavailable: return L"pid-unavailable";
+    case ReadStatus::ProcessMismatch: return L"pid-mismatch";
+    case ReadStatus::Expired: return L"expired";
+    case ReadStatus::Match: return L"match";
+  }
+  return L"unknown";
+}
+
 struct EditAction {
   EditActionKind kind;
   wchar_t character = 0;
@@ -242,7 +331,9 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL focused) override {
-    Trace(L"focus.app", S_OK, focused ? 1 : 0);
+    TraceState(L"focus.app", focused ? L"gained" : L"lost", S_OK, S_OK,
+               context_, nullptr, TF_INVALID_EDIT_COOKIE, mode_generation_,
+               focused ? 1 : 0);
     // Browser address bars, developer tools and cross-page navigation can move
     // focus before Windows delivers the final Ctrl/Alt/Win key-up. Never carry
     // that stale modifier state into the next editable control, otherwise
@@ -263,6 +354,8 @@ public:
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) override {
     ReconcileModifierState();
     if (!eaten) return E_INVALIDARG;
+    current_key_sequence_ = ++key_event_sequence_;
+    TraceKey(L"key.test.enter", context, key, current_key_sequence_);
     // A native password/PIN control is a synchronous, local hard boundary.
     // Do this before consulting the previous TSF context or any cached scope:
     // on a focus switch Windows can route the first character while the old
@@ -271,16 +364,22 @@ public:
     if (IsNativePasswordControlFocused()) {
       EnterNativeSensitiveDirectMode();
       *eaten = FALSE;
+      TraceKey(L"key.test.pass.native-sensitive", context, key, current_key_sequence_);
       return S_OK;
     }
     RefreshInputScopeForKey(context, key);
     const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) { *eaten = FALSE; return S_OK; }
+    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) {
+      *eaten = FALSE;
+      TraceKey(L"key.test.pass.direct", context, key, current_key_sequence_);
+      return S_OK;
+    }
     if (gy::keys::ShouldMarkShiftUsed(shift_down_, key)) shift_used_ = true;
     SynchronizeInputMode(false);
     *eaten = IsEnglishAssistShortcut(key) || ShouldCaptureEnglishAssistKey(key) ||
              (IsShiftKey(key) ? gy::keys::ShouldCaptureShift(HasShortcutModifier()) : ShouldEat(key));
-    if (key >= 'A' && key <= 'Z') Trace(L"key.test", S_OK, key);
+    TraceKey(*eaten ? L"key.test.eaten" : L"key.test.pass", context, key,
+             current_key_sequence_);
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) override {
@@ -302,19 +401,24 @@ public:
   HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) override {
     if (!eaten) return E_INVALIDARG;
     *eaten = FALSE;
+    if (current_key_sequence_ == 0) current_key_sequence_ = ++key_event_sequence_;
+    TraceKey(L"key.down.enter", context, key, current_key_sequence_);
     if (IsNativePasswordControlFocused()) {
       EnterNativeSensitiveDirectMode();
+      TraceKey(L"key.down.pass.native-sensitive", context, key, current_key_sequence_);
       return S_OK;
     }
     RefreshInputScopeForKey(context, key);
     const bool allow_direct_shift_override = IsShiftKey(key) && AllowsAutoDirectChineseOverride();
-    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) return S_OK;
+    if (EffectiveInputScopeDirect() && !allow_direct_shift_override) {
+      TraceKey(L"key.down.pass.direct", context, key, current_key_sequence_);
+      return S_OK;
+    }
     if (IsShiftKey(key)) { shift_down_ = true; shift_used_ = HasShortcutModifier(); return S_OK; }
     if (shift_down_) shift_used_ = true;
     UpdateModifierState(key, true);
     ReconcileModifierState();
     SynchronizeInputMode(false);
-    Trace(L"key.down", S_OK, key);
 
     // A learning undo is valid only for the very next ordinary editing key:
     // if the user keeps typing, moves around, or opens a shortcut, do not let
@@ -346,7 +450,7 @@ public:
     SetContext(context);
     *eaten = TRUE;
     if (const wchar_t punctuation = ChinesePunctuation(key); punctuation != 0) {
-      Trace(L"key.punctuation", S_OK, key);
+      TraceKey(L"key.down.punctuation", context, key, current_key_sequence_);
       return RequestEdit({EditActionKind::InsertText, punctuation});
     }
     if (english_boundary) {
@@ -568,14 +672,16 @@ public:
     return S_OK;
   }  HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) override { if (!eaten) return E_INVALIDARG; *eaten = FALSE; return S_OK; }
   HRESULT STDMETHODCALLTYPE OnCompositionTerminated(TfEditCookie, ITfComposition* composition) override {
-    Trace(L"composition.terminated");
+    TraceState(L"composition.terminated", L"callback", S_OK, S_OK, context_, composition);
     if (composition && composition == composition_) ResetCompositionState();
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr*, ITfDocumentMgr* focus) override {
-    Trace(L"focus.document", S_OK, focus ? 1 : 0);
+  HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* previous, ITfDocumentMgr* focus) override {
+    // For this event only, ctx/related are the old/new document managers.
+    TraceState(L"focus.document", L"old-new-document-manager", S_OK, S_OK,
+               previous, focus);
     CancelComposition();
     ResetTransientKeyboardState();
     if (!focus) { SetContext(nullptr); return S_OK; }
@@ -590,15 +696,38 @@ public:
     SynchronizeInputMode(false);
     return S_OK;
   }
-  HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext*) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
+    TraceState(L"context.push", L"callback", S_OK, S_OK, context, context_);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
+    TraceState(L"context.pop", L"callback", S_OK, S_OK, context, context_);
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE OnEndEdit(ITfContext* context, TfEditCookie cookie, ITfEditRecord*) override {
+    ++end_edit_depth_;
+    TraceState(L"edit.end.enter", L"read-callback", S_OK, S_OK, context, context_, cookie,
+               mode_generation_, end_edit_depth_);
     if (context == context_) RefreshInputScope(context, cookie);
+    TraceState(L"edit.end.exit", L"read-callback", S_OK, S_OK, context, context_, cookie,
+               mode_generation_, end_edit_depth_);
+    --end_edit_depth_;
     return S_OK;
   }
   HRESULT ApplyEdit(ITfContext* edit_context, const EditAction& action, TfEditCookie cookie) {
+    TraceState(L"edit.apply.enter", EditActionName(action.kind), S_OK, S_OK, edit_context,
+               context_, cookie, action.mode_generation, end_edit_depth_);
     // A request posted by a window that has already lost focus must not edit the new window.
-    if (!edit_context || edit_context != context_) return S_OK;
+    if (!edit_context) {
+      TraceState(L"edit.apply.drop.no-context", EditActionName(action.kind), S_OK, S_OK,
+                 edit_context, context_, cookie, action.mode_generation, end_edit_depth_);
+      return S_OK;
+    }
+    if (edit_context != context_) {
+      TraceState(L"edit.apply.drop.context-mismatch", EditActionName(action.kind), S_OK, S_OK,
+                 edit_context, context_, cookie, action.mode_generation, end_edit_depth_);
+      return S_OK;
+    }
     if (action.kind == EditActionKind::RefreshInputScope) {
       RefreshInputScope(edit_context, cookie);
       return S_OK;
@@ -610,7 +739,12 @@ public:
     const bool lifecycle_edit = action.kind == EditActionKind::Cancel ||
         action.kind == EditActionKind::CommitRawForDirectInput;
     if (!gy::tsf_edit_session::ShouldApply(
-            lifecycle_edit, action.mode_generation, mode_generation_)) return S_OK;
+            lifecycle_edit, action.mode_generation, mode_generation_)) {
+      TraceState(L"edit.apply.drop.generation", EditActionName(action.kind), S_OK, S_OK,
+                 edit_context, context_, cookie, action.mode_generation,
+                 lifecycle_edit ? 1 : 0);
+      return S_OK;
+    }
     if (action.kind == EditActionKind::BeginEnglishAssist) {
       return BeginEnglishAssist(edit_context, cookie);
     }
@@ -695,7 +829,25 @@ public:
     if (english_assist_active_) return CommitComposition(edit_context, cookie, 0, true);
     return ClearComposition(cookie);
   }
-private:
+ private:
+  void TraceState(const wchar_t* event, const wchar_t* action = L"-",
+                  HRESULT outer_hr = S_OK, HRESULT session_hr = S_OK,
+                  const void* event_context = nullptr, const void* related = nullptr,
+                  TfEditCookie cookie = TF_INVALID_EDIT_COOKIE,
+                  unsigned long long queued_generation = 0,
+                  unsigned long long aux0 = 0, unsigned long long aux1 = 0,
+                  const wchar_t* detail = L"-") const {
+    TraceLifecycleLine(event, action, outer_hr, session_hr, event_context, related,
+                       composition_, cookie, mode_generation_, queued_generation,
+                       input_scope_known_, input_scope_direct_, input_scope_sensitive_,
+                       CurrentFocusedInputWindow(), GetForegroundWindow(), aux0, aux1, detail);
+  }
+  void TraceKey(const wchar_t* event, ITfContext* context, WPARAM key,
+                unsigned long long key_sequence) const {
+    TraceState(event, KeyCategory(key), S_OK, S_OK, context, context_,
+               TF_INVALID_EDIT_COOKIE, mode_generation_, key_sequence,
+               end_edit_depth_, L"key-category-only");
+  }
   static bool IsDown(int virtual_key) { return (GetKeyState(virtual_key) & 0x8000) != 0; }
   static bool IsPhysicallyDown(int virtual_key) { return (GetAsyncKeyState(virtual_key) & 0x8000) != 0; }
   void UpdateModifierState(WPARAM key, bool down) {
@@ -881,11 +1033,21 @@ private:
     const bool has_direct_transition_text =
         gy::tsf_edit_session::ShouldCommitRawForDirectInput(
             preserve_raw_for_direct, !composition_text_.empty());
-    if (!mode_changed && !has_direct_transition_text) return;
+    TraceState(L"mode.apply.enter", preserve_raw_for_direct ? L"preserve-raw" : L"normal",
+               S_OK, S_OK, context_, nullptr, TF_INVALID_EDIT_COOKIE, mode_generation_,
+               static_cast<unsigned long long>(input_mode_),
+               static_cast<unsigned long long>(mode));
+    if (!mode_changed && !has_direct_transition_text) {
+      TraceState(L"mode.apply.no-change", L"no-op", S_OK, S_OK, context_);
+      return;
+    }
     ++mode_generation_;
     if (!composition_text_.empty()) {
       if (preserve_raw_for_direct) {
         const HRESULT hr = RequestEdit({EditActionKind::CommitRawForDirectInput});
+        TraceState(L"mode.apply.commit-raw-request", L"commit-raw-direct", hr, hr,
+                   context_, nullptr, TF_INVALID_EDIT_COOKIE, mode_generation_,
+                   end_edit_depth_);
         // S_OK and TF_S_ASYNC both mean TSF accepted responsibility for ending
         // the composition. Only abandon local state when the request failed.
         if (!gy::tsf_edit_session::WasAccepted(hr)) ResetCompositionState();
@@ -898,6 +1060,9 @@ private:
     else chinese_mode_ = mode;
     english_mode_ = next_english;
     if (announce) engine_.ShowMode(last_caret_, input_mode_);
+    TraceState(L"mode.apply.exit", preserve_raw_for_direct ? L"preserve-raw" : L"normal",
+               S_OK, S_OK, context_, nullptr, TF_INVALID_EDIT_COOKIE, mode_generation_,
+               static_cast<unsigned long long>(input_mode_));
   }
   void SynchronizeInputMode(bool announce) {
     if (EffectiveInputScopeDirect()) {
@@ -936,6 +1101,8 @@ private:
     return (GetWindowLongPtrW(focused, GWL_STYLE) & ES_PASSWORD) != 0;
   }
   void EnterNativeSensitiveDirectMode() {
+    TraceState(L"input-scope.native-sensitive.enter", L"native-password", S_OK, S_OK,
+               context_);
     // Never request an edit against an old context from this first-key path.
     // Locally discard stale composition state and tell the Host to hide only
     // the candidate UI; the password text itself is never read or written.
@@ -947,6 +1114,8 @@ private:
     input_scope_hwnd_ = CurrentFocusedInputWindow();
     input_scope_probe_count_ = 0;
     ApplyInputMode(gy::input_mode::kEnglish, false);
+    TraceState(L"input-scope.native-sensitive.exit", L"native-password", S_OK, S_OK,
+               context_);
   }
   struct InputScopeResult {
     bool available = false;
@@ -999,7 +1168,10 @@ private:
     return result;
   }
 
-  void ApplyInputScope(bool direct, bool sensitive, bool known) {
+  void ApplyInputScope(bool direct, bool sensitive, bool known, const wchar_t* source) {
+    TraceState(L"input-scope.apply.enter", source, S_OK, S_OK, context_, nullptr,
+               TF_INVALID_EDIT_COOKIE, mode_generation_, direct ? 1 : 0,
+               (known ? 1ull : 0ull) | (sensitive ? 2ull : 0ull));
     const bool changed = input_scope_known_ != known || input_scope_direct_ != direct ||
                          input_scope_sensitive_ != sensitive;
     if (gy::input_scope::ShouldClearManualChineseOverrideOnScopeChange(
@@ -1010,7 +1182,10 @@ private:
     input_scope_known_ = known;
     input_scope_direct_ = direct;
     input_scope_sensitive_ = sensitive;
-    if (!changed) return;
+    if (!changed) {
+      TraceState(L"input-scope.apply.no-change", source, S_OK, S_OK, context_);
+      return;
+    }
     Trace(L"input-scope.direct", S_OK, direct ? 1 : 0);
     Trace(L"input-scope.sensitive", S_OK, sensitive ? 1 : 0);
     Trace(L"input-scope.known", S_OK, known ? 1 : 0);
@@ -1024,6 +1199,7 @@ private:
     } else {
       SynchronizeInputMode(false);
     }
+    TraceState(L"input-scope.apply.exit", source, S_OK, S_OK, context_);
   }
   void RefreshInputScope(ITfContext* context, TfEditCookie cookie) {
     if (!context || context != context_) return;
@@ -1036,19 +1212,34 @@ private:
 
     const InputScopeResult scope = ReadInputScope(context, cookie);
     const bool native_password = IsNativePasswordControlFocused();
+    TraceState(L"input-scope.signal.tsf", L"tsf", S_OK, S_OK, context, context_, cookie,
+               mode_generation_, scope.english ? 1 : 0,
+               (scope.available ? 1ull : 0ull) | (scope.sensitive ? 2ull : 0ull));
+    TraceState(L"input-scope.signal.native", L"native-password", S_OK, S_OK, context,
+               nullptr, cookie, mode_generation_, native_password ? 1 : 0);
     // UI Automation is deliberately never called from this TSF DLL.  It can
     // cross into a browser/Electron process and block its input thread.  TSF
     // InputScope plus the local native password style are safe, non-content
     // signals; richer browser detection is supplied asynchronously by Host.
     bool cached_direct = false;
     bool cached_sensitive = false;
-    const bool has_cached_scope = input_scope_cache_.ReadForCurrentForeground(&cached_direct, &cached_sensitive);
+    gy::input_scope_cache::ReadDiagnostics cache_diagnostics{};
+    const bool has_cached_scope = input_scope_cache_.ReadForCurrentForeground(
+        &cached_direct, &cached_sensitive, &cache_diagnostics);
+    TraceState(L"input-scope.signal.cache", L"host-cache", S_OK, S_OK, context,
+               cache_diagnostics.snapshot_window, cookie, mode_generation_,
+               cache_diagnostics.age_ms, cache_diagnostics.snapshot_process_id,
+               CacheReadStatusName(cache_diagnostics.status));
     const bool direct_fallback = native_password || (has_cached_scope && cached_direct);
     const bool sensitive_fallback = native_password || (has_cached_scope && cached_sensitive);
     input_scope_hwnd_ = focused;
     if (scope.available || direct_fallback) {
       input_scope_probe_count_ = 0;
-      ApplyInputScope(scope.english || direct_fallback, scope.sensitive || sensitive_fallback, true);
+      const wchar_t* source = scope.available
+          ? (direct_fallback ? L"tsf+fallback" : L"tsf")
+          : (native_password ? L"native-password" : L"host-cache");
+      ApplyInputScope(scope.english || direct_fallback, scope.sensitive || sensitive_fallback,
+                      true, source);
       return;
     }
 
@@ -1056,15 +1247,29 @@ private:
     // permanently cache that first miss as "ordinary Chinese". On a new
     // focus, fail safe to the user's normal mode and await a later async TSF
     // scope refresh.  No content or cross-process metadata is read here.
-    if (focus_changed || !input_scope_known_) ApplyInputScope(false, false, false);
+    if (focus_changed || !input_scope_known_) ApplyInputScope(false, false, false, L"unavailable");
     if (input_scope_probe_count_ < 3) ++input_scope_probe_count_;
   }
   void RequestInputScopeRefresh(ITfContext* context) {
-    if (!context || context != context_ || client_id_ == TF_CLIENTID_NULL) return;
-    auto* edit = new EditSession(this, context, EditAction{EditActionKind::RefreshInputScope});
+    EditAction action{EditActionKind::RefreshInputScope};
+    action.mode_generation = mode_generation_;
+    if (!context || context != context_ || client_id_ == TF_CLIENTID_NULL) {
+      TraceState(L"edit.request.skip", EditActionName(action.kind), E_FAIL, E_FAIL,
+                 context, context_, TF_INVALID_EDIT_COOKIE, action.mode_generation,
+                 end_edit_depth_, client_id_ == TF_CLIENTID_NULL ? 1 : 0,
+                 context != context_ ? L"context-mismatch" : L"no-client-or-context");
+      return;
+    }
+    auto* edit = new EditSession(this, context, action);
     HRESULT session_hr = E_FAIL;
-    const HRESULT hr = context->RequestEditSession(client_id_, edit, TF_ES_ASYNC | TF_ES_READ, &session_hr);
-    Trace(L"input-scope.refresh", FAILED(hr) ? hr : session_hr);
+    TraceState(L"edit.request.enter", EditActionName(action.kind), S_OK, session_hr,
+               context, edit, TF_INVALID_EDIT_COOKIE, action.mode_generation,
+               end_edit_depth_);
+    const HRESULT outer_hr = context->RequestEditSession(
+        client_id_, edit, TF_ES_ASYNC | TF_ES_READ, &session_hr);
+    TraceState(L"edit.request.result", EditActionName(action.kind), outer_hr, session_hr,
+               context, edit, TF_INVALID_EDIT_COOKIE, action.mode_generation,
+               end_edit_depth_);
     edit->Release();
   }
   void RequestInputScopeRefresh() { RequestInputScopeRefresh(context_); }
@@ -1078,7 +1283,7 @@ private:
     if (input_scope_hwnd_ != focused || !input_scope_known_ || IsShiftKey(key)) {
       const bool native_password = IsNativePasswordControlFocused();
       if (native_password) {
-        ApplyInputScope(true, true, true);
+        ApplyInputScope(true, true, true, L"native-password-key-guard");
         input_scope_hwnd_ = focused;
         input_scope_probe_count_ = 0;
         return;
@@ -1086,8 +1291,15 @@ private:
     }
     bool cached_direct = false;
     bool cached_sensitive = false;
-    if (input_scope_cache_.ReadForCurrentForeground(&cached_direct, &cached_sensitive) && cached_direct) {
-      ApplyInputScope(true, cached_sensitive, true);
+    gy::input_scope_cache::ReadDiagnostics cache_diagnostics{};
+    const bool has_cache = input_scope_cache_.ReadForCurrentForeground(
+        &cached_direct, &cached_sensitive, &cache_diagnostics);
+    TraceState(L"input-scope.key-cache", L"host-cache", S_OK, S_OK, context,
+               cache_diagnostics.snapshot_window, TF_INVALID_EDIT_COOKIE, mode_generation_,
+               cache_diagnostics.age_ms, cache_diagnostics.snapshot_process_id,
+               CacheReadStatusName(cache_diagnostics.status));
+    if (has_cache && cached_direct) {
+      ApplyInputScope(true, cached_sensitive, true, L"host-cache-key-guard");
       input_scope_hwnd_ = focused;
       input_scope_probe_count_ = 0;
       return;
@@ -1171,8 +1383,9 @@ private:
             last_commit_was_ascii_), english_list_open_);
   }
   void SetContext(ITfContext* context) {
+    TraceState(context == context_ ? L"context.set.same" : L"context.set.begin", L"old-new",
+               S_OK, S_OK, context_, context);
     if (context == context_) return;
-    Trace(L"context.change", S_OK, context ? 1 : 0);
     // The remembered caret belongs to the previous context: an app or document
     // switch must never anchor the candidate window to a position measured
     // somewhere else (it jumped across the screen after an app switch).
@@ -1195,12 +1408,16 @@ private:
       context_->AddRef();
       AdviseContextEditSink();
     }
+    TraceState(L"context.set.end", L"old-new", S_OK, S_OK, context_, nullptr);
   }
   void AdviseContextEditSink() {
     if (!context_) return;
     ITfSource* source = nullptr;
     if (SUCCEEDED(context_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) {
-      source->AdviseSink(IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this), &context_edit_sink_);
+      const HRESULT hr = source->AdviseSink(
+          IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this), &context_edit_sink_);
+      TraceState(L"context.sink.advise", L"text-edit", hr, hr, context_, source,
+                 TF_INVALID_EDIT_COOKIE, mode_generation_, context_edit_sink_);
       source->Release();
     }
   }
@@ -1208,12 +1425,32 @@ private:
     if (!context_ || context_edit_sink_ == TF_INVALID_COOKIE) return;
     ITfSource* source = nullptr;
     if (SUCCEEDED(context_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) {
-      source->UnadviseSink(context_edit_sink_);
+      const HRESULT hr = source->UnadviseSink(context_edit_sink_);
+      TraceState(L"context.sink.unadvise", L"text-edit", hr, hr, context_, source,
+                 TF_INVALID_EDIT_COOKIE, mode_generation_, context_edit_sink_);
       source->Release();
     }
     context_edit_sink_ = TF_INVALID_COOKIE;
   }
-  HRESULT RequestEdit(EditAction action) { if (!context_) { Trace(L"edit.no-context", E_FAIL); return E_FAIL; } action.mode_generation = mode_generation_; action.candidate_input_generation = english_candidate_set_.input_generation; auto* edit = new EditSession(this, context_, action); HRESULT session_hr = E_FAIL; const HRESULT hr = context_->RequestEditSession(client_id_, edit, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &session_hr); Trace(L"edit.request", FAILED(hr) ? hr : session_hr); edit->Release(); return FAILED(hr) ? hr : session_hr; }
+  HRESULT RequestEdit(EditAction action) {
+    if (!context_) {
+      TraceState(L"edit.request.no-context", EditActionName(action.kind), E_FAIL, E_FAIL);
+      return E_FAIL;
+    }
+    action.mode_generation = mode_generation_;
+    action.candidate_input_generation = english_candidate_set_.input_generation;
+    auto* edit = new EditSession(this, context_, action);
+    HRESULT session_hr = E_FAIL;
+    TraceState(L"edit.request.enter", EditActionName(action.kind), S_OK, session_hr, context_, edit,
+               TF_INVALID_EDIT_COOKIE, action.mode_generation, end_edit_depth_);
+    const HRESULT outer_hr = context_->RequestEditSession(
+        client_id_, edit, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &session_hr);
+    TraceState(L"edit.request.result", EditActionName(action.kind), outer_hr, session_hr,
+               context_, edit, TF_INVALID_EDIT_COOKIE, action.mode_generation,
+               end_edit_depth_);
+    edit->Release();
+    return FAILED(outer_hr) ? outer_hr : session_hr;
+  }
   HRESULT UpdateComposition(ITfContext* edit_context, TfEditCookie cookie) {
     if (!edit_context) return E_FAIL;
     if (!composition_) {
@@ -1351,7 +1588,13 @@ private:
   }
   HRESULT CommitComposition(ITfContext* edit_context, TfEditCookie cookie, unsigned index,
                             bool raw_text = false, bool explicit_selection = false) {
-    if (!composition_) return S_OK;
+    TraceState(L"composition.commit.enter", raw_text ? L"raw" : L"candidate", S_OK, S_OK,
+               edit_context, context_, cookie, mode_generation_, explicit_selection ? 1 : 0);
+    if (!composition_) {
+      TraceState(L"composition.commit.no-object", raw_text ? L"raw" : L"candidate", S_OK,
+                 S_OK, edit_context, context_, cookie);
+      return S_OK;
+    }
     const bool selected_candidate = !raw_text && index < candidates_.size();
     const bool english_assist = english_assist_active_;
     const std::wstring pinyin = composition_text_;
@@ -1387,6 +1630,8 @@ private:
       Trace(L"commit.selection", edit_context->SetSelection(cookie, 1, &selection));
     }
     if (range) range->Release();
+    TraceState(L"composition.commit.end-result", raw_text ? L"raw" : L"candidate", hr, hr,
+               edit_context, context_, cookie);
     composition_->Release();
     composition_ = nullptr;
     composition_anchor_valid_ = false;
@@ -1435,10 +1680,18 @@ private:
       correction_indices_.clear();
     }
     engine_.HideCandidates();
+    TraceState(L"composition.commit.exit", raw_text ? L"raw" : L"candidate", hr, hr,
+               edit_context, context_, cookie);
     return hr;
   }
   HRESULT ClearComposition(TfEditCookie cookie) {
-    if (!composition_) { ResetCompositionState(); return S_OK; }
+    TraceState(L"composition.clear.enter", L"clear", S_OK, S_OK, context_, nullptr, cookie);
+    if (!composition_) {
+      ResetCompositionState();
+      TraceState(L"composition.clear.no-object", L"clear", S_OK, S_OK, context_, nullptr,
+                 cookie);
+      return S_OK;
+    }
     ITfRange* range = nullptr;
     HRESULT hr = composition_->GetRange(&range);
     if (SUCCEEDED(hr)) {
@@ -1446,6 +1699,8 @@ private:
       range->Release();
     }
     const HRESULT end_hr = composition_->EndComposition(cookie);
+    TraceState(L"composition.clear.end-result", L"clear", hr, end_hr, context_, nullptr,
+               cookie);
     ResetCompositionState();
     return FAILED(hr) ? hr : end_hr;
   }
@@ -1463,6 +1718,7 @@ private:
     learned_phrase_text_ += text;
   }
   void ResetCompositionState() {
+    TraceState(L"composition.reset.enter", L"local-reset", S_OK, S_OK, context_);
     if (composition_) { composition_->Release(); composition_ = nullptr; }
     composition_anchor_valid_ = false;
     composition_text_.clear();
@@ -1477,16 +1733,24 @@ private:
     english_list_open_ = false;
     english_assist_active_ = false;
     ResetLearnedPhrase();
+    TraceState(L"composition.reset.exit", L"local-reset", S_OK, S_OK, context_);
   }
   void CancelComposition() {
+    TraceState(L"composition.cancel.enter", L"cancel", S_OK, S_OK, context_);
     if (composition_ && context_ && client_id_ != TF_CLIENTID_NULL) {
       const HRESULT hr = RequestEdit({EditActionKind::Cancel});
+      TraceState(L"composition.cancel.request-result", L"cancel", hr, hr, context_, nullptr,
+                 TF_INVALID_EDIT_COOKIE, mode_generation_, end_edit_depth_);
       // TF_S_ASYNC is the normal success result when cancellation is requested
       // from OnEndEdit. Keep the composition object alive for DoEditSession;
       // releasing it here leaves Firefox's text store composing forever.
-      if (gy::tsf_edit_session::WasAccepted(hr)) return;
+      if (gy::tsf_edit_session::WasAccepted(hr)) {
+        TraceState(L"composition.cancel.accepted", L"cancel", hr, hr, context_);
+        return;
+      }
     }
     ResetCompositionState();
+    TraceState(L"composition.cancel.local-reset", L"cancel", S_OK, S_OK, context_);
   }
   void ShowCandidates(ITfContext* edit_context, ITfRange* known_range, TfEditCookie cookie = TF_INVALID_EDIT_COOKIE) {
     if (candidates_.empty()) { engine_.HideCandidates(); return; }
@@ -1634,12 +1898,21 @@ private:
     return gy::input_scope::AllowsManualChineseOverride(input_scope_direct_, input_scope_sensitive_);
   }
   struct ExplicitLearn { std::wstring pinyin; std::wstring candidate; int input_mode = -1; bool active = false; };
-  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; gy::input_scope_cache::Reader input_scope_cache_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; gy::english_candidates::CandidateSet english_candidate_set_; std::vector<unsigned> correction_indices_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool chinese_grid_open_ = false; bool english_candidate_focus_ = false; bool english_list_open_ = false; bool english_assist_active_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; bool input_scope_sensitive_ = false; bool input_scope_manual_override_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; bool numeric_fragment_active_ = false; ExplicitLearn last_explicit_learn_{}; unsigned long long mode_generation_ = 0; unsigned long long candidate_input_generation_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
+  std::atomic<ULONG> refs_{1}; ITfThreadMgr* thread_mgr_ = nullptr; ITfKeystrokeMgr* keystroke_mgr_ = nullptr; ITfContext* context_ = nullptr; ITfComposition* composition_ = nullptr; TfClientId client_id_ = TF_CLIENTID_NULL; DWORD thread_mgr_sink_ = TF_INVALID_COOKIE; DWORD context_edit_sink_ = TF_INVALID_COOKIE; HostedPinyinEngine engine_; SelectionCallback selection_callback_; gy::input_scope_cache::Reader input_scope_cache_; RECT last_caret_{0, 0, 360, 24}; bool last_caret_valid_ = false; RECT composition_anchor_{}; bool composition_anchor_valid_ = false; std::wstring composition_text_; std::vector<std::wstring> candidates_; gy::english_candidates::CandidateSet english_candidate_set_; std::vector<unsigned> correction_indices_; std::wstring learned_phrase_pinyin_; std::wstring learned_phrase_text_; unsigned selected_ = 0; unsigned page_start_ = 0; bool chinese_grid_open_ = false; bool english_candidate_focus_ = false; bool english_list_open_ = false; bool english_assist_active_ = false; int input_mode_ = gy::input_mode::kSimplified; int chinese_mode_ = gy::input_mode::kSimplified; bool english_mode_ = false; bool input_scope_known_ = false; bool input_scope_direct_ = false; bool input_scope_sensitive_ = false; bool input_scope_manual_override_ = false; HWND input_scope_hwnd_ = nullptr; unsigned input_scope_probe_count_ = 0; bool last_commit_was_ascii_ = false; bool numeric_fragment_active_ = false; ExplicitLearn last_explicit_learn_{}; unsigned long long mode_generation_ = 0; unsigned long long candidate_input_generation_ = 0; unsigned long long key_event_sequence_ = 0; unsigned long long current_key_sequence_ = 0; unsigned end_edit_depth_ = 0; bool single_quote_open_ = true; bool double_quote_open_ = true; bool shift_down_ = false; bool shift_used_ = false; bool control_down_ = false; bool alt_down_ = false; bool win_down_ = false;
   friend class EditSession;
 };
 
 HRESULT EditSession::QueryInterface(REFIID iid, void** object) { if (!object) return E_INVALIDARG; *object = nullptr; if (iid == IID_IUnknown || iid == IID_ITfEditSession) { *object = static_cast<ITfEditSession*>(this); AddRef(); return S_OK; } return E_NOINTERFACE; }
-HRESULT EditSession::DoEditSession(TfEditCookie cookie) { return owner_->ApplyEdit(context_, action_, cookie); }
+HRESULT EditSession::DoEditSession(TfEditCookie cookie) {
+  owner_->TraceState(L"edit.session.enter", EditActionName(action_.kind), S_OK, S_OK,
+                     context_, owner_->context_, cookie, action_.mode_generation,
+                     owner_->end_edit_depth_);
+  const HRESULT hr = owner_->ApplyEdit(context_, action_, cookie);
+  owner_->TraceState(L"edit.session.exit", EditActionName(action_.kind), hr, hr,
+                     context_, owner_->context_, cookie, action_.mode_generation,
+                     owner_->end_edit_depth_);
+  return hr;
+}
 class ClassFactory final : public IClassFactory {
 public:
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override { if (!object) return E_INVALIDARG; *object = nullptr; if (iid == IID_IUnknown || iid == IID_IClassFactory) { *object = static_cast<IClassFactory*>(this); AddRef(); return S_OK; } return E_NOINTERFACE; }

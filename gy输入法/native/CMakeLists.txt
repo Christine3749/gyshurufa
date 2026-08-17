@@ -86,7 +86,8 @@ add_library(GyIme SHARED
   "${GY_IME_VERSION_RESOURCE}"
 )
 target_compile_features(GyIme PRIVATE cxx_std_20)
-target_compile_definitions(GyIme PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(GyIme PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+                                         GY_HOST_VERSION="${GY_VERSION}")
 if(MSVC)
   target_compile_options(GyIme PRIVATE /utf-8)
 endif()

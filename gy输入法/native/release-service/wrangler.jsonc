@@ -6,6 +6,10 @@
   "workers_dev": true,
   "routes": [
     {
+      "pattern": "download.shurufa.wang",
+      "custom_domain": true
+    },
+    {
       "pattern": "shurufa.wang/api/releases/*",
       "zone_name": "shurufa.wang"
     },

@@ -54,6 +54,18 @@ bool PrepareEnvironment(const std::wstring& directory) {
       SetEnvironmentVariableW(L"GYINPUT_HOST_NO_TRAY", L"1") != FALSE;
 }
 
+bool StartIsolatedHost(const std::wstring& directory) {
+  const std::wstring host = directory + L"\\GyImeHost.exe";
+  std::wstring command = L"\"" + host + L"\"";
+  STARTUPINFOW startup{sizeof(startup)};
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(host.c_str(), command.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, directory.c_str(), &startup, &process)) return false;
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
+}
+
 bool Send(gy::host::MessageType type, std::wstring* response = nullptr) {
   HANDLE pipe = INVALID_HANDLE_VALUE;
   const ULONGLONG deadline = GetTickCount64() + 4000;
@@ -99,6 +111,25 @@ int wmain() {
     return 1;
   }
   const gy::test::ScopedInputMode simplified_mode(gy::input_mode::kSimplified);
+  // Start a protocol-compatible Host that reports an obsolete release. The
+  // override remains only in that child. The TSF-side prewarm below inherits
+  // no override and must launch the exact registered Host as an independent
+  // coordinator, gracefully hand off the pipe, and recover lookup service.
+  if (!SetEnvironmentVariableW(L"GYINPUT_HOST_STATUS_VERSION", L"0.0.0-stale") ||
+      !StartIsolatedHost(directory)) {
+    std::wcerr << L"Cannot start the isolated stale Host.\n";
+    return 8;
+  }
+  std::wstring stale_encoded;
+  gy::host::HostStatus stale_status{};
+  if (!Send(gy::host::MessageType::Status, &stale_encoded) ||
+      !gy::host::DecodeStatus(stale_encoded, &stale_status) ||
+      stale_status.host_version != L"0.0.0-stale") {
+    std::wcerr << L"The isolated stale Host did not publish its test identity.\n";
+    Send(gy::host::MessageType::Shutdown);
+    return 9;
+  }
+  SetEnvironmentVariableW(L"GYINPUT_HOST_STATUS_VERSION", nullptr);
   HostedPinyinEngine engine(directory);
   const auto first = LookupAfterPrewarm(&engine, L"nihao", gy::input_mode::kSimplified, 1);
   if (first.empty()) {

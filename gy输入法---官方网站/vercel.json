@@ -13,26 +13,18 @@
     {
       "source": "/api/releases/latest",
       "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/api/releases/latest"
-    },
+    }
+  ],
+  "redirects": [
     {
       "source": "/windows/:path*",
-      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/windows/:path*"
-    },
-    {
-      "source": "/download/latest.exe",
-      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/latest.exe"
-    },
-    {
-      "source": "/download/latest.zip",
-      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/latest.zip"
-    },
-    {
-      "source": "/download/candidate/:path*",
-      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/download/candidate/:path*"
+      "destination": "https://download.shurufa.wang/windows/:path*",
+      "permanent": false
     },
     {
       "source": "/download/:path*",
-      "destination": "https://gy-shurufa-download.lihouyi7586.workers.dev/download/:path*"
+      "destination": "https://download.shurufa.wang/download/:path*",
+      "permanent": false
     }
   ]
 }

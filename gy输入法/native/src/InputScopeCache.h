@@ -24,6 +24,28 @@ struct Snapshot {
   LONG sensitive = 0;
 };
 
+enum class ReadStatus {
+  Unavailable,
+  Busy,
+  NoForeground,
+  ForegroundWindowMismatch,
+  ProcessUnavailable,
+  ProcessMismatch,
+  Expired,
+  Match
+};
+
+struct ReadDiagnostics {
+  ReadStatus status = ReadStatus::Unavailable;
+  HWND snapshot_window = nullptr;
+  HWND foreground_window = nullptr;
+  DWORD snapshot_process_id = 0;
+  DWORD foreground_process_id = 0;
+  ULONGLONG age_ms = 0;
+  bool direct = false;
+  bool sensitive = false;
+};
+
 inline const std::wstring& CacheName() {
 #ifdef GY_TESTING
   static const std::wstring name = [] {
@@ -61,9 +83,15 @@ class Reader {
     if (!view_ && mapping_) { CloseHandle(mapping_); mapping_ = nullptr; }
   }
 
-  bool ReadForCurrentForeground(bool* direct, bool* sensitive) const {
-    if (!view_ || !direct || !sensitive) return false;
+  bool ReadForCurrentForeground(bool* direct, bool* sensitive,
+                                ReadDiagnostics* diagnostics = nullptr) const {
+    ReadDiagnostics result{};
+    if (!view_ || !direct || !sensitive) {
+      if (diagnostics) *diagnostics = result;
+      return false;
+    }
     Snapshot value{};
+    bool snapshot_read = false;
     for (unsigned attempt = 0; attempt < 2; ++attempt) {
       // Reader mappings are intentionally FILE_MAP_READ.  A locked
       // InterlockedCompareExchange would write even when exchanging the same
@@ -79,15 +107,42 @@ class Reader {
       value.sensitive = view_->sensitive;
       MemoryBarrier();
       const LONG after = view_->sequence;
-      if (before == after && !(after & 1)) break;
-      if (attempt == 1) return false;
+      if (before == after && !(after & 1)) {
+        snapshot_read = true;
+        break;
+      }
+    }
+    if (!snapshot_read) {
+      result.status = ReadStatus::Busy;
+      if (diagnostics) *diagnostics = result;
+      return false;
     }
     const HWND foreground = GetForegroundWindow();
+    result.snapshot_window = value.foreground_window;
+    result.foreground_window = foreground;
+    result.snapshot_process_id = value.foreground_process_id;
+    result.direct = value.direct != 0;
+    result.sensitive = value.sensitive != 0;
+    result.age_ms = GetTickCount64() >= value.captured_tick
+        ? GetTickCount64() - value.captured_tick
+        : 0;
     DWORD process_id = 0;
-    if (!foreground || foreground != value.foreground_window ||
-        !GetWindowThreadProcessId(foreground, &process_id) ||
-        process_id == 0 || process_id != value.foreground_process_id ||
-        GetTickCount64() - value.captured_tick > kSnapshotTtlMs) return false;
+    if (!foreground) {
+      result.status = ReadStatus::NoForeground;
+    } else if (foreground != value.foreground_window) {
+      result.status = ReadStatus::ForegroundWindowMismatch;
+    } else if (!GetWindowThreadProcessId(foreground, &process_id) || process_id == 0) {
+      result.status = ReadStatus::ProcessUnavailable;
+    } else if (process_id != value.foreground_process_id) {
+      result.status = ReadStatus::ProcessMismatch;
+    } else if (result.age_ms > kSnapshotTtlMs) {
+      result.status = ReadStatus::Expired;
+    } else {
+      result.status = ReadStatus::Match;
+    }
+    result.foreground_process_id = process_id;
+    if (diagnostics) *diagnostics = result;
+    if (result.status != ReadStatus::Match) return false;
     *direct = value.direct != 0;
     *sensitive = value.sensitive != 0;
     return true;

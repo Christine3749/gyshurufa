@@ -7,7 +7,10 @@ type RawReleasePlatform = Partial<ReleasePlatform> & {
   available?: boolean;
 };
 
-const RELEASE_WORKER_ORIGIN = 'https://gy-shurufa-download.lihouyi7586.workers.dev';
+// Binary downloads must go straight to the Cloudflare Worker/R2 custom domain.
+// Routing them through the Vercel website adds a second origin hop and makes
+// large downloads dependent on Vercel's regional cache and Range handling.
+const RELEASE_WORKER_ORIGIN = 'https://download.shurufa.wang';
 
 export type ReleasePlatform = {
   version: string;

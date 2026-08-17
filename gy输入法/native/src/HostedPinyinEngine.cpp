@@ -14,6 +14,12 @@
 #include <utility>
 #include <vector>
 
+#ifndef GY_HOST_VERSION
+#define GY_HOST_VERSION ""
+#endif
+#define GY_HOSTED_WIDEN_INNER(value) L##value
+#define GY_HOSTED_WIDEN(value) GY_HOSTED_WIDEN_INNER(value)
+
 namespace {
 
 // How long a successful Host verification stays trusted. Within an active
@@ -25,6 +31,7 @@ constexpr ULONGLONG kVerifiedHostTtlMs = 1500;
 // not.  Open, write and read all share this one deadline.
 constexpr DWORD kInputRequestBudgetMs = 35;
 constexpr DWORD kLearningWriteBudgetMs = 12;
+constexpr ULONGLONG kHostRecoveryRequestCooldownMs = 2000;
 
 constexpr wchar_t kHostRegistryKey[] = L"SOFTWARE\\GYInput";
 
@@ -162,7 +169,7 @@ bool CurrentProcessElevated() {
   return elevated;
 }
 
-bool StartHost(const std::wstring& path) {
+bool StartHost(const std::wstring& path, bool reconcile) {
   if (!FileExists(path)) return false;
   // An elevated launch poisons the whole install: objects created by an
   // elevated process are owned by the Administrators group, while the Host
@@ -170,8 +177,20 @@ bool StartHost(const std::wstring& path) {
   // ACCESS_DENIED (compositions work, lookups die, the IME feels dead).
   // Elevated clients can still USE an existing Host (their token user is the
   // same account); they must just never be the process that creates it.
-  if (CurrentProcessElevated()) return false;
-  std::vector<wchar_t> command(path.begin(), path.end());
+  if (CurrentProcessElevated()) {
+#ifdef GY_TESTING
+    // GitHub's Windows runner executes tests from an elevated service token.
+    // Permit process creation only on the isolated test endpoint; production
+    // and any test accidentally pointed at the live pipe keep the fail-closed
+    // integrity boundary above.
+    if (gy::host::HostPipeName() == gy::host::kPipeName) return false;
+#else
+    return false;
+#endif
+  }
+  std::wstring command_line = L"\"" + path + L"\"";
+  if (reconcile) command_line += L" --reconcile-host";
+  std::vector<wchar_t> command(command_line.begin(), command_line.end());
   command.push_back(L'\0');
   STARTUPINFOW startup{sizeof(startup)};
   PROCESS_INFORMATION process{};
@@ -187,8 +206,7 @@ bool StartHost(const std::wstring& path) {
 bool IsExpectedHostStatus(const std::wstring& payload, const std::wstring& expected_version) {
   gy::host::HostStatus status{};
   if (!gy::host::DecodeStatus(payload, &status)) return false;
-  return (expected_version.empty() || status.host_version == expected_version) &&
-      status.protocol_version == gy::host::kProtocolVersion;
+  return gy::host::MatchesHostIdentity(status, expected_version);
 }
 
 }  // namespace
@@ -202,7 +220,30 @@ struct HostedPinyinEngine::Impl {
     return JoinPath(module_directory, L"GyImeHost.exe");
   }
 
-  std::wstring HostVersion() const { return ReadMachineValue(L"HostVersion"); }
+  std::wstring HostVersion() const {
+    // Bind each in-process TSF DLL to the Host built from the same release.
+    // The machine registry selects which Host is active, but it must not change
+    // the identity expected by an older DLL still loaded in an application.
+    return GY_HOSTED_WIDEN(GY_HOST_VERSION);
+  }
+
+  bool RegisteredHostMatchesCore() const {
+    const std::wstring registered_path = ReadMachineValue(L"HostPath");
+    const std::wstring registered_version = ReadMachineValue(L"HostVersion");
+    return !registered_path.empty() && FileExists(registered_path) &&
+        registered_version == HostVersion();
+  }
+
+  bool RequestHostRecovery(bool throttle) {
+    const ULONGLONG now = GetTickCount64();
+    if (throttle && last_recovery_request_tick != 0 &&
+        now - last_recovery_request_tick < kHostRecoveryRequestCooldownMs) {
+      return last_recovery_request_succeeded;
+    }
+    last_recovery_request_tick = now;
+    last_recovery_request_succeeded = StartHost(HostPath(), true);
+    return last_recovery_request_succeeded;
+  }
 
   bool EnsureHost() {
     // Fast path: a Host verified moments ago is almost certainly still alive.
@@ -235,6 +276,7 @@ struct HostedPinyinEngine::Impl {
   }
 
   bool SendUi(gy::host::MessageType type, const std::wstring& payload) {
+    if (!EnsureHost()) return false;
     std::wstring ignored;
     return SendRequest(type, payload, &ignored);
   }
@@ -243,6 +285,8 @@ struct HostedPinyinEngine::Impl {
   std::wstring diagnostic;
   std::mutex mutex;
   ULONGLONG last_verified_tick = 0;
+  ULONGLONG last_recovery_request_tick = 0;
+  bool last_recovery_request_succeeded = false;
 };
 
 HostedPinyinEngine::HostedPinyinEngine(std::wstring module_directory)
@@ -350,8 +394,36 @@ void HostedPinyinEngine::Prewarm() {
   if (!impl_) return;
   std::scoped_lock lock(impl_->mutex);
   std::wstring status;
-  if (SendRequest(gy::host::MessageType::Status, L"", &status)) return;
-  if (!StartHost(impl_->HostPath())) impl_->diagnostic = L"GY Host could not be prewarmed";
+  if (SendRequest(gy::host::MessageType::Status, L"", &status)) {
+    if (IsExpectedHostStatus(status, impl_->HostVersion())) {
+      impl_->last_verified_tick = GetTickCount64();
+      return;
+    }
+    // Prewarm only launches an independent, one-shot coordinator. The TSF
+    // activation callback never shuts down a process, waits for a lifecycle
+    // hand-off, or mutates registration. An older DLL whose machine registry
+    // now selects a newer release fails closed and cannot disturb that Host.
+    if (impl_->RegisteredHostMatchesCore() && impl_->RequestHostRecovery(true)) {
+      impl_->diagnostic = L"GY Host version reconciliation was requested";
+    } else {
+      impl_->diagnostic = L"GY Host version does not match this TSF core";
+    }
+    return;
+  }
+  if (impl_->RegisteredHostMatchesCore()) {
+    // A missing endpoint is different from a version mismatch: the verified
+    // Host may have exited or crashed after the previous recovery request.
+    // Start its one-shot coordinator immediately; the named coordinator and
+    // Host instance mutexes collapse concurrent launches safely.
+    if (!impl_->RequestHostRecovery(false)) impl_->diagnostic = L"GY Host could not be prewarmed";
+    return;
+  }
+  // Keep source-tree/dev use working when no machine release is selected.
+  // A partial or mismatched registration is never treated as this fallback.
+  if (ReadMachineValue(L"HostPath").empty() && ReadMachineValue(L"HostVersion").empty() &&
+      !StartHost(impl_->HostPath(), false)) {
+    impl_->diagnostic = L"GY Host could not be prewarmed";
+  }
 }
 std::wstring HostedPinyinEngine::Diagnostic() const {
   return impl_ ? impl_->diagnostic : L"hosted engine implementation is unavailable";

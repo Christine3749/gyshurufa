@@ -28,6 +28,7 @@ $legacyMigrationSource = Join-Path $packageRoot 'Migrate-GYLegacyInstallEntries.
 $legacyMigrationPath = Join-Path $installRoot 'Migrate-GYLegacyInstallEntries.ps1'
 $keyboardSource = Join-Path $packageRoot 'Set-GYKeyboard.ps1'
 $keyboardPath = Join-Path $installRoot 'Set-GYKeyboard.ps1'
+$registrationRecoverySource = Join-Path $packageRoot 'Recover-GYIncompleteRegistration.ps1'
 $pendingPath = Join-Path $installRoot 'pending-activation.json'
 $statePath = Join-Path $installRoot 'install-state.json'
 $commonDataRoot = Join-Path $env:ProgramData 'GYInput'
@@ -128,8 +129,9 @@ function Test-ScheduledTaskExists([string]$TaskName) {
 
 function Schedule-PendingActivation {
   try {
-    # Activation is boot-only. The shared registrar creates one ONSTART task,
-    # and the Finalizer also verifies that Windows BootId changed.
+    # Activation is boot-bound. The shared registrar creates redundant
+    # ONSTART/ONLOGON SYSTEM tasks, and the Finalizer independently verifies
+    # that Windows BootId changed before either trigger can switch the DLL.
     if (-not (Test-Path -LiteralPath $taskRegistrarSource -PathType Leaf)) {
       throw 'Pending activation task registrar is missing from the ZIP package.'
     }
@@ -156,15 +158,30 @@ function Require-PendingActivationComplete {
 }
 
 function Schedule-CurrentUserKeyboardCompletion {
+  Remove-LegacyVersionPinnedHostStartup
   $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $command = '"' + $powershell + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
              $keyboardPath + '" -Add -RequireActiveVersion "' + $version +
-             '" -RetryAtNextLogon -WaitForActivationSeconds 60'
+             '" -RetryAtNextLogon -ReconcileHost -WaitForActivationSeconds 60'
   # Keep this completion entry until Set-GYKeyboard verifies that Windows has
   # retained the GY TIP. A one-shot RunOnce can be consumed before the boot
   # finalizer finishes and leave the current account permanently on ENG.
   $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
   try { $key.SetValue('GYInputCompleteKeyboard', $command, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+}
+
+function Remove-LegacyVersionPinnedHostStartup {
+  $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKey, $true)
+  if (-not $key) { return }
+  try {
+    $key.DeleteValue('GYInputHost', $false)
+    if (@($key.GetValueNames()) -contains 'GYInputHost') {
+      throw '无法移除旧版 GY Host 自启动项；安装已停止，以免重启后再次混用版本。'
+    }
+  } finally {
+    $key.Dispose()
+  }
 }
 function Test-SameFile([string]$Source, [string]$Destination) {
   if (-not (Test-Path -LiteralPath $Source) -or -not (Test-Path -LiteralPath $Destination)) { return $false }
@@ -446,6 +463,10 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+# Do this in the interactive account before any UAC hand-off.  The obsolete
+# value is per-user and otherwise survives every machine-wide version switch.
+Remove-LegacyVersionPinnedHostStartup
+
 if (-not $Elevated) {
   if (-not $Uninstall) {
     Assert-Payload
@@ -522,6 +543,9 @@ if (-not (Test-Path -LiteralPath $legacyMigrationSource -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $keyboardSource -PathType Leaf)) {
   throw 'Keyboard completion helper is missing from the package.'
 }
+if (-not (Test-Path -LiteralPath $registrationRecoverySource -PathType Leaf)) {
+  throw 'Incomplete-registration recovery helper is missing from the package.'
+}
 New-Item -ItemType Directory -Path $versionRoot, $tsfRoot -Force | Out-Null
 $payloadDll = Join-Path $payloadRoot ("GyIme-$version.dll")
 $payloadHost = Join-Path $payloadRoot ("GyImeHost-$version.exe")
@@ -555,6 +579,7 @@ if (-not (Test-SameTree $payloadEnglish (Join-Path $versionRoot 'english-lexicon
 }
 $health = Start-Process -FilePath $installedHealth -WorkingDirectory $versionRoot -Wait -PassThru
 if ($health.ExitCode -ne 0) { throw "GY 输入法离线引擎自检失败；退出码：$($health.ExitCode)。旧版本保持不变。" }
+& $registrationRecoverySource -LockAlreadyHeld -InstallRoot $installRoot
 $previousState = Get-ActiveGyState
 $previousCoreVersion = ''
 $previousCoreVersion = [string]$previousState.coreVersion

@@ -19,7 +19,11 @@ int wmain() {
   writer.Publish(foreground, process_id, true, true);
   bool direct = false;
   bool sensitive = false;
-  if (!reader.ReadForCurrentForeground(&direct, &sensitive) || !direct || !sensitive) {
+  gy::input_scope_cache::ReadDiagnostics diagnostics{};
+  if (!reader.ReadForCurrentForeground(&direct, &sensitive, &diagnostics) || !direct || !sensitive ||
+      diagnostics.status != gy::input_scope_cache::ReadStatus::Match ||
+      diagnostics.foreground_window != foreground || diagnostics.snapshot_window != foreground ||
+      diagnostics.foreground_process_id != process_id || diagnostics.snapshot_process_id != process_id) {
     std::wcerr << L"Current foreground snapshot did not round-trip.\n";
     return 3;
   }
@@ -28,7 +32,9 @@ int wmain() {
   writer.Publish(reinterpret_cast<HWND>(static_cast<ULONG_PTR>(1)), process_id, true, true);
   direct = false;
   sensitive = false;
-  if (reader.ReadForCurrentForeground(&direct, &sensitive)) {
+  diagnostics = {};
+  if (reader.ReadForCurrentForeground(&direct, &sensitive, &diagnostics) ||
+      diagnostics.status != gy::input_scope_cache::ReadStatus::ForegroundWindowMismatch) {
     std::wcerr << L"A different-window snapshot leaked into the current focus.\n";
     return 4;
   }
@@ -36,7 +42,9 @@ int wmain() {
   writer.Publish(foreground, process_id + 1, true, true);
   direct = false;
   sensitive = false;
-  if (reader.ReadForCurrentForeground(&direct, &sensitive)) {
+  diagnostics = {};
+  if (reader.ReadForCurrentForeground(&direct, &sensitive, &diagnostics) ||
+      diagnostics.status != gy::input_scope_cache::ReadStatus::ProcessMismatch) {
     std::wcerr << L"A different-process snapshot leaked into the current focus.\n";
     return 5;
   }

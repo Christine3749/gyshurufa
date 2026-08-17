@@ -72,6 +72,14 @@ struct HostStatus {
   std::wstring release_version;
 };
 
+inline bool MatchesHostIdentity(const HostStatus& status, std::wstring_view expected_version) {
+  // An empty expected version is never a wildcard.  Accepting it allowed a
+  // DLL retained by a long-running app to consume candidates from whichever
+  // older Host happened to own the shared pipe after an incomplete upgrade.
+  return !expected_version.empty() && status.host_version == expected_version &&
+      status.release_version == expected_version && status.protocol_version == kProtocolVersion;
+}
+
 struct LookupRequest {
   std::wstring text;
   unsigned input_mode = 0;  // 0 = simplified, 1 = traditional, 2 = English

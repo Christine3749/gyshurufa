@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "gy-2026.08.16-windows-0.12.10-thinkpad-test",
+  "version": "0.12.10",
+  "channel": "candidate",
+  "state": "approved",
+  "approvalKind": "target-test-distribution",
+  "approvedBy": "Ethan",
+  "approvedAtUtc": "2026-08-16T04:09:30.9582560Z",
+  "audience": "Ethan private ThinkPad Firefox and Chromium target acceptance through shurufa.wang",
+  "gates": {
+    "sourceAudit": "passed",
+    "packageVerification": "passed",
+    "privacyBoundary": "passed",
+    "targetAcceptance": "pending-on-target"
+  },
+  "unsignedCandidateAcknowledged": true
+}

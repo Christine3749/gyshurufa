@@ -12,6 +12,7 @@
 
 #include <windows.h>
 #include <sddl.h>
+#include <shellapi.h>
 
 #include <atomic>
 #include <string>
@@ -28,6 +29,8 @@
 namespace {
 constexpr UINT kUiCommandMessage = WM_APP + 41;
 constexpr unsigned kCandidatesPerPage = 5;
+constexpr DWORD kLifecycleRequestBudgetMs = 400;
+constexpr DWORD kLifecycleHandoffBudgetMs = 3000;
 
 #ifdef GY_TESTING
 void DebugStep(const wchar_t* step) {
@@ -59,7 +62,7 @@ LRESULT CALLBACK ClipboardListenerProc(HWND hwnd, UINT message, WPARAM wparam, L
 }
 
 HWND CreateClipboardListener() {
-  constexpr wchar_t kClassName[] = L"GyImeHostClipboard";
+  static constexpr wchar_t kClassName[] = L"GyImeHostClipboard";
   static const ATOM atom = [] {
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = ClipboardListenerProc;
@@ -86,6 +89,162 @@ std::wstring HostInstanceMutexName() {
   // isolated Host its own mutex so it can never collide with the user Host.
   return L"Local\\GYInput.Host.test." + pipe.substr(pipe.find_last_of(L".") + 1);
 }
+
+std::wstring HostReconcileMutexName() {
+  const std::wstring pipe = gy::host::HostPipeName();
+  if (pipe == gy::host::kPipeName) return L"Local\\GYInput.HostReconcile.v1";
+  return L"Local\\GYInput.HostReconcile.test." + pipe.substr(pipe.find_last_of(L".") + 1);
+}
+
+std::wstring ReadRegisteredHostValue(const wchar_t* name) {
+#ifdef GY_TESTING
+  const wchar_t* environment_name = wcscmp(name, L"HostPath") == 0 ? L"GYINPUT_HOST_PATH" :
+      wcscmp(name, L"HostVersion") == 0 ? L"GYINPUT_HOST_VERSION" : nullptr;
+  if (environment_name) {
+    wchar_t value[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(
+        environment_name, value, static_cast<DWORD>(std::size(value)));
+    if (length && length < std::size(value)) return std::wstring(value, length);
+  }
+#endif
+  DWORD bytes = 0;
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GYInput", name,
+                   RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, nullptr, &bytes) != ERROR_SUCCESS ||
+      bytes < sizeof(wchar_t)) return {};
+  std::wstring value(bytes / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GYInput", name,
+                   RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, value.data(), &bytes) != ERROR_SUCCESS) return {};
+  while (!value.empty() && value.back() == L'\0') value.pop_back();
+  return value;
+}
+
+std::wstring ModulePath() {
+  std::vector<wchar_t> path(MAX_PATH);
+  for (;;) {
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (!length) return {};
+    if (length < path.size() - 1) return std::wstring(path.data(), length);
+    path.resize(path.size() * 2);
+  }
+}
+
+std::wstring FullPath(const std::wstring& path) {
+  if (path.empty()) return {};
+  const DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+  if (!required) return {};
+  std::vector<wchar_t> full(required);
+  const DWORD length = GetFullPathNameW(path.c_str(), required, full.data(), nullptr);
+  if (!length || length >= required) return {};
+  return std::wstring(full.data(), length);
+}
+
+bool SamePath(const std::wstring& left, const std::wstring& right) {
+  const std::wstring left_full = FullPath(left);
+  const std::wstring right_full = FullPath(right);
+  return !left_full.empty() && !right_full.empty() && _wcsicmp(left_full.c_str(), right_full.c_str()) == 0;
+}
+
+bool HasReconcileSwitch() {
+  int count = 0;
+  wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+  if (!arguments) return false;
+  bool found = false;
+  for (int index = 1; index < count; ++index) {
+    if (_wcsicmp(arguments[index], L"--reconcile-host") == 0) {
+      found = true;
+      break;
+    }
+  }
+  LocalFree(arguments);
+  return found;
+}
+
+HANDLE OpenLifecyclePipe(ULONGLONG deadline) {
+  do {
+    const DWORD remaining = gy::host::RemainingDeadlineMs(deadline);
+    if (!remaining) break;
+    if (WaitNamedPipeW(gy::host::HostPipeName().c_str(), remaining > 10 ? 10 : remaining)) {
+      HANDLE pipe = CreateFileW(gy::host::HostPipeName().c_str(), GENERIC_READ | GENERIC_WRITE,
+                                0, nullptr, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+      if (pipe != INVALID_HANDLE_VALUE) return pipe;
+    }
+    Sleep(5);
+  } while (GetTickCount64() < deadline);
+  return INVALID_HANDLE_VALUE;
+}
+
+bool SendLifecycleRequest(gy::host::MessageType type, std::wstring* response) {
+  const ULONGLONG deadline = GetTickCount64() + kLifecycleRequestBudgetMs;
+  HANDLE pipe = OpenLifecyclePipe(deadline);
+  if (pipe == INVALID_HANDLE_VALUE) return false;
+  std::wstring payload;
+  gy::host::MessageType response_type{};
+  const bool sent = gy::host::WriteMessageWithDeadline(pipe, type, L"", deadline) &&
+      gy::host::ReadMessageWithDeadline(pipe, &response_type, &payload, deadline) &&
+      response_type == type;
+  CloseHandle(pipe);
+  if (sent && response) *response = std::move(payload);
+  return sent;
+}
+
+bool PrepareHostReconciliation(HANDLE* reconcile_mutex) {
+  if (!reconcile_mutex) return false;
+  *reconcile_mutex = nullptr;
+  const std::wstring registered_path = ReadRegisteredHostValue(L"HostPath");
+  const std::wstring registered_version = ReadRegisteredHostValue(L"HostVersion");
+  if (registered_version != GY_WIDEN(GY_HOST_VERSION) ||
+      !SamePath(registered_path, ModulePath())) return false;
+
+  const std::wstring mutex_name = HostReconcileMutexName();
+  HANDLE coordinator = CreateMutexW(nullptr, TRUE, mutex_name.c_str());
+  if (!coordinator) return false;
+  if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(coordinator);
+    return false;
+  }
+
+  std::wstring encoded_status;
+  if (SendLifecycleRequest(gy::host::MessageType::Status, &encoded_status)) {
+    gy::host::HostStatus status{};
+    if (!gy::host::DecodeStatus(encoded_status, &status)) {
+      ReleaseMutex(coordinator);
+      CloseHandle(coordinator);
+      return false;
+    }
+    if (gy::host::MatchesHostIdentity(status, registered_version)) {
+      ReleaseMutex(coordinator);
+      CloseHandle(coordinator);
+      return false;
+    }
+    // The response proves this is a protocol-compatible GY Host on GY's own
+    // private endpoint. Request its normal shutdown; never enumerate or kill
+    // processes from the text-service client or this coordinator.
+    if (!SendLifecycleRequest(gy::host::MessageType::Shutdown, nullptr)) {
+      ReleaseMutex(coordinator);
+      CloseHandle(coordinator);
+      return false;
+    }
+  }
+  *reconcile_mutex = coordinator;
+  return true;
+}
+
+HANDLE AcquireHostInstance(bool allow_handoff_wait, bool* existing_instance) {
+  if (existing_instance) *existing_instance = false;
+  const std::wstring mutex_name = HostInstanceMutexName();
+  const ULONGLONG deadline = GetTickCount64() + kLifecycleHandoffBudgetMs;
+  do {
+    HANDLE instance = CreateMutexW(nullptr, FALSE, mutex_name.c_str());
+    if (!instance) return nullptr;
+    if (GetLastError() != ERROR_ALREADY_EXISTS) return instance;
+    if (existing_instance) *existing_instance = true;
+    CloseHandle(instance);
+    if (!allow_handoff_wait || GetTickCount64() >= deadline) return nullptr;
+    Sleep(25);
+  } while (true);
+}
+
 std::wstring ModuleDirectory() {
   wchar_t path[MAX_PATH]{};
   const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -407,8 +566,17 @@ std::wstring DispatchRequest(gy::host::MessageType type, const std::wstring& req
           lookup.input_mode, lookup.mode_generation});
     }
   } else if (type == gy::host::MessageType::Status) {
-    response = gy::host::EncodeStatus({GY_WIDEN(GY_HOST_VERSION),
-        gy::host::kProtocolVersion, GY_WIDEN(GY_HOST_VERSION)});
+    std::wstring status_version = GY_WIDEN(GY_HOST_VERSION);
+#ifdef GY_TESTING
+    wchar_t override_version[64]{};
+    const DWORD override_length = GetEnvironmentVariableW(
+        L"GYINPUT_HOST_STATUS_VERSION", override_version, static_cast<DWORD>(std::size(override_version)));
+    if (override_length && override_length < std::size(override_version)) {
+      status_version.assign(override_version, override_length);
+    }
+#endif
+    response = gy::host::EncodeStatus({status_version,
+        gy::host::kProtocolVersion, status_version});
   } else if (type == gy::host::MessageType::ShowCandidates) {
     auto* command = new UiCommand{};
     command->kind = UiCommandKind::ShowCandidates;
@@ -549,14 +717,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   // Render at the active monitor DPI. Otherwise Windows virtualizes this GDI
   // surface at 96 DPI and 175% scaling makes Chinese glyphs look soft.
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  const std::wstring mutex_name = HostInstanceMutexName();
-  DebugStep((L"step: mutex=" + mutex_name).c_str());
-  HANDLE single_instance = CreateMutexW(nullptr, FALSE, mutex_name.c_str());
-  if (!single_instance) { DebugStep(L"exit: mutex null"); return 2; }
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    DebugStep(L"exit: mutex already exists");
-    CloseHandle(single_instance);
+  const bool reconcile = HasReconcileSwitch();
+  HANDLE reconcile_mutex = nullptr;
+  if (reconcile && !PrepareHostReconciliation(&reconcile_mutex)) {
+    DebugStep(L"exit: reconciliation not authorized or already complete");
     return 0;
+  }
+  bool existing_instance = false;
+  HANDLE single_instance = AcquireHostInstance(reconcile, &existing_instance);
+  if (reconcile_mutex) {
+    ReleaseMutex(reconcile_mutex);
+    CloseHandle(reconcile_mutex);
+  }
+  if (!single_instance) {
+    DebugStep(L"exit: active instance retained ownership");
+    return existing_instance ? 0 : 2;
   }
 
   // Create the message queue before accepting IPC so queued UI commands always.

@@ -122,6 +122,20 @@ function Restart-ActiveGyHost([string]$HostPath) {
   if ($started.HasExited) { throw "已恢复的 GY Host 未能启动（退出码：$($started.ExitCode)）。" }
 }
 
+function Remove-LegacyVersionPinnedHostStartup {
+  $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKey, $true)
+  if (-not $key) { return }
+  try {
+    $key.DeleteValue('GYInputHost', $false)
+    if (@($key.GetValueNames()) -contains 'GYInputHost') {
+      throw '无法移除旧版 GY Host 自启动项。'
+    }
+  } finally {
+    $key.Dispose()
+  }
+}
+
 function Invoke-PostRecoveryCleanup([string]$ActiveVersion, [string]$RetainedVersion) {
   # Cleanup only removes superseded, non-active version directories. It must
   # never keep a completed rollback process open: a mapped DLL or an inherited
@@ -165,6 +179,7 @@ function Write-RecoveryReport([string]$Status, [string]$FromVersion, [string]$To
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Remove-LegacyVersionPinnedHostStartup
 if (-not $Elevated -and -not $isAdmin) {
   $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
   $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru

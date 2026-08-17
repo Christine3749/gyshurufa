@@ -116,7 +116,25 @@ function Remove-StaleTransientHelpers {
   }
 }
 
+function Remove-LegacyVersionPinnedHostStartup {
+  $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKey, $true)
+  if (-not $key) { return }
+  try {
+    $key.DeleteValue('GYInputHost', $false)
+    if (@($key.GetValueNames()) -contains 'GYInputHost') {
+      throw '无法移除旧版 GY Host 自启动项。'
+    }
+  } finally {
+    $key.Dispose()
+  }
+}
+
 $script:cleanupCompleted = $false
+
+# The value is account-owned and does not require elevation.  Remove it before
+# UAC so repair cannot leave the caller on a version-pinned Host at next logon.
+Remove-LegacyVersionPinnedHostStartup
 
 if (-not (Test-IsAdministrator)) {
   $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated"
