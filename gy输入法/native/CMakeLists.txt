@@ -241,7 +241,7 @@ if(GY_BUILD_HOST_SMOKE)
   )
   target_compile_features(GySettingsLab PRIVATE cxx_std_20)
   target_compile_definitions(GySettingsLab PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-                                                GY_RELEASE_VERSION="${GY_VERSION}")
+                                                GY_RELEASE_VERSION="${GY_VERSION}" GY_SETTINGS_LAB)
   target_include_directories(GySettingsLab PRIVATE src "${GY_CPPWINRT_INCLUDE}")
   target_link_libraries(GySettingsLab PRIVATE shell32 comdlg32 comctl32 advapi32 ole32 runtimeobject
                                               winhttp crypt32 gdiplus uiautomationcore)

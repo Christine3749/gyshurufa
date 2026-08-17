@@ -37,6 +37,14 @@ constexpr UINT kAutomaticUpdateComplete = WM_APP + 0x2A3;
 constexpr UINT kAutomaticUpdateCheckComplete = WM_APP + 0x2A4;
 constexpr UINT_PTR kClipboardStatusTimer = 0x4759;
 constexpr UINT_PTR kUpdateStatusTimer = 0x475A;
+
+void InvalidatePinyinSettingsCache() {
+  // The visual settings lab intentionally has no engine or settings cache.
+  // Production GyImeHost links PinyinEngine and invalidates its live snapshot.
+#ifndef GY_SETTINGS_LAB
+  PinyinEngine::InvalidateLocalSettingsCache();
+#endif
+}
 constexpr UINT_PTR kAccountEditSubclassId = 0x475B;
 
 struct AccountRequestCompletion {
@@ -1437,7 +1445,7 @@ void SettingsWindow::Save() {
     if (end == std::wstring::npos) break; begin = input.find_first_not_of(L"\r\n", end); if (begin == std::wstring::npos) break;
   }
   section.push_back(L'\0'); WritePrivateProfileSectionW(L"Phrases", section.c_str(), path.c_str());
-  PinyinEngine::InvalidateLocalSettingsCache();
+  InvalidatePinyinSettingsCache();
 }
 void SettingsWindow::ClearLearning() {
   if (MessageBoxW(hwnd_, L"清空本机的所有候选学习记录？常用短语不会受影响。", L"GY 输入法", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
@@ -1449,7 +1457,7 @@ void SettingsWindow::ClearLearning() {
   // custom phrases remain intentionally untouched.
   WritePrivateProfileStringW(L"Learning", nullptr, nullptr, path.c_str());
   WritePrivateProfileStringW(L"LearningStats", nullptr, nullptr, path.c_str());
-  PinyinEngine::InvalidateLocalSettingsCache();
+  InvalidatePinyinSettingsCache();
 }
 void SettingsWindow::ClearHistory() {
   // 确认文案逐字来自 CLIPBOARD-PAGE-DESIGN §2 卡片 3。
@@ -1471,7 +1479,7 @@ void SettingsWindow::ImportBackup() {
   const std::wstring destination = SettingsPath(); if (destination.empty() || !EnsureUnicodeSettingsFile(destination)) return;
   CopyFileW(destination.c_str(), (destination + L".bak").c_str(), FALSE);
   if (!CopyFileW(source.c_str(), destination.c_str(), FALSE)) { MessageBoxW(hwnd_, L"无法导入设置文件。原来的设置已保留。", L"GY 输入法", MB_OK | MB_ICONERROR); return; }
-  PinyinEngine::InvalidateLocalSettingsCache();
+  InvalidatePinyinSettingsCache();
   const int imported_mode = static_cast<int>(GetPrivateProfileIntW(L"Input", L"Mode", gy::input_mode::kSimplified, destination.c_str()));
   if (!gy::input_mode::Write(imported_mode)) {
     MessageBoxW(hwnd_, L"导入文件已保留，但输入模式未能完整写入，已恢复为实际生效的模式。",
