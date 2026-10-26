@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 
 async function startServer() {
   const app = express();
@@ -23,47 +22,7 @@ async function startServer() {
       return;
     }
 
-    // Check if GEMINI_API_KEY is configured
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-        let prompt = '';
-
-        switch (action) {
-          case 'polish':
-            prompt = `请对以下中文文本进行语法润色和表达优化，使其更加通顺、专业、得体，同时保留原意。直接输出润色后的文本，不要带有引言或解释：\n\n${text}`;
-            break;
-          case 'rewrite':
-            prompt = `请将以下文本重写为更加流畅、清晰、有逻辑的版本，保留核心意思。直接输出重写后的结果：\n\n${text}`;
-            break;
-          case 'translate':
-            prompt = `请将以下文本翻译为 ${targetLang || '英文'}。直接输出翻译结果：\n\n${text}`;
-            break;
-          case 'summarize':
-            prompt = `请对以下文本提取核心要点摘要，简明扼要。直接输出摘要结果：\n\n${text}`;
-            break;
-          case 'reply':
-            prompt = `请针对以下消息，撰写一段得体、专业且有礼貌的回复建议。直接输出回复内容：\n\n${text}`;
-            break;
-          default:
-            prompt = `请对以下文本进行表达优化并精简：\n\n${text}`;
-        }
-
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt,
-        });
-
-        const outputText = response.text || text;
-        res.json({ result: outputText, source: 'gemini-2.5-flash' });
-        return;
-      } catch (err) {
-        console.warn('Gemini API call failed, falling back to local simulation:', err);
-      }
-    }
-
-    // Fallback simulation responses for offline / non-API key environment
+    // Existing local simulation; no external AI service is contacted.
     let simulatedResult = text;
     if (action === 'polish') {
       simulatedResult = text.replace(/（.*）/g, '') + '（已进行语句连贯性润色，修正标点与措辞）';

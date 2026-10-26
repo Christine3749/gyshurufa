@@ -3,7 +3,7 @@
 
 NSString *const GYAccountAuthDidChangeNotification = @"GYAccountAuthDidChangeNotification";
 
-static NSString *const kAuthBase = @"https://gsyen-api-776196228503.asia-east1.run.app";
+static NSString *const kAuthBase = @"https://gsyen-account.gsyen.com";
 static NSString *const kKeychainService = @"wang.shurufa.GYInput.gsyen";
 static NSString *const kKeychainAccount = @"session";
 static const NSTimeInterval kRequestTimeout = 15;

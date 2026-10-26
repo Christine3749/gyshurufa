@@ -14,7 +14,7 @@
 namespace gy::account_auth {
 namespace {
 
-constexpr wchar_t kApiHost[] = L"gsyen-api-776196228503.asia-east1.run.app";
+constexpr wchar_t kApiHost[] = L"gsyen-account.gsyen.com";
 constexpr wchar_t kSessionCookieName[] = L"gsyen_rt";
 constexpr wchar_t kSessionFileName[] = L"gsyen-session.dat";
 constexpr std::uint32_t kSessionMagic = 0x4E535947;  // "GYSN" in little-endian storage
